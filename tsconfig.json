@@ -6,6 +6,7 @@
     ],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "jsx": "react-jsx",
     "rootDir": ".",
     "outDir": "dist",
     "declaration": true,
@@ -32,6 +33,8 @@
     "adapters/**/*.ts",
     "cli/**/*.ts",
     "tests/**/*.ts",
-    "benchmarks/**/*.ts"
+    "benchmarks/**/*.ts",
+    "tui/**/*.ts",
+    "tui/**/*.tsx"
   ]
 }

@@ -5,11 +5,14 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
-assert(packageJson.version === "0.2.1", "package.json must be version 0.2.1");
+assert(packageJson.version === "0.3.0", "package.json must be version 0.3.0");
 assert(lock.version === packageJson.version, "package-lock top-level version must match package.json");
 assert(lock.packages?.[""]?.version === packageJson.version, "package-lock root package version must match package.json");
 assert(packageJson.engines?.node === ">=22.13", "Node engine must be >=22.13");
-assert(JSON.stringify(Object.keys(packageJson.dependencies ?? {})) === JSON.stringify(["openai"]), "openai must be the only runtime dependency");
+assert(
+  JSON.stringify(Object.keys(packageJson.dependencies ?? {})) === JSON.stringify(["ink", "openai", "react"]),
+  "runtime dependencies must remain limited to the TUI and OpenAI transport",
+);
 
 const fileOutput = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
   cwd: root,

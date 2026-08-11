@@ -1,12 +1,15 @@
 import type {
   AgentRunRequest,
   AgentRunResult,
+  AgentApplicationRunRequest,
   ProviderEvent,
   ProviderProfile,
+  ProviderProfileInput,
   ProviderRequest,
   ShellRule,
   ToolContract,
   ToolResult,
+  VaultStatus,
 } from "../domain/contracts.js";
 import type { AgentEvent, AgentEventDraft } from "../protocol/events.js";
 
@@ -90,11 +93,36 @@ export interface SecretResolver {
 }
 
 export interface ProviderProfileStore {
-  upsertProfile(profile: Omit<ProviderProfile, "revision" | "active"> & { readonly active?: boolean }): Promise<ProviderProfile>;
+  upsertProfile(profile: ProviderProfileInput): Promise<ProviderProfile>;
   listProfiles(): Promise<readonly ProviderProfile[]>;
   getProfile(idOrName: string): Promise<ProviderProfile | undefined>;
   getActiveProfile(): Promise<ProviderProfile | undefined>;
   activateProfile(idOrName: string): Promise<ProviderProfile>;
+}
+
+export interface SecretVault extends SecretResolver {
+  status(): Promise<VaultStatus>;
+  initialize(masterPassword: string): Promise<void>;
+  unlock(masterPassword: string): Promise<void>;
+  lock(): void;
+  importCredential(profileId: string, secret: string): Promise<ProviderProfile>;
+  removeCredential(profileId: string): Promise<ProviderProfile>;
+  rotateMasterPassword(currentPassword: string, nextPassword: string): Promise<void>;
+  reset(): Promise<number>;
+}
+
+export interface ProviderConfigurationService {
+  listProfiles(): Promise<readonly ProviderProfile[]>;
+  upsertProfile(profile: ProviderProfileInput): Promise<ProviderProfile>;
+  activateProfile(idOrName: string): Promise<ProviderProfile>;
+  vaultStatus(): Promise<VaultStatus>;
+  initializeVault(masterPassword: string): Promise<void>;
+  unlockVault(masterPassword: string): Promise<void>;
+  lockVault(): void;
+  importCredential(profileId: string, secret: string): Promise<ProviderProfile>;
+  removeCredential(profileId: string): Promise<ProviderProfile>;
+  rotateVaultPassword(currentPassword: string, nextPassword: string): Promise<void>;
+  resetVault(): Promise<number>;
 }
 
 export interface ShellPolicyStore {
@@ -112,4 +140,10 @@ export interface AgentRunHandle {
 
 export interface AgentRuntimeContract {
   start(request: AgentRunRequest): AgentRunHandle;
+}
+
+export interface AgentApplication {
+  readonly configuration: ProviderConfigurationService;
+  startRun(request: AgentApplicationRunRequest, approval: ApprovalPort): Promise<AgentRunHandle>;
+  close(): void;
 }

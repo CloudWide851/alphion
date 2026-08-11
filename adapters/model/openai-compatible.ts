@@ -63,12 +63,15 @@ export class OpenAICompatibleProvider implements AgentProvider {
 
   async #createClient(): Promise<OpenAI> {
     let apiKey = "alphion-no-auth";
-    if (this.profile.auth.mode === "bearer-env") {
-      const resolved = await this.#secrets.resolve(this.profile.auth.environmentVariable);
+    if (this.profile.auth.mode !== "none") {
+      const reference = this.profile.auth.mode === "bearer-env"
+        ? this.profile.auth.environmentVariable
+        : this.profile.auth.secretId;
+      const resolved = await this.#secrets.resolve(reference);
       if (!resolved) {
         throw new AlphionError(
           "dependency-unavailable",
-          `Required secret environment variable ${this.profile.auth.environmentVariable} is unavailable.`,
+          "The configured provider credential is unavailable or the vault is locked.",
           { stage: "provider" },
         );
       }
@@ -192,6 +195,11 @@ export class OpenAICompatibleProvider implements AgentProvider {
 }
 
 function validateProviderProfile(profile: ProviderProfile): void {
+  if (profile.schemaVersion !== 2 || profile.kind !== "openai-compatible") {
+    throw new AlphionError("validation", "OpenAI-compatible provider requires a schema-v2 compatible profile.", {
+      stage: "provider",
+    });
+  }
   let url: URL;
   try {
     url = new URL(profile.baseUrl);
@@ -210,6 +218,9 @@ function validateProviderProfile(profile: ProviderProfile): void {
   }
   if (profile.auth.mode === "bearer-env" && !/^[A-Z_][A-Z0-9_]*$/.test(profile.auth.environmentVariable)) {
     throw new AlphionError("validation", "Compatible provider secret reference is invalid.", { stage: "provider" });
+  }
+  if (profile.auth.mode === "encrypted-sqlite" && !/^vault_[A-Za-z0-9_-]{8,}$/.test(profile.auth.secretId)) {
+    throw new AlphionError("validation", "Compatible provider vault reference is invalid.", { stage: "provider" });
   }
 }
 

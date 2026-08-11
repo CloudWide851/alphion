@@ -67,7 +67,18 @@ test("compiled live smoke is guarded and Windows batch launcher shows help", asy
   }
   const launched = await runExecutable("cmd.exe", ["/d", "/c", "alphion.bat", "help"]);
   assert.equal(launched.code, 0, launched.stderr);
-  assert.match(launched.stdout, /Alphion v0\.2\.1/);
+  assert.match(launched.stdout, /Alphion v0\.3\.0/);
+});
+
+test("compiled TUI refuses a non-interactive terminal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "alphion-tui-nontty-"));
+  try {
+    const result = await runCli(["tui", "--project-root", directory, "--state", join(directory, "state.sqlite3")]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /interactive terminal/i);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {

@@ -5,6 +5,7 @@ export type AgentEventKind =
   | "provider.started"
   | "provider.degraded"
   | "model.delta"
+  | "model.reasoning.delta"
   | "model.usage"
   | "cache.hit"
   | "cache.miss"
@@ -38,7 +39,7 @@ export type AgentEventDraft = Omit<
 >;
 
 export function isCriticalAgentEvent(kind: AgentEventKind): boolean {
-  return kind !== "model.delta";
+  return kind !== "model.delta" && kind !== "model.reasoning.delta";
 }
 
 export function emptyProviderUsage(): ProviderUsage {

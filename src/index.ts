@@ -20,8 +20,10 @@ export { AlphionError } from "./application/errors.js";
 export { DefaultCapabilityPolicy } from "./application/policy.js";
 export { TieredCache } from "./application/cache.js";
 export { ToolRegistry } from "./application/tool-registry.js";
+export { ProviderConfigurationManager } from "./application/provider-configuration.js";
 export type {
   AgentBudgets,
+  AgentApplicationRunRequest,
   AgentMessage,
   AgentRunRequest,
   AgentRunResult,
@@ -29,17 +31,22 @@ export type {
   EvidenceRef,
   GroundingReport,
   OpenAICompatibleProtocol,
+  ProviderAuth,
   ProviderCapabilities,
   ProviderEvent,
+  ProviderKind,
   ProviderProfile,
+  ProviderProfileInput,
   ProviderRequest,
   ProviderToolDefinition,
   ProviderUsage,
   ShellRule,
   ToolContract,
   ToolResult,
+  VaultStatus,
 } from "./domain/contracts.js";
 export type {
+  AgentApplication,
   AgentProvider,
   AgentRunHandle,
   ApprovalDecision,
@@ -51,7 +58,9 @@ export type {
   CapabilityPolicy,
   EventStore,
   ProviderProfileStore,
+  ProviderConfigurationService,
   SecretResolver,
+  SecretVault,
   ShellPolicyStore,
   ToolExecutionContext,
   ToolExecutor,

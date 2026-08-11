@@ -1,6 +1,32 @@
 # Changelog
 
-All notable changes to Alphion are documented here. During the 0.x line, compatible increments remain on the current `0.2.x` line and larger milestones advance to a new `0.x.0`; detailed architecture research remains in the local, Git-ignored design workspace.
+All notable changes to Alphion are documented here. Before 1.0, compatible increments advance the current `0.x.y` line and larger milestones advance to a new `0.x.0`; detailed architecture research remains in the local, Git-ignored design workspace.
+
+## [0.3.0] - 2026-08-11
+
+### Added
+
+- Added an Ink/React TUI for provider configuration, masked API-key import, single-run streaming, exact tool approval, cancellation, and collapsed DeepSeek reasoning.
+- Added a dedicated `DeepSeekProvider` for `deepseek-chat` and `deepseek-reasoner`, including reasoning continuation, function tools, cached-token usage, bounded retry, timeout, and cancellation.
+- Added a versioned encrypted SQLite credential vault and core provider-configuration/local-application contracts.
+- Completed the local Phase 1–6 Agent system design, implementation-status matrix, and DeepSeek/vault operational runbook.
+
+### Security
+
+- API keys stored locally use scrypt-derived AES-256-GCM encryption with random nonces and authenticated profile/revision binding; plaintext keys and master passwords never enter SQLite, events, cache, or logs.
+- The vault locks explicitly or after 15 minutes of inactivity. Password rotation is transactional; destructive reset removes ciphertext credentials while preserving provider profiles.
+- TUI output strips terminal control characters, masks credentials, and treats reasoning as untrusted non-evidence.
+
+### Changed
+
+- Advanced provider profiles and project-local SQLite state from schema v1 to v2. Existing environment-backed profiles migrate transactionally as `openai-compatible`.
+- Extended core provider messages/events with separately typed reasoning content and included it in cache identity and output budgets.
+- Added Ink and React only to the TUI adapter layer; `src/` remains independent of UI, SDK, and SQLite runtime implementations.
+
+### Compatibility and rollback
+
+- `ALPHION_BRAND` and the three SVG mappings are unchanged. Existing OpenAI-compatible environment profiles remain usable after migration.
+- Schema-v2 state cannot be opened by v0.2.1. Back up `.alphion/alphion.sqlite3` before upgrading if binary rollback is required.
 
 ## [0.2.1] - 2026-08-11
 

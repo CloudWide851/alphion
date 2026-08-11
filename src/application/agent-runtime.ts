@@ -66,6 +66,7 @@ interface RuntimeContext {
 
 interface TurnOutcome {
   readonly text: string;
+  readonly reasoningContent: string;
   readonly toolCalls: readonly AgentToolCall[];
   readonly usage: ProviderUsage;
 }
@@ -172,7 +173,12 @@ export class AgentRuntime {
           };
         }
 
-        messages.push({ role: "assistant", content: outcome.text, toolCalls: outcome.toolCalls });
+        messages.push({
+          role: "assistant",
+          content: outcome.text,
+          ...(outcome.reasoningContent ? { reasoningContent: outcome.reasoningContent } : {}),
+          toolCalls: outcome.toolCalls,
+        });
         for (const call of outcome.toolCalls) {
           toolCalls += 1;
           if (toolCalls > context.budgets.maxToolCalls) {
@@ -239,12 +245,14 @@ export class AgentRuntime {
     const cacheEnabled = context.request.cacheResponses !== false && cacheSafe && this.#cache !== undefined;
     const key = sha256(
       canonicalJson({
-        adapter: "openai-compatible-v1",
+        adapter: `${this.#provider.profile.kind}-v2`,
         profile: {
           id: this.#provider.profile.id,
           revision: this.#provider.profile.revision,
+          kind: this.#provider.profile.kind,
           protocol: this.#provider.profile.protocol,
           model: this.#provider.profile.model,
+          reasoning: this.#provider.profile.capabilities.reasoning,
         },
         projectRevision: context.request.projectRevision,
         mutationRevision: context.mutationRevision,
@@ -284,7 +292,7 @@ export class AgentRuntime {
       let doneEvents = 0;
       for await (const event of this.#provider.generate(request, AbortSignal.any([context.signal, timeoutSignal]))) {
         events.push(event);
-        if (event.type === "text-delta") outputBytes += Buffer.byteLength(event.delta);
+        if (event.type === "text-delta" || event.type === "reasoning-delta") outputBytes += Buffer.byteLength(event.delta);
         else if (event.type === "done") doneEvents += 1;
         else if (event.type === "usage") assertValidUsage(event.usage);
         if (outputBytes > context.budgets.maxOutputBytes) {
@@ -335,6 +343,9 @@ export class AgentRuntime {
     switch (event.type) {
       case "text-delta":
         await this.#emit(context, "model.delta", { delta: event.delta });
+        return;
+      case "reasoning-delta":
+        await this.#emit(context, "model.reasoning.delta", { delta: event.delta });
         return;
       case "usage":
         await this.#emit(context, "model.usage", { usage: event.usage });
@@ -516,14 +527,16 @@ function addUsage(left: ProviderUsage, right: ProviderUsage): ProviderUsage {
 
 function summarizeProviderEvents(events: readonly ProviderEvent[]): TurnOutcome {
   let text = "";
+  let reasoningContent = "";
   let usage = emptyProviderUsage();
   const toolCalls: AgentToolCall[] = [];
   for (const event of events) {
     if (event.type === "text-delta") text += event.delta;
+    else if (event.type === "reasoning-delta") reasoningContent += event.delta;
     else if (event.type === "tool-call") toolCalls.push(event.call);
     else if (event.type === "usage") usage = addUsage(usage, event.usage);
   }
-  return { text, toolCalls, usage };
+  return { text, reasoningContent, toolCalls, usage };
 }
 
 function assertProviderEventsWithinBudget(
@@ -534,7 +547,7 @@ function assertProviderEventsWithinBudget(
   let outputBytes = 0;
   let doneEvents = 0;
   for (const event of events) {
-    if (event.type === "text-delta") outputBytes += Buffer.byteLength(event.delta);
+    if (event.type === "text-delta" || event.type === "reasoning-delta") outputBytes += Buffer.byteLength(event.delta);
     else if (event.type === "done") doneEvents += 1;
     else if (event.type === "usage") assertValidUsage(event.usage);
   }
@@ -606,6 +619,8 @@ function decodeProviderEvent(value: unknown): ProviderEvent | undefined {
   switch (value.type) {
     case "text-delta":
       return typeof value.delta === "string" ? { type: "text-delta", delta: value.delta } : undefined;
+    case "reasoning-delta":
+      return typeof value.delta === "string" ? { type: "reasoning-delta", delta: value.delta } : undefined;
     case "degraded":
       return typeof value.reason === "string" ? { type: "degraded", reason: value.reason } : undefined;
     case "done":

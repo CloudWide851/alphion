@@ -1,6 +1,6 @@
 {
   "name": "alphion",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "A lightweight, project-aware foundation for evidence-driven agent harness evolution.",
   "private": true,
   "type": "module",
@@ -19,6 +19,14 @@
       "types": "./dist/adapters/model/openai-compatible.d.ts",
       "import": "./dist/adapters/model/openai-compatible.js"
     },
+    "./deepseek": {
+      "types": "./dist/adapters/model/deepseek.d.ts",
+      "import": "./dist/adapters/model/deepseek.js"
+    },
+    "./local": {
+      "types": "./dist/adapters/local/local-application.d.ts",
+      "import": "./dist/adapters/local/local-application.js"
+    },
     "./sqlite": {
       "types": "./dist/adapters/store/sqlite-store.d.ts",
       "import": "./dist/adapters/store/sqlite-store.js"
@@ -32,6 +40,7 @@
     "dist/src",
     "dist/adapters",
     "dist/cli",
+    "dist/tui",
     "alphion.bat",
     "alphion-icon.svg",
     "alphion-logo.svg",
@@ -44,19 +53,24 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:static": "node scripts/verify-static.mjs",
     "test": "npm run build && npm run test:built",
-    "test:built": "node --test dist/tests/foundation.test.js dist/tests/openai-compatible.test.js dist/tests/cli.test.js",
+    "test:built": "node --test dist/tests/foundation.test.js dist/tests/openai-compatible.test.js dist/tests/deepseek.test.js dist/tests/vault.test.js dist/tests/tui.test.js dist/tests/cli.test.js",
     "benchmark:built": "node dist/benchmarks/foundation.js",
     "cli": "node dist/cli/index.js",
+    "tui": "node dist/cli/index.js tui",
     "smoke:live": "node dist/cli/live-smoke.js"
   },
   "engines": {
     "node": ">=22.13"
   },
   "dependencies": {
-    "openai": "^7.4.0"
+    "ink": "^7.1.1",
+    "openai": "^7.4.0",
+    "react": "^19.2.8"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "ink-testing-library": "^4.0.0",
     "typescript": "^5.9.3"
   }
 }

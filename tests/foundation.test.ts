@@ -17,14 +17,15 @@ import { SqliteStore } from "../adapters/store/sqlite-store.js";
 import { EditTool, GrepTool, ReadTool, ShellTool, WriteTool } from "../adapters/tools/index.js";
 
 const PROFILE: ProviderProfile = Object.freeze({
-  schemaVersion: 1,
+  schemaVersion: 2,
   id: "fake",
   name: "fake",
+  kind: "openai-compatible",
   baseUrl: "http://127.0.0.1:1/v1",
   model: "fake-model",
   protocol: "chat-completions",
   auth: { mode: "none" as const },
-  capabilities: { streaming: true, tools: true, promptCaching: true },
+  capabilities: { streaming: true, tools: true, promptCaching: true, reasoning: false },
   revision: 1,
   active: true,
 });
@@ -34,14 +35,15 @@ test("SQLite profiles, cache, hash-chain events, and shell rules round-trip", as
     const path = join(directory, "state.sqlite3");
     const store = new SqliteStore({ path });
     const created = await store.upsertProfile({
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: "local",
       name: "Local",
+      kind: "openai-compatible",
       baseUrl: "http://127.0.0.1:11434/v1/",
       model: "local-model",
       protocol: "chat-completions",
       auth: { mode: "bearer-env", environmentVariable: "LOCAL_MODEL_KEY" },
-      capabilities: { streaming: true, tools: true, promptCaching: false },
+      capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false },
       active: true,
     });
     assert.equal(created.baseUrl, "http://127.0.0.1:11434/v1");
@@ -281,6 +283,26 @@ test("Agent runtime denies a write when approval is unavailable", async () => {
   });
 });
 
+test("Agent runtime preserves reasoning for tool continuation but excludes it from the final answer", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    await writeFile(join(directory, "fact.txt"), "fact", "utf8");
+    const store = new SqliteStore({ path: join(directory, "reasoning.sqlite3") });
+    const provider = new ReasoningThenAnswerProvider();
+    const runtime = new AgentRuntime({
+      provider,
+      tools: new ToolRegistry([new ReadTool()]),
+      eventStore: store,
+      approval: alwaysApprove(),
+    });
+    const collected = await runAndCollect(runtime, directory, "reasoning-revision");
+    assert.equal(collected.result.finalText, "observed answer");
+    assert.equal(collected.result.finalText.includes("inspect first"), false);
+    assert.ok(collected.events.some((event) => event.kind === "model.reasoning.delta"));
+    assert.equal(provider.sawReasoningContinuation, true);
+    store.close();
+  });
+});
+
 test("Agent runtime propagates caller cancellation to the provider", async () => {
   await withTemporaryDirectory(async (directory) => {
     const store = new SqliteStore({ path: join(directory, "cancel.sqlite3") });
@@ -422,6 +444,29 @@ class WriteThenStopProvider implements AgentProvider {
       yield { type: "text-delta", delta: "proposed: write was not executed" };
       yield { type: "done", finishReason: "stop" };
     }
+  }
+}
+
+class ReasoningThenAnswerProvider implements AgentProvider {
+  readonly profile: ProviderProfile = {
+    ...PROFILE,
+    kind: "deepseek",
+    capabilities: { ...PROFILE.capabilities, reasoning: true },
+  };
+  sawReasoningContinuation = false;
+
+  async *generate(request: ProviderRequest): AsyncIterable<ProviderEvent> {
+    const last = request.messages.at(-1);
+    if (last?.role !== "tool") {
+      yield { type: "reasoning-delta", delta: "inspect first" };
+      yield { type: "tool-call", call: { id: "read_reasoning", name: "read", arguments: { path: "fact.txt" } } };
+      yield { type: "done", finishReason: "tool_calls" };
+      return;
+    }
+    const assistant = request.messages.findLast((message) => message.role === "assistant");
+    this.sawReasoningContinuation = assistant?.role === "assistant" && assistant.reasoningContent === "inspect first";
+    yield { type: "text-delta", delta: "observed answer" };
+    yield { type: "done", finishReason: "stop" };
   }
 }
 
