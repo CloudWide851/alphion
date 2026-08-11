@@ -30,6 +30,18 @@ npm run build
 
 编译产物写入 `dist/`，包括 ESM JavaScript、类型声明和 source map。
 
+## 项目边界
+
+```text
+src/       核心包；只放与交互界面无关的领域合同和运行逻辑
+tui/       未来终端界面适配器；当前只有边界说明
+webui/     未来 Web 界面适配器；当前只有边界说明
+```
+
+`src/` 不能导入 `tui/` 或 `webui/`。未来两种界面都将消费由核心拥有的同一套类型化命令和事件协议：TUI 可通过进程内适配器连接，WebUI 可通过 HTTP 加 SSE/WebSocket 连接。当前版本没有可运行界面，也没有引入 Ink、React、Vite 或服务端依赖。
+
+当前唯一代码级公共接口仍是 `ALPHION_BRAND`；Agent、SubAgent、记忆、进化和 UI 协议仍处于设计阶段。
+
 ## 品牌资产
 
 | 用途 | 文件 |
