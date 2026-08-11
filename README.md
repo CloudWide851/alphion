@@ -4,45 +4,88 @@
 
 # Alphion
 
-Alphion 是一个面向不同软件项目、能够在证据和安全边界内持续优化自身 harness 的轻量 Agent 项目。
+Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前仓库处于 **v0.2.0 架构与工程化设计基线**：提供可编译的 Node.js + TypeScript 工程、稳定品牌接口，以及面向 Agent 生命周期、合同、质量评测、可观测运行、发布供应链和治理的设计边界；尚未实现 Agent 运行时、模型接入或自主修改能力。
+当前 **v0.2.1** 提供首个可运行的 Agent 基础层：通过可配置的 OpenAI-compatible 接口连接模型，统一支持 Chat Completions 与 Responses 协议，并内置有界事件通信、SQLite 状态、两级缓存、证据引用和安全项目工具。它不绑定 OpenAI 官方模型，也不会自动调用真实服务。
 
-## 设计方向
+## 当前能力
 
-- 根据语言、框架、仓库规模、任务类型和质量门槛生成项目画像。
-- 为每个项目组合最小必要 harness，避免把单一重型框架套用到所有场景。
-- 通过可回放评测、隔离实验、审计记录和回滚机制控制自我进化。
-- 从官方文档、代码仓库和包注册表发现候选框架，但绝不直接执行未经验证的网络内容。
-- 保持核心零运行时依赖、无常驻守护进程，并按需加载未来适配器。
-- 把 prompt、模型、工具 schema、记忆规则、评测集和 harness 配方作为可版本化、可评测、可回滚的工程产物。
-- 以确定性质量门约束概率型模型行为，从设计、交付、发布、观测到事故响应形成闭环。
+- 单任务 Agent 循环，支持流式输出、函数工具调用、取消、超时，以及轮次、工具、token 和输出字节预算。
+- OpenAI-compatible Chat Completions 与 Responses 双协议；模型、Base URL 和能力均由本地 profile 配置。
+- `read`、`grep`、`edit`、`write` 和 `shell` 工具；写入和进程执行必须逐次审批。
+- 单写者类型化事件、背压、关键事件持久化及 SHA-256 审计链。
+- 进程内 LRU + SQLite L2 缓存、single-flight 合并、策略/权限/项目修订失效和可选 provider prompt caching；疑似秘密不进入缓存。
+- 项目内 `.alphion/alphion.sqlite3` 保存非秘密配置、审计、缓存和 shell 白名单；API key 只保存环境变量引用。
 
-## 工程基线
+本版不会实现 TUI、WebUI、SubAgent、自我进化执行或原生 Anthropic/Gemini/Azure provider。这些能力将在核心合同和评测门稳定后逐步加入。
 
-- Node.js 22+
+## 安装与构建
+
+- Node.js 22.13+
 - TypeScript 5.9+
 - ESM
-- 零运行时依赖
+- 唯一运行时依赖：官方 `openai` JavaScript 客户端
 
 ```bash
 npm install
+npm run typecheck
 npm run build
 ```
 
-编译产物写入 `dist/`，包括 ESM JavaScript、类型声明和 source map。
+正式构建产物写入被忽略的 `dist/`。Windows 可在构建后通过 `alphion.bat` 启动；其他平台使用 `npm run cli --` 或 `node dist/cli/index.js`。
+
+## 配置兼容服务
+
+以下示例配置一个本机无认证 Chat Completions 服务：
+
+```bat
+alphion.bat provider set --id local --base-url http://127.0.0.1:11434/v1 --model your-model --protocol chat-completions --active
+alphion.bat run --prompt "读取 README 并概括当前能力"
+```
+
+需要 Bearer key 时，数据库只记录环境变量名称：
+
+```bat
+set COMPATIBLE_API_KEY=replace-me
+alphion.bat provider set --id hosted --base-url https://example.com/v1 --model model-id --protocol responses --auth-env COMPATIBLE_API_KEY --active
+```
+
+常用命令：
+
+```text
+provider set/list/activate
+policy shell allow/list/remove
+cache stats/clear
+run --prompt ...
+```
+
+`edit`、`write` 和 `shell` 只在交互式终端逐次展示完整动作并批准；管道、CI 或其他无 TTY 场景默认拒绝。shell 还必须匹配本地白名单中的可执行文件、摘要和参数前缀。这个边界是“白名单 + 审批”的进程控制，不是操作系统级沙箱。
 
 ## 项目边界
 
 ```text
-src/       核心包；只放与交互界面无关的领域合同和运行逻辑
-tui/       未来终端界面适配器；当前只有边界说明
-webui/     未来 Web 界面适配器；当前只有边界说明
+src/          模型和界面无关的领域、应用、端口与协议核心
+adapters/     OpenAI-compatible、SQLite、缓存、秘密和工具实现
+cli/          当前单任务命令行适配器
+tui/          未来终端界面边界；当前仅 README
+webui/        未来 Web 界面边界；当前仅 README
+tests/        单元、合同、集成、安全与 CLI 验证
+benchmarks/   通信、缓存和 SQLite 基线
 ```
 
-`src/` 不能导入 `tui/` 或 `webui/`。未来两种界面都将消费由核心拥有的同一套类型化命令和事件协议：TUI 可通过进程内适配器连接，WebUI 可通过 HTTP 加 SSE/WebSocket 连接。当前版本没有可运行界面，也没有引入 Ink、React、Vite 或服务端依赖。
+依赖方向固定为 `CLI/UI -> application -> domain` 和 `adapters -> ports <- application`。`src/` 不能导入 adapter、CLI、TUI 或 WebUI；具体 SDK 类型不能进入核心公共接口。
 
-当前唯一代码级公共接口仍是 `ALPHION_BRAND`；Agent、SubAgent、记忆、进化和 UI 协议仍处于设计阶段。
+## 公共接口
+
+根入口保留稳定只读的 `ALPHION_BRAND`，并公开 `AgentRuntime`、运行/事件、provider、工具、审批、缓存、事件存储和密钥引用合同。具体实现通过 `alphion/openai-compatible`、`alphion/sqlite` 和 `alphion/tools` 子路径暴露。
+
+## 安全和数据
+
+- HTTPS endpoint 默认允许；HTTP 只允许 localhost/loopback。
+- `.git`、`.alphion`、工具生成物、依赖、构建目录和常见秘密文件不能被 Agent 文件工具读取或修改。
+- 路径同时检查词法范围、真实路径与符号链接，写入使用 revision 校验和原子替换。
+- 模型输出不是完成证据；工具观察生成 Evidence ID，最终答案可用 `[evidence:<id>]` 引用。
+- `.alphion/`、`docs/`、Trellis、CodeGraph 和 `dist/` 均保持本地且不进入发布内容。
 
 ## 品牌资产
 
@@ -51,8 +94,6 @@ webui/     未来 Web 界面适配器；当前只有边界说明
 | 主系统 Logo | `alphion-logo.svg` |
 | 图标 | `alphion-icon.svg` |
 | 文字标识 | `alphion-wordmark.svg` |
-
-代码通过 `ALPHION_BRAND` 暴露稳定、只读的品牌名称、定位与资产角色。
 
 ## 许可
 

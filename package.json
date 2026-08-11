@@ -1,20 +1,38 @@
 {
   "name": "alphion",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A lightweight, project-aware foundation for evidence-driven agent harness evolution.",
   "private": true,
   "type": "module",
   "sideEffects": false,
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "alphion": "./dist/cli/index.js"
+  },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./openai-compatible": {
+      "types": "./dist/adapters/model/openai-compatible.d.ts",
+      "import": "./dist/adapters/model/openai-compatible.js"
+    },
+    "./sqlite": {
+      "types": "./dist/adapters/store/sqlite-store.d.ts",
+      "import": "./dist/adapters/store/sqlite-store.js"
+    },
+    "./tools": {
+      "types": "./dist/adapters/tools/index.d.ts",
+      "import": "./dist/adapters/tools/index.js"
     }
   },
   "files": [
-    "dist",
+    "dist/src",
+    "dist/adapters",
+    "dist/cli",
+    "alphion.bat",
     "alphion-icon.svg",
     "alphion-logo.svg",
     "alphion-wordmark.svg",
@@ -23,12 +41,22 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify:static": "node scripts/verify-static.mjs",
+    "test": "npm run build && npm run test:built",
+    "test:built": "node --test dist/tests/foundation.test.js dist/tests/openai-compatible.test.js dist/tests/cli.test.js",
+    "benchmark:built": "node dist/benchmarks/foundation.js",
+    "cli": "node dist/cli/index.js",
+    "smoke:live": "node dist/cli/live-smoke.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "openai": "^7.4.0"
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
     "typescript": "^5.9.3"
   }
 }
