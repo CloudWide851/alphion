@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.2] - 2026-08-12
+
+- Breaking: replace run-centric public entry points with a shared `Agent` and durable `AgentSession` façade.
+- Add provider-independent `AgentMessage`, adapter-facing `ProviderMessage`, deterministic HarnessPlan, AgentEnvironment and bounded ResourceLoader contracts.
+- Add branch-rebuilt context compaction with same-provider no-tool structured summaries, deterministic required-field fallback, and transient-only reasoning delivery that never enters SQLite or replay.
+- Migrate SQLite v2 to v3 with adjacent `.v2-backup`, append-only session branches, revision/idempotency checks, durable queues and per-session run leases; v2 audit data remains read-only.
+- Add CLI session create/list/show/checkout/send/steer/follow-up and harness plan workflows; TUI runs through the session boundary.
+- Rollback: stop Alphion, restore the checkpointed and validated single-file v2 snapshot, then return to `v0.3.1`. Schema-v3 session data is not retained.
+
 All notable changes to Alphion are documented here. Before 1.0, compatible increments advance the current `0.x.y` line and larger milestones advance to a new `0.x.0`; detailed architecture research remains in the local, Git-ignored design workspace.
 
 ## [0.3.1] - 2026-08-12

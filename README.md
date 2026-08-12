@@ -6,7 +6,9 @@
 
 Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前 **v0.3.1** 已完成 Phase 1 工程化：每次运行前确定性生成只读 Project Profile，自动组装有预算的 ContextPack，并从事件流派生运行期工作记忆。Ink TUI 已升级为简体中文、自适应布局的“工程工作台”，Windows 双击启动也会进入可持续操作的菜单。长期记忆、自我进化、Framework Scout 和 SubAgent 仍是后续里程碑。
+当前 **v0.3.2** 将运行边界升级为项目级共享 Agent 和持久化分支会话：`LocalAlphionApplication → Agent → Session → Run`。CLI/TUI 通过同一传输无关的 Session API 创建、查看、发送、转向和排队后续消息；确定性的 HarnessPlan 与受限 ResourceLoader 负责能力、权限、预算及上下文组合。长期语义记忆、自我进化、SubAgent、Web/Desktop 传输仍是后续里程碑。
+
+这是用户批准的 0.x 版本例外：公开 TypeScript API 和 SQLite schema 都有破坏性变更。首次打开 schema v2 数据库时，会先 checkpoint，再通过 SQLite `VACUUM INTO` 创建相邻且自包含的 `.v2-backup` snapshot，并校验 quick check、schema 与逻辑摘要。回滚时必须停止所有 Alphion 进程、恢复该 snapshot 并切回 `v0.3.1`；迁移后新增的会话数据将丢失。
 
 ## 当前能力
 
@@ -93,7 +95,9 @@ benchmarks/   通信、缓存和 SQLite 基线
 
 ## 公共接口
 
-根入口保留稳定只读的 `ALPHION_BRAND`，并公开 `AgentRuntime`、Project Profile、ContextPack、Working Memory、诊断、运行/事件、provider、工具、审批、缓存、事件存储和密钥引用合同。具体实现通过 `alphion/openai-compatible`、`alphion/deepseek`、`alphion/local`、`alphion/sqlite` 和 `alphion/tools` 子路径暴露。Provider profile schema v2 以 `kind` 区分实现，并支持环境变量或加密 SQLite 凭据引用；SQLite user_version 保持 2。
+根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 `Agent`、`AgentApplication.sessions: SessionManager`、`AgentSession`、版本化消息、HarnessPlan、ResourceLoader、Project Profile、ContextPack、诊断、事件、provider、工具、审批、缓存、会话/事件存储和密钥引用合同。旧的 `AgentRuntime.start` / `AgentApplication.startRun` 已移除；具体实现通过 `alphion/openai-compatible`、`alphion/deepseek`、`alphion/local`、`alphion/sqlite` 和 `alphion/tools` 子路径暴露。Provider profile schema v2 继续支持环境变量或加密 SQLite 凭据引用；SQLite user_version 现为 3。
+
+当当前分支超过模型上下文预算时，会话会从原始分支重建压缩：保留最近两个交互周期及系统/目标/验收、权限/约束/revision、失败、Evidence 和未解决项，并可调用同一 Provider 生成禁用工具、`temperature: 0`、闭合 JSON schema 校验的结构化摘要；超时、非法输出或 Provider 失败会确定性回退。模型 reasoning 只存在于实时 `AgentStreamEvent`，不进入 SQLite 事件、会话条目、重放、Working Memory 或持久缓存。
 
 ## 安全和数据
 
