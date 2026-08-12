@@ -55,11 +55,14 @@ for (const file of desktopFiles) {
 
 const adapterImports = sourceFiles.flatMap((file) => [...readFileSync(resolve(root, file), "utf8").matchAll(/from\s+["']([^"']+)["']/g)].map((match) => ({ file, target: match[1] })));
 assert(adapterImports.every(({ target }) => !target?.includes("desktop") && !target?.includes("cli") && !target?.includes("tui") && !target?.includes("adapters")), "core must not reverse-depend on adapter surfaces");
-for (const desktopPath of ["desktop/main.ts", "desktop/preload.cts", "desktop/contracts.ts", "electron-builder.yml", "scripts/electron-abi-smoke.cjs"]) assert(existsSync(resolve(root, desktopPath)), `Desktop Electron file must exist: ${desktopPath}`);
+for (const desktopPath of ["desktop/main.ts", "desktop/preload.cts", "desktop/contracts.ts", "electron-builder.yml", "scripts/electron-abi-smoke.cjs", "scripts/node-abi-smoke.mjs", "scripts/prepare-desktop-runtime.mjs"]) assert(existsSync(resolve(root, desktopPath)), `Desktop Electron file must exist: ${desktopPath}`);
 const electronBuilder = readFileSync(resolve(root, "electron-builder.yml"), "utf8");
+assert(/app:\s*\.desktop-runtime/u.test(electronBuilder), "Electron packaging must use the isolated Desktop runtime tree");
 assert(/nsis:\s*[\s\S]*?artifactName:\s*Alphion-\$\{version\}-\$\{arch\}-setup\.\$\{ext\}/u.test(electronBuilder), "NSIS artifact must have a setup-specific name");
 assert(/portable:\s*[\s\S]*?artifactName:\s*Alphion-\$\{version\}-\$\{arch\}-portable\.\$\{ext\}/u.test(electronBuilder), "portable artifact must have a portable-specific name");
 for (const removedRpc of ["desktop/host.ts", "desktop/protocol.ts", "desktop/stdio.ts", "tests/desktop-rpc.test.ts"]) assert(!existsSync(resolve(root, removedRpc)), `removed Desktop JSONL file remains: ${removedRpc}`);
+assert(packageJson.scripts?.["desktop:deps"]?.includes("prepare-desktop-runtime.mjs --install"), "Desktop native dependencies must be installed in the isolated runtime tree");
+assert(!packageJson.scripts?.["desktop:deps"]?.startsWith("electron-builder"), "Desktop dependency preparation must not rebuild root node_modules");
 for (const script of ["clean-dist.mjs", "verify-built.mjs"]) assert(existsSync(resolve(root, "scripts", script)), `build verification script must exist: ${script}`);
 
 const markdownFiles = [...files.filter((file) => file.endsWith(".md")), ...listMarkdown(resolve(root, "docs"))];

@@ -9,6 +9,7 @@ files:
   - package.json
   - alphion-icon.svg
 directories:
+  app: .desktop-runtime
   output: release
 win:
   target:

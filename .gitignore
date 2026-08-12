@@ -83,6 +83,7 @@ out
 dist
 .output
 /release*/
+/.desktop-runtime/
 
 # Gatsby files
 .cache/

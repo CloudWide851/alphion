@@ -86,10 +86,11 @@
     "smoke:built": "node scripts/verify-built.mjs",
     "cli": "node dist/cli/index.js",
     "tui": "node dist/cli/index.js tui",
-    "desktop": "electron dist/desktop/main.js",
-    "desktop:deps": "electron-builder install-app-deps",
+    "desktop": "node scripts/prepare-desktop-runtime.mjs && electron .desktop-runtime/dist/desktop/main.js",
+    "desktop:deps": "node scripts/prepare-desktop-runtime.mjs --install",
+    "node:abi-smoke": "node scripts/node-abi-smoke.mjs",
     "desktop:abi-smoke": "electron scripts/electron-abi-smoke.cjs",
-    "desktop:pack": "electron-builder --win nsis portable --x64",
+    "desktop:pack": "node scripts/prepare-desktop-runtime.mjs && electron-builder --win nsis portable --x64",
     "smoke:live": "node dist/cli/live-smoke.js"
   },
   "engines": {

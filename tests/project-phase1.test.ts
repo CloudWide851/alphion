@@ -3,7 +3,7 @@ import { access, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { openSqliteDatabase } from "../adapters/store/database.js";
+import { normalizeSqliteDriverError, openSqliteDatabase } from "../adapters/store/database.js";
 import { MemoryLruCache } from "../adapters/cache/memory-cache.js";
 import { diagnoseLocalProject } from "../adapters/local/local-application.js";
 import { NodeProjectProfiler } from "../adapters/project/project-profiler.js";
@@ -194,6 +194,14 @@ test("doctor does not create or migrate missing local state and emits no secret 
   } finally {
     await cleanup(directory);
   }
+});
+
+test("native SQLite ABI failures are dependency diagnostics, not database corruption", () => {
+  const error = normalizeSqliteDriverError(new Error("better_sqlite3.node was compiled against NODE_MODULE_VERSION 148; this Node.js requires NODE_MODULE_VERSION 127"));
+  assert.equal(error.code, "dependency-unavailable");
+  assert.equal(error.stage, "database");
+  assert.match(error.message, /native-abi-mismatch/u);
+  assert.doesNotMatch(error.message, /corrupt|integrity/iu);
 });
 
 test("doctor fails closed on corrupt and future SQLite state without migration", async () => {

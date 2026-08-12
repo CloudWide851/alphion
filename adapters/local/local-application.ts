@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { access, realpath, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { openSqliteDatabase, type SqliteDatabase } from "../store/database.js";
+import { openSqliteDatabase, probeSqliteDriver, type SqliteDatabase } from "../store/database.js";
 import { Agent } from "../../src/application/agent.js";
 import { AgentSession } from "../../src/application/agent-session.js";
 import { DefaultSessionManager } from "../../src/application/session-manager.js";
@@ -234,6 +234,20 @@ async function codeGraphCheck(root: string): Promise<DiagnosticCheck> {
 
 async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
   try {
+    probeSqliteDriver();
+  } catch (error) {
+    const abiMismatch = error instanceof AlphionError && error.message.includes("native-abi-mismatch");
+    return [Object.freeze({
+      id: "sqlite-native",
+      label: "SQLite 原生运行时",
+      status: "fail",
+      summary: abiMismatch ? "SQLite 原生模块与当前 Node/Electron ABI 不兼容。" : "SQLite 原生模块不可用。",
+      remediation: abiMismatch
+        ? "Node/TUI 请运行 npm ci；Desktop 请运行 npm run desktop:deps。不要删除 SQLite 数据库。"
+        : "请重新安装 Alphion 依赖后再次运行 doctor。不要删除 SQLite 数据库。",
+    })];
+  }
+  try {
     const metadata = await stat(path);
     if (!metadata.isFile()) throw new Error("not a file");
   } catch {
@@ -257,8 +271,11 @@ async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
       summary: `schema ${schema} 完整；Provider ${providerCount} 个，活动 ${activeCount} 个，Vault ${vaultCount > 0 ? "已初始化" : "未初始化"}。`,
       ...(activeCount === 0 ? { remediation: "请在 Alphion 设置中配置并激活 Provider。" } : {}),
     })];
-  } catch {
-    return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: "SQLite 无法以只读方式验证。", remediation: "请备份 .alphion 后检查数据库文件。" })];
+  } catch (error) {
+    if (error instanceof AlphionError && error.code === "incompatible-schema") {
+      return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: error.message, remediation: "请使用兼容版本的 Alphion。" })];
+    }
+    return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: "SQLite 数据库无法以只读方式验证。", remediation: "请保留并备份 .alphion 后按数据库 Runbook 检查；这与原生 ABI 错误不同。" })];
   } finally {
     database?.close();
   }
