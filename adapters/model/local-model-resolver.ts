@@ -1,18 +1,19 @@
-import { AlphionError } from "../../src/application/errors.js";
-import type { ModelSelectionRequest } from "../../src/domain/contracts.js";
-import type { AgentProvider, ModelResolver, ProviderProfileStore, SecretResolver } from "../../src/ports/index.js";
+import { DeterministicRoutingPolicy, ProfileModelRegistry } from "../../src/application/model-routing.js";
+import type { ProviderProfile } from "../../src/domain/contracts.js";
+import type { AgentProvider, ModelResolver, ProviderFactory, ProviderProfileStore, SecretResolver } from "../../src/ports/index.js";
 import { DeepSeekProvider } from "./deepseek.js";
 import { OpenAICompatibleProvider } from "./openai-compatible.js";
+import { LocalProviderResolver } from "./provider-resolver.js";
 
-export class LocalModelResolver implements ModelResolver {
-  constructor(private readonly profiles: ProviderProfileStore, private readonly secrets: SecretResolver) {}
+/** Concrete SDK construction stays in the adapter composition boundary. */
+export class LocalProviderFactory implements ProviderFactory {
+  constructor(private readonly secrets: SecretResolver) {}
+  create(profile: ProviderProfile): AgentProvider { return profile.kind === "deepseek" ? new DeepSeekProvider(profile, this.secrets) : new OpenAICompatibleProvider(profile, this.secrets); }
+}
 
-  async resolveModel(request: ModelSelectionRequest): Promise<AgentProvider> {
-    const profile = request.providerId ? await this.profiles.getProfile(request.providerId) : await this.profiles.getActiveProfile();
-    if (!profile) throw new AlphionError("validation", request.providerId ? `Unknown provider profile: ${request.providerId}` : "No active provider profile is configured.", { stage: "model-resolution" });
-    for (const capability of request.requiredCapabilities) {
-      if (!profile.capabilities[capability]) throw new AlphionError("validation", `Provider ${profile.name} does not support ${capability}.`, { stage: "model-resolution" });
-    }
-    return profile.kind === "deepseek" ? new DeepSeekProvider(profile, this.secrets) : new OpenAICompatibleProvider(profile, this.secrets);
+/** @deprecated Prefer injecting LocalProviderResolver through the ProviderResolver port. */
+export class LocalModelResolver extends LocalProviderResolver implements ModelResolver {
+  constructor(profiles: ProviderProfileStore, secrets: SecretResolver) {
+    super(new ProfileModelRegistry(profiles), new DeterministicRoutingPolicy(), new LocalProviderFactory(secrets));
   }
 }
