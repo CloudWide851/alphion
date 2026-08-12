@@ -6,25 +6,29 @@
 
 Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前 **v0.3.2** 将运行边界升级为项目级共享 Agent 和持久化分支会话：`LocalAlphionApplication → Agent → Session → Run`。CLI/TUI 通过同一传输无关的 Session API 创建、查看、发送、转向和排队后续消息；确定性的 HarnessPlan 与受限 ResourceLoader 负责能力、权限、预算及上下文组合。长期语义记忆、自我进化、SubAgent、Web/Desktop 传输仍是后续里程碑。
+当前 **v0.4.0** 在项目级共享 Agent 与持久化分支 Session 之上增加资源驱动塑形：每个 Session 持有可审计的 `AgentShape` revision/digest，由四层 ResourceLoader、确定性 SystemPromptPlan、能力/工具/策略和 Provider 要求共同生成。新的 headless Desktop Host 通过严格的 stdin/stdout JSONL RPC 暴露非敏感业务能力，供未来 Electron、Tauri 或原生壳注入使用。
 
-这是用户批准的 0.x 版本例外：公开 TypeScript API 和 SQLite schema 都有破坏性变更。首次打开 schema v2 数据库时，会先 checkpoint，再通过 SQLite `VACUUM INTO` 创建相邻且自包含的 `.v2-backup` snapshot，并校验 quick check、schema 与逻辑摘要。回滚时必须停止所有 Alphion 进程、恢复该 snapshot 并切回 `v0.3.1`；迁移后新增的会话数据将丢失。
+资源优先级固定为内置 → 用户共享 → 项目 `.alphion-resources/manifest.json` → Session overrides。扩展包仅支持声明式资源，不执行第三方 JavaScript。用户资源根可通过 `ALPHION_RESOURCE_HOME` 指定，否则使用平台标准配置目录。
+
+这是新的 0.x 能力里程碑，公开 ResourceLoader、Session 和应用 API 有合同变化。首次打开 schema v3 数据库时，会先 checkpoint，再通过 SQLite `VACUUM INTO` 创建相邻且自包含的 `.v3-backup` snapshot。回滚时必须停止所有 Alphion 进程、恢复该 snapshot 并切回 `v0.3.2`；迁移后新增的 v4 数据将丢失。
 
 ## 当前能力
 
-- 单任务 Agent 循环，支持流式输出、函数工具调用、取消、超时，以及轮次、工具、token 和输出字节预算。
+- 项目级共享 Agent 与分层 Session/Run/Turn/ToolCall；每个 Session 独立持有分支消息、双队列、运行租约、审批上下文、compaction 和 append-only AgentShape。
+- 四层声明式资源解析、确定性 SystemPrompt Composer、任务分类与最小 HarnessPlan，以及 CodeGraph 优先、词法降级的有界代码召回。
 - Node/TypeScript 优先的确定性只读 Project Profile，识别语言、运行时、模块系统、包管理器、框架、质量命令、Git/CI、约束、风险和冲突；未知项目安全降级。
 - 每次运行自动注入最多 2,048 estimated tokens 的不可变 ContextPack；安全、目标、权限和强约束不会被可选画像事实挤出预算。
 - 运行期 Working Memory 仅由当前任务事件 reducer 重放，跟踪阶段、轮次、工具、Evidence、错误和用量，不写入长期记忆。
 - OpenAI-compatible Chat Completions 与 Responses 双协议；模型、Base URL 和能力均由本地 profile 配置。
 - 独立 DeepSeek Chat Completions provider，支持 `deepseek-chat`、`deepseek-reasoner`、推理流、工具续轮和 prompt-cache 命中用量。
-- 简体中文 Ink + React 工程工作台，宽终端使用侧栏、窄终端使用顶部导航，并提供首页、画像、Provider/Vault、任务与只读诊断五个区域。
+- 简体中文 Ink + React 工程工作台，宽终端使用侧栏、窄终端使用顶部导航，并提供首页、画像、Provider/Vault、Session、资源、Harness、任务与只读诊断区域。
 - `read`、`grep`、`edit`、`write` 和 `shell` 工具；写入和进程执行必须逐次审批。
 - 单写者类型化事件、背压、关键事件持久化及 SHA-256 审计链。
 - 进程内 LRU + SQLite L2 缓存、single-flight 合并、策略/权限/项目修订失效和可选 provider prompt caching；疑似秘密不进入缓存。
-- 项目内 `.alphion/alphion.sqlite3` 保存配置、审计、缓存、shell 白名单和 AES-256-GCM 密文凭据；用户主密码通过 scrypt 解锁，明文不写入数据库、事件或缓存。
+- 项目内 SQLite v4 保存配置、审计、缓存、Session 分支/队列/shape、shell 白名单和 AES-256-GCM 密文凭据；用户主密码通过 scrypt 解锁，明文不写入数据库、事件、shape、RPC 或缓存。
+- 可注入的项目级 Desktop Host 使用版本化 stdin/stdout JSONL RPC；握手、严格解码、订阅游标、取消、背压和双向审批均 fail-closed，Vault/API key 不属于 RPC 面。
 
-本版不会实现 WebUI、SubAgent、自我进化执行或原生 Anthropic/Gemini/Azure provider。这些能力将在对应证据门和回放基线稳定后逐步加入。
+本版不会实现 Desktop GUI、WebUI、SubAgent、自我进化执行或原生 Anthropic/Gemini/Azure provider。这些能力将在对应证据门和回放基线稳定后逐步加入。
 
 ## 安装与构建
 
@@ -73,6 +77,9 @@ policy shell allow/list/remove
 cache stats/clear
 doctor [--json]
 project inspect [--refresh] [--json]
+session create/list/show/shape/reshape/checkout/send/steer/follow-up
+resource list/doctor
+desktop
 run --prompt ...
 tui
 ```
@@ -84,8 +91,9 @@ tui
 ```text
 src/          模型和界面无关的领域、应用、端口与协议核心
 adapters/     只读画像、OpenAI-compatible、DeepSeek、SQLite/vault、缓存、秘密和工具实现
-cli/          当前单任务命令行适配器
+cli/          命令行、Session/资源/shape 与一次性 run 适配器
 tui/          Ink 终端界面、运行投影和逐次审批适配器
+desktop/      可注入的项目级 stdin/stdout JSONL RPC Host
 webui/        未来 Web 界面边界；当前仅 README
 tests/        单元、合同、集成、安全与 CLI 验证
 benchmarks/   通信、缓存和 SQLite 基线
@@ -95,7 +103,7 @@ benchmarks/   通信、缓存和 SQLite 基线
 
 ## 公共接口
 
-根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 `Agent`、`AgentApplication.sessions: SessionManager`、`AgentSession`、版本化消息、HarnessPlan、ResourceLoader、Project Profile、ContextPack、诊断、事件、provider、工具、审批、缓存、会话/事件存储和密钥引用合同。旧的 `AgentRuntime.start` / `AgentApplication.startRun` 已移除；具体实现通过 `alphion/openai-compatible`、`alphion/deepseek`、`alphion/local`、`alphion/sqlite` 和 `alphion/tools` 子路径暴露。Provider profile schema v2 继续支持环境变量或加密 SQLite 凭据引用；SQLite user_version 现为 3。
+根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 Agent、Session、AgentShape、HarnessPlan、ResourceResolution、SystemPromptPlan 与 Provider/runtime 端口。稳定子路径包括 `alphion/runtime`、`alphion/providers`、`alphion/resources`、`alphion/desktop` 及既有具体 adapter。Provider profile schema v2 继续支持环境变量或加密 SQLite 凭据引用；SQLite user_version 现为 4。
 
 当当前分支超过模型上下文预算时，会话会从原始分支重建压缩：保留最近两个交互周期及系统/目标/验收、权限/约束/revision、失败、Evidence 和未解决项，并可调用同一 Provider 生成禁用工具、`temperature: 0`、闭合 JSON schema 校验的结构化摘要；超时、非法输出或 Provider 失败会确定性回退。模型 reasoning 只存在于实时 `AgentStreamEvent`，不进入 SQLite 事件、会话条目、重放、Working Memory 或持久缓存。
 

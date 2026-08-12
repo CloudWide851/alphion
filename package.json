@@ -1,7 +1,7 @@
 {
   "name": "alphion",
-  "version": "0.3.2",
-  "description": "A lightweight, project-scoped shared Agent runtime with durable sessions and deterministic harness planning.",
+  "version": "0.4.0",
+  "description": "A resource-shaped Agent runtime with durable sessions, deterministic provider routing, and Desktop JSONL RPC.",
   "private": true,
   "type": "module",
   "sideEffects": false,
@@ -34,6 +34,22 @@
     "./tools": {
       "types": "./dist/adapters/tools/index.d.ts",
       "import": "./dist/adapters/tools/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/src/runtime.d.ts",
+      "import": "./dist/src/runtime.js"
+    },
+    "./providers": {
+      "types": "./dist/src/providers.d.ts",
+      "import": "./dist/src/providers.js"
+    },
+    "./resources": {
+      "types": "./dist/src/resources.d.ts",
+      "import": "./dist/src/resources.js"
+    },
+    "./desktop": {
+      "types": "./dist/desktop/index.d.ts",
+      "import": "./dist/desktop/index.js"
     }
   },
   "files": [
@@ -41,6 +57,7 @@
     "dist/adapters",
     "dist/cli",
     "dist/tui",
+    "dist/desktop",
     "alphion.bat",
     "alphion-icon.svg",
     "alphion-logo.svg",
@@ -53,8 +70,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:static": "node scripts/verify-static.mjs",
     "test": "npm run build && npm run test:built",
-    "test:built": "node --test dist/tests/foundation.test.js dist/tests/openai-compatible.test.js dist/tests/deepseek.test.js dist/tests/vault.test.js dist/tests/project-phase1.test.js dist/tests/sessions-v032.test.js dist/tests/tui.test.js dist/tests/cli.test.js",
+    "test:built": "node --test dist/tests/foundation.test.js dist/tests/openai-compatible.test.js dist/tests/deepseek.test.js dist/tests/vault.test.js dist/tests/project-phase1.test.js dist/tests/sessions-v032.test.js dist/tests/v040.test.js dist/tests/desktop-rpc.test.js dist/tests/tui.test.js dist/tests/cli.test.js",
     "benchmark:built": "node dist/benchmarks/foundation.js",
+    "smoke:built": "node scripts/verify-built.mjs",
     "cli": "node dist/cli/index.js",
     "tui": "node dist/cli/index.js tui",
     "smoke:live": "node dist/cli/live-smoke.js"

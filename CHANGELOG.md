@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.0] - 2026-08-12
+
+- Added deterministic four-scope resource manifests, provenance-aware resolution and versioned SystemPrompt plans.
+- Added Session-bound lazy Agent shapes, explicit reshape, shape-aware approval/cache identity and SQLite schema v4 with recoverable v3 backups.
+- Split model metadata/routing/provider resolution from concrete SDK construction and added stable runtime/providers/resources subpath exports.
+- Added an injectable Desktop stdin/stdout JSONL RPC host with handshake, subscriptions, cancellation, fail-closed approvals and no credential commands.
+- Added CLI and Simplified Chinese Ink TUI shape/resource workflows.
+
+This pre-1.0 milestone changes public ResourceLoader, Session and application contracts. To roll back, stop Alphion, replace the v4 database with its adjacent `.v3-backup`, then run v0.3.2; v0.3.2 cannot open schema v4 and post-migration data will be lost.
+
 ## [0.3.2] - 2026-08-12
 
 - Breaking: replace run-centric public entry points with a shared `Agent` and durable `AgentSession` façade.

@@ -5,7 +5,7 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
-assert(packageJson.version === "0.3.2", "package.json must be version 0.3.2");
+assert(packageJson.version === "0.4.0", "package.json must be version 0.4.0");
 assert(lock.version === packageJson.version, "package-lock top-level version must match package.json");
 assert(lock.packages?.[""]?.version === packageJson.version, "package-lock root package version must match package.json");
 assert(packageJson.engines?.node === ">=22.13", "Node engine must be >=22.13");
@@ -46,6 +46,17 @@ for (const file of sourceFiles) {
   const content = readFileSync(resolve(root, file), "utf8");
   assert(!/from\s+["'][^"']*(?:adapters|cli|tui|webui|openai)[^"']*["']/.test(content), `core dependency boundary violation in ${file}`);
 }
+
+const desktopFiles = files.filter((file) => file.startsWith("desktop/") && file.endsWith(".ts"));
+for (const file of desktopFiles) {
+  const content = readFileSync(resolve(root, file), "utf8");
+  assert(!/vault\.(?:unlock|initialize)|masterPassword|apiKey\s*:/iu.test(content), `sensitive Desktop RPC surface in ${file}`);
+}
+
+const adapterImports = sourceFiles.flatMap((file) => [...readFileSync(resolve(root, file), "utf8").matchAll(/from\s+["']([^"']+)["']/g)].map((match) => ({ file, target: match[1] })));
+assert(adapterImports.every(({ target }) => !target?.includes("desktop") && !target?.includes("cli") && !target?.includes("tui") && !target?.includes("adapters")), "core must not reverse-depend on adapter surfaces");
+assert(existsSync(resolve(root, "desktop", "main.ts")), "Desktop executable composition root must exist");
+assert(existsSync(resolve(root, "scripts", "verify-built.mjs")), "built subpath/Desktop smoke must exist");
 
 const markdownFiles = [...files.filter((file) => file.endsWith(".md")), ...listMarkdown(resolve(root, "docs"))];
 const linkPattern = /\[[^\]]*\]\(([^)]+)\)/g;
