@@ -120,7 +120,7 @@ test("ContextPack keeps mandatory items, records omissions and runtime injects i
         schemaVersion: 2,
         id: "fake",
         name: "Fake",
-        kind: "openai-compatible",
+        kind: "custom-openai-compatible",
         baseUrl: "http://127.0.0.1:1/v1",
         model: "fake",
         protocol: "chat-completions",

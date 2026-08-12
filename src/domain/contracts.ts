@@ -1,5 +1,6 @@
 export type OpenAICompatibleProtocol = "chat-completions" | "responses";
-export type ProviderKind = "openai-compatible" | "deepseek";
+export type BuiltInProviderKind = "deepseek" | "kimi" | "qwen" | "glm";
+export type ProviderKind = BuiltInProviderKind | "custom-openai-compatible";
 
 export interface ProviderCapabilities {
   readonly streaming: boolean;
@@ -14,12 +15,10 @@ export type ProviderAuth = Readonly<
   | { readonly mode: "encrypted-sqlite"; readonly secretId: string }
 >;
 
-export interface ProviderProfile {
+interface ProviderProfileBase {
   readonly schemaVersion: 2;
   readonly id: string;
   readonly name: string;
-  readonly kind: ProviderKind;
-  readonly baseUrl: string;
   readonly model: string;
   readonly protocol: OpenAICompatibleProtocol;
   readonly auth: ProviderAuth;
@@ -28,9 +27,13 @@ export interface ProviderProfile {
   readonly active: boolean;
 }
 
-export type ProviderProfileInput = Omit<ProviderProfile, "revision" | "active"> & {
-  readonly active?: boolean;
-};
+export type ProviderProfile =
+  | Readonly<ProviderProfileBase & { readonly kind: BuiltInProviderKind; readonly presetId: string; readonly baseUrl?: never }>
+  | Readonly<ProviderProfileBase & { readonly kind: "custom-openai-compatible"; readonly baseUrl: string; readonly presetId?: never }>;
+
+export type ProviderProfileInput =
+  | Readonly<Omit<Extract<ProviderProfile, { readonly kind: BuiltInProviderKind }>, "revision" | "active"> & { readonly active?: boolean }>
+  | Readonly<Omit<Extract<ProviderProfile, { readonly kind: "custom-openai-compatible" }>, "revision" | "active"> & { readonly active?: boolean }>;
 
 export interface AgentToolCall {
   readonly id: string;
@@ -252,7 +255,8 @@ export interface ProviderPreset {
   readonly id: string;
   readonly label: string;
   readonly kind: ProviderKind;
-  readonly baseUrl: string;
+  readonly region: "mainland" | "international" | "custom";
+  readonly requiresBaseUrl: boolean;
   readonly models: readonly string[];
   readonly protocol: OpenAICompatibleProtocol;
 }

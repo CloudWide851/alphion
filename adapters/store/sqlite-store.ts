@@ -18,6 +18,7 @@ import type { AgentEvent, AgentEventDraft } from "../../src/protocol/events.js";
 import { canonicalJson, createId, sha256 } from "../../src/application/canonical.js";
 import { AlphionError } from "../../src/application/errors.js";
 import { containsPotentialSecret, sanitizeRecord } from "../../src/application/sensitive-data.js";
+import { resolveProviderEndpoint, validateProviderPreset } from "../model/provider-catalog.js";
 
 const SCHEMA_VERSION = 5;
 const VAULT_SCHEMA_VERSION = 1;
@@ -1103,7 +1104,7 @@ export class SqliteStore
       const insert = this.#database.prepare(
         `INSERT INTO provider_profiles
          (id, name, provider_kind, base_url, model, protocol, auth_mode, auth_environment_variable, auth_secret_id, capabilities_json, revision, active, created_at, updated_at)
-         VALUES (?, ?, 'openai-compatible', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, 'custom-openai-compatible', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
       );
       for (const row of rows) {
         const capabilities = parseRecord(readString(row, "capabilities_json"));
@@ -1319,6 +1320,7 @@ export class SqliteStore
   }
 
   #createProjectSessionSchemaV5(): void {
+    this.#migrateProviderProfilesV5();
     const sessionColumns = tableColumns(this.#database, "sessions");
     if (!sessionColumns.has("domain_id")) this.#database.exec("ALTER TABLE sessions ADD COLUMN domain_id TEXT");
     if (!sessionColumns.has("project_id")) this.#database.exec("ALTER TABLE sessions ADD COLUMN project_id TEXT");
@@ -1350,10 +1352,56 @@ export class SqliteStore
     `);
   }
 
+  #migrateProviderProfilesV5(): void {
+    const schemaRow = optionalRow(this.#database.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'provider_profiles'").get());
+    const sql = schemaRow ? readString(schemaRow, "sql") : "";
+    if (sql.includes("custom-openai-compatible") && sql.includes("kimi") && sql.includes("qwen") && sql.includes("glm")) return;
+    this.#database.exec(`
+      DROP INDEX IF EXISTS provider_profiles_one_active;
+      ALTER TABLE vault_secrets RENAME TO vault_secrets_v4;
+      ALTER TABLE provider_profiles RENAME TO provider_profiles_v4;
+    `);
+    this.#createProviderProfilesV2();
+    const rows = this.#database.prepare("SELECT * FROM provider_profiles_v4 ORDER BY id").all().map(requiredRow);
+    const insert = this.#database.prepare(`INSERT INTO provider_profiles
+      (id, name, provider_kind, base_url, model, protocol, auth_mode, auth_environment_variable, auth_secret_id, capabilities_json, revision, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const row of rows) {
+      const previousKind = readString(row, "provider_kind");
+      const previousUrl = readString(row, "base_url").replace(/\/$/u, "");
+      const deepSeekOfficial = previousKind === "deepseek" && previousUrl === "https://api.deepseek.com";
+      insert.run(
+        readString(row, "id"), readString(row, "name"),
+        deepSeekOfficial ? "deepseek" : "custom-openai-compatible",
+        deepSeekOfficial ? "deepseek" : previousUrl,
+        readString(row, "model"), readString(row, "protocol"), readString(row, "auth_mode"),
+        readNullableString(row, "auth_environment_variable") ?? null, readNullableString(row, "auth_secret_id") ?? null,
+        readString(row, "capabilities_json"), readNumber(row, "revision"), readNumber(row, "active"),
+        readString(row, "created_at"), readString(row, "updated_at"),
+      );
+    }
+    this.#database.exec(`
+      CREATE TABLE vault_secrets (
+        secret_id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL UNIQUE REFERENCES provider_profiles(id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL,
+        nonce BLOB NOT NULL,
+        ciphertext BLOB NOT NULL,
+        auth_tag BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO vault_secrets SELECT * FROM vault_secrets_v4;
+      DROP TABLE vault_secrets_v4;
+      DROP TABLE provider_profiles_v4;
+    `);
+  }
+
   #reconcileSessionSchemaV5(): void {
     const sessionColumns = tableColumns(this.#database, "sessions");
     const pendingColumns = tableColumns(this.#database, "pending_messages");
     this.#transaction(() => {
+      this.#migrateProviderProfilesV5();
       if (!sessionColumns.has("lease_owner")) this.#database.exec("ALTER TABLE sessions ADD COLUMN lease_owner TEXT");
       if (!sessionColumns.has("lease_expires_at")) this.#database.exec("ALTER TABLE sessions ADD COLUMN lease_expires_at TEXT");
       if (!pendingColumns.has("claimed_at")) this.#database.exec("ALTER TABLE pending_messages ADD COLUMN claimed_at TEXT");
@@ -1419,7 +1467,7 @@ export class SqliteStore
         CREATE TABLE provider_profiles (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL UNIQUE,
-          provider_kind TEXT NOT NULL CHECK (provider_kind IN ('openai-compatible', 'deepseek')),
+          provider_kind TEXT NOT NULL CHECK (provider_kind IN ('custom-openai-compatible', 'deepseek', 'kimi', 'qwen', 'glm')),
           base_url TEXT NOT NULL,
           model TEXT NOT NULL,
           protocol TEXT NOT NULL CHECK (protocol IN ('chat-completions', 'responses')),
@@ -1575,13 +1623,13 @@ function validateProviderProfile(
   ) {
     throw new AlphionError("validation", "Provider id, name, model, and schema version 2 are required.", { stage: "config" });
   }
-  if (containsPotentialSecret([input.id, input.name, input.model, input.baseUrl])) {
+  if (containsPotentialSecret([input.id, input.name, input.model, ...(input.kind === "custom-openai-compatible" ? [input.baseUrl] : [])])) {
     throw new AlphionError("validation", "Provider profile fields must not contain credential material.", { stage: "config" });
   }
   if (input.protocol !== "chat-completions" && input.protocol !== "responses") {
     throw new AlphionError("validation", "Provider protocol is unsupported.", { stage: "config" });
   }
-  if (input.kind !== "openai-compatible" && input.kind !== "deepseek") {
+  if (!['custom-openai-compatible', 'deepseek', 'kimi', 'qwen', 'glm'].includes(input.kind)) {
     throw new AlphionError("validation", "Provider kind is unsupported.", { stage: "config" });
   }
   if (input.kind === "deepseek" && input.protocol !== "chat-completions") {
@@ -1598,35 +1646,19 @@ function validateProviderProfile(
   if (input.auth.mode !== "none" && input.auth.mode !== "bearer-env" && input.auth.mode !== "encrypted-sqlite") {
     throw new AlphionError("validation", "Provider authentication mode is unsupported.", { stage: "config" });
   }
-  let url: URL;
-  try {
-    url = new URL(input.baseUrl);
-  } catch (error) {
-    throw new AlphionError("validation", "Provider URL is invalid.", { stage: "config", cause: error });
-  }
-  if (!isAllowedProviderUrl(url)) {
-    throw new AlphionError("validation", "Provider URL must use HTTPS, or HTTP on a loopback host, without credentials/query/fragment.", {
-      stage: "config",
-    });
-  }
+  validateProviderPreset(input);
   if (input.auth.mode === "bearer-env" && !/^[A-Z_][A-Z0-9_]*$/.test(input.auth.environmentVariable)) {
     throw new AlphionError("validation", "Secret references must be portable uppercase environment-variable names.", { stage: "config" });
   }
   if (input.auth.mode === "encrypted-sqlite" && !/^vault_[A-Za-z0-9_-]{8,}$/.test(input.auth.secretId)) {
     throw new AlphionError("validation", "Vault secret reference is invalid.", { stage: "config" });
   }
-  return { baseUrl: url.toString().replace(/\/$/, "") };
-}
-
-function isAllowedProviderUrl(url: URL): boolean {
-  if (url.username || url.password || url.search || url.hash) return false;
-  if (url.protocol === "https:") return true;
-  return url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  return { baseUrl: input.kind === "custom-openai-compatible" ? resolveProviderEndpoint(input) : input.presetId };
 }
 
 function decodeProviderProfile(row: Readonly<Record<string, unknown>>): ProviderProfile {
   const kind = readString(row, "provider_kind");
-  if (kind !== "openai-compatible" && kind !== "deepseek") {
+  if (!['custom-openai-compatible', 'deepseek', 'kimi', 'qwen', 'glm'].includes(kind)) {
     throw new AlphionError("integrity-failed", `Invalid provider kind: ${kind}`, { stage: "database" });
   }
   const protocol = readString(row, "protocol");
@@ -1647,12 +1679,11 @@ function decodeProviderProfile(row: Readonly<Record<string, unknown>>): Provider
         ? ({ mode: "encrypted-sqlite", secretId: requireNullableString(row, "auth_secret_id") } as const)
         : undefined;
   if (!auth) throw new AlphionError("integrity-failed", `Invalid provider auth mode: ${authMode}`, { stage: "database" });
-  return {
+  const storedEndpoint = readString(row, "base_url");
+  const base = {
     schemaVersion: 2,
     id: readString(row, "id"),
     name: readString(row, "name"),
-    kind,
-    baseUrl: readString(row, "base_url"),
     model: readString(row, "model"),
     protocol,
     auth,
@@ -1660,6 +1691,13 @@ function decodeProviderProfile(row: Readonly<Record<string, unknown>>): Provider
     revision: readNumber(row, "revision"),
     active: readNumber(row, "active") === 1,
   };
+  if (kind === "custom-openai-compatible") return { ...base, kind, baseUrl: storedEndpoint };
+  if (kind === "deepseek" || kind === "kimi" || kind === "qwen" || kind === "glm") {
+    const profile = { ...base, kind, presetId: storedEndpoint };
+    validateProviderPreset(profile);
+    return profile;
+  }
+  throw new AlphionError("integrity-failed", `Invalid provider kind: ${kind}`, { stage: "database" });
 }
 
 function decodeCacheEntry(row: Readonly<Record<string, unknown>>): CacheEntry {

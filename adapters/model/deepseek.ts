@@ -17,6 +17,7 @@ import type {
   ProviderUsage,
 } from "../../src/domain/contracts.js";
 import type { AgentProvider, SecretResolver } from "../../src/ports/index.js";
+import { resolveProviderEndpoint } from "./provider-catalog.js";
 
 export const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com";
 export const DEEPSEEK_MODELS = Object.freeze(["deepseek-chat", "deepseek-reasoner"] as const);
@@ -24,15 +25,18 @@ export const DEEPSEEK_MODELS = Object.freeze(["deepseek-chat", "deepseek-reasone
 export class DeepSeekProvider implements AgentProvider {
   readonly profile: ProviderProfile;
   readonly #secrets: SecretResolver;
+  readonly #endpoint: (profile: ProviderProfile) => string;
 
-  constructor(profile: ProviderProfile, secrets: SecretResolver) {
-    validateProfile(profile);
+  constructor(profile: ProviderProfile, secrets: SecretResolver, options: Readonly<{ endpoint?: (profile: ProviderProfile) => string }> = {}) {
+    const endpoint = options.endpoint ?? resolveProviderEndpoint;
+    validateProfile(profile, endpoint);
     this.profile = Object.freeze({
       ...profile,
       auth: Object.freeze({ ...profile.auth }),
       capabilities: Object.freeze({ ...profile.capabilities }),
     });
     this.#secrets = secrets;
+    this.#endpoint = endpoint;
   }
 
   async *generate(request: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
@@ -71,7 +75,7 @@ export class DeepSeekProvider implements AgentProvider {
         stage: "provider",
       });
     }
-    return new OpenAI({ apiKey, baseURL: this.profile.baseUrl, maxRetries: 0 });
+    return new OpenAI({ apiKey, baseURL: this.#endpoint(this.profile), maxRetries: 0 });
   }
 
   async *#generateStreaming(
@@ -136,7 +140,7 @@ interface PendingToolCall {
   readonly argumentsText: string;
 }
 
-function validateProfile(profile: ProviderProfile): void {
+function validateProfile(profile: ProviderProfile, endpoint: (profile: ProviderProfile) => string): void {
   if (profile.schemaVersion !== 2 || profile.kind !== "deepseek" || profile.protocol !== "chat-completions") {
     throw new AlphionError("validation", "DeepSeek requires a schema-v2 DeepSeek Chat Completions profile.", {
       stage: "provider",
@@ -144,7 +148,7 @@ function validateProfile(profile: ProviderProfile): void {
   }
   let url: URL;
   try {
-    url = new URL(profile.baseUrl);
+    url = new URL(endpoint(profile));
   } catch (error) {
     throw new AlphionError("validation", "DeepSeek provider URL is invalid.", { stage: "provider", cause: error });
   }

@@ -4,7 +4,7 @@ import React from "react";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { TuiApprovalPort } from "../tui/approval-port.js";
-import { AppShell, HarnessPlanView, ProviderList, SessionWorkbenchView, TextEntry, selectWorkbenchLayout } from "../tui/index.js";
+import { AppShell, HarnessPlanView, ProviderForm, ProviderList, SessionWorkbenchView, TextEntry, selectWorkbenchLayout } from "../tui/index.js";
 import type { AgentApplication, AgentSessionContract } from "../src/index.js";
 import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "../tui/run-projection.js";
 
@@ -82,7 +82,7 @@ test("provider list keyboard navigation dispatches adapter intents", async () =>
     id: "deepseek",
     name: "DeepSeek",
     kind: "deepseek" as const,
-    baseUrl: "https://api.deepseek.com",
+    presetId: "deepseek",
     model: "deepseek-chat",
     protocol: "chat-completions" as const,
     auth: { mode: "none" as const },
@@ -107,6 +107,24 @@ test("provider list keyboard navigation dispatches adapter intents", async () =>
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(created, 1);
   assert.match(view.lastFrame() ?? "", /DeepSeek/);
+  view.unmount();
+});
+
+test("built-in Provider form saves without asking for a Base URL", async () => {
+  let saved: unknown;
+  const view = render(React.createElement(ProviderForm, {
+    draft: { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "moonshot-v1-8k" },
+    presets: [],
+    onSave: (value: unknown) => { saved = value; },
+    onCancel: () => undefined,
+  }));
+  assert.doesNotMatch(view.lastFrame() ?? "", /Base URL/u);
+  view.stdin.write("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  view.stdin.write("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(saved, { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "moonshot-v1-8k" });
+  assert.doesNotMatch(view.lastFrame() ?? "", /Base URL/u);
   view.unmount();
 });
 

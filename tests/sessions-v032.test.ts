@@ -332,13 +332,13 @@ class SessionAgentDouble implements AgentContract {
 }
 
 class CaptureProvider implements AgentProvider {
-  readonly profile = { schemaVersion: 2 as const, id: "capture", name: "capture", kind: "openai-compatible" as const, baseUrl: "http://127.0.0.1:1/v1", model: "capture", protocol: "chat-completions" as const, auth: { mode: "none" as const }, capabilities: { streaming: false, tools: false, promptCaching: false, reasoning: false }, revision: 1, active: true };
+  readonly profile = { schemaVersion: 2 as const, id: "capture", name: "capture", kind: "custom-openai-compatible" as const, baseUrl: "http://127.0.0.1:1/v1", model: "capture", protocol: "chat-completions" as const, auth: { mode: "none" as const }, capabilities: { streaming: false, tools: false, promptCaching: false, reasoning: false }, revision: 1, active: true };
   readonly requests: ProviderRequest[] = [];
   async *generate(request: ProviderRequest): AsyncIterable<ProviderEvent> { this.requests.push(request); yield { type: "text-delta", delta: "done" }; yield { type: "done", finishReason: "stop" }; }
 }
 
 class StructuredCompactionProvider implements AgentProvider {
-  readonly profile = { schemaVersion: 2 as const, id: "compactor", name: "compactor", kind: "openai-compatible" as const, baseUrl: "http://127.0.0.1:1/v1", model: "compactor", protocol: "chat-completions" as const, auth: { mode: "none" as const }, capabilities: { streaming: false, tools: true, promptCaching: false, reasoning: false }, revision: 1, active: true };
+  readonly profile = { schemaVersion: 2 as const, id: "compactor", name: "compactor", kind: "custom-openai-compatible" as const, baseUrl: "http://127.0.0.1:1/v1", model: "compactor", protocol: "chat-completions" as const, auth: { mode: "none" as const }, capabilities: { streaming: false, tools: true, promptCaching: false, reasoning: false }, revision: 1, active: true };
   request: ProviderRequest | undefined;
   constructor(private readonly forbiddenReasoning: boolean) {}
   async *generate(request: ProviderRequest): AsyncIterable<ProviderEvent> {

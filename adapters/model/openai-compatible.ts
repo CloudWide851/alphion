@@ -25,6 +25,7 @@ import type {
 } from "../../src/domain/contracts.js";
 import type { AgentProvider, SecretResolver } from "../../src/ports/index.js";
 import { AlphionError } from "../../src/application/errors.js";
+import { resolveProviderEndpoint } from "./provider-catalog.js";
 
 export class OpenAICompatibleProvider implements AgentProvider {
   readonly profile: ProviderProfile;
@@ -79,7 +80,7 @@ export class OpenAICompatibleProvider implements AgentProvider {
     }
     return new OpenAI({
       apiKey,
-      baseURL: this.profile.baseUrl,
+      baseURL: resolveProviderEndpoint(this.profile),
       maxRetries: 0,
     });
   }
@@ -195,14 +196,14 @@ export class OpenAICompatibleProvider implements AgentProvider {
 }
 
 function validateProviderProfile(profile: ProviderProfile): void {
-  if (profile.schemaVersion !== 2 || profile.kind !== "openai-compatible") {
+  if (profile.schemaVersion !== 2 || !["custom-openai-compatible", "kimi", "qwen", "glm"].includes(profile.kind)) {
     throw new AlphionError("validation", "OpenAI-compatible provider requires a schema-v2 compatible profile.", {
       stage: "provider",
     });
   }
   let url: URL;
   try {
-    url = new URL(profile.baseUrl);
+    url = new URL(resolveProviderEndpoint(profile));
   } catch (error) {
     throw new AlphionError("validation", "Compatible provider URL is invalid.", { stage: "provider", cause: error });
   }

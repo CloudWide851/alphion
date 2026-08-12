@@ -19,6 +19,8 @@ test("compiled CLI configures a provider, runs through a fake endpoint, and deni
       "set",
       "--id",
       "fake",
+      "--preset",
+      "custom-openai-compatible",
       "--base-url",
       `http://127.0.0.1:${address.port}/v1`,
       "--model",

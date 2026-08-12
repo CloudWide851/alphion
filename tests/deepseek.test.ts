@@ -27,7 +27,7 @@ test("DeepSeek reasoner streams reasoning, text, tools, cached usage, and bearer
     writeSse(response, { id: "usage", object: "chat.completion.chunk", created: 0, model: "deepseek-reasoner", choices: [], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18, prompt_cache_hit_tokens: 5, prompt_cache_miss_tokens: 6 } });
     response.end("data: [DONE]\n\n");
   }, async (baseUrl) => {
-    const provider = new DeepSeekProvider(profile(baseUrl, true), resolver());
+    const provider = deepSeekProvider(baseUrl, true);
     const events = await collect(provider.generate(REQUEST, new AbortController().signal));
     assert.deepEqual(events.filter((event) => event.type === "reasoning-delta"), [{ type: "reasoning-delta", delta: "inspect evidence" }]);
     assert.deepEqual(events.find((event) => event.type === "text-delta"), { type: "text-delta", delta: "answer" });
@@ -52,8 +52,9 @@ test("DeepSeek sends reasoning content back on tool continuation", async () => {
         { role: "tool", toolCallId: "call_1", name: "read", content: "OK" },
       ],
     };
-    const nonStreaming = { ...profile(baseUrl, true), capabilities: { ...profile(baseUrl, true).capabilities, streaming: false } };
-    const events = await collect(new DeepSeekProvider(nonStreaming, resolver()).generate(request, new AbortController().signal));
+    const base = profile(true);
+    const nonStreaming = { ...base, capabilities: { ...base.capabilities, streaming: false } };
+    const events = await collect(new DeepSeekProvider(nonStreaming, resolver(), endpoint(baseUrl)).generate(request, new AbortController().signal));
     assert.deepEqual(events.filter((event) => event.type === "reasoning-delta"), [{ type: "reasoning-delta", delta: "verified" }]);
     const messages = captured?.messages;
     assert.ok(Array.isArray(messages));
@@ -76,14 +77,15 @@ test("DeepSeek retries one rate limit before output and fails malformed payloads
       response.end(JSON.stringify({ error: { message: "limited", type: "rate_limit_error" } }));
     } else sendCompletion(response, { content: "retried" });
   }, async (baseUrl) => {
-    const base = profile(baseUrl, false);
+    const base = profile(false);
     const nonStreaming = { ...base, capabilities: { ...base.capabilities, streaming: false } };
-    const events = await collect(new DeepSeekProvider(nonStreaming, resolver()).generate(REQUEST, new AbortController().signal));
+    const provider = new DeepSeekProvider(nonStreaming, resolver(), endpoint(baseUrl));
+    const events = await collect(provider.generate(REQUEST, new AbortController().signal));
     assert.equal(events.find((event) => event.type === "text-delta")?.type, "text-delta");
     assert.equal(requests, 2);
     const malformed = { ...REQUEST, messages: [...REQUEST.messages, { role: "user" as const, content: "malformed" }] };
     await assert.rejects(
-      collect(new DeepSeekProvider(nonStreaming, resolver()).generate(malformed, new AbortController().signal)),
+      collect(provider.generate(malformed, new AbortController().signal)),
       /no chat completion choice/i,
     );
   });
@@ -94,7 +96,7 @@ test("DeepSeek cancellation aborts an in-flight request", async () => {
     await readBody(request);
   }, async (baseUrl) => {
     const controller = new AbortController();
-    const pending = collect(new DeepSeekProvider(profile(baseUrl, false), resolver()).generate(REQUEST, controller.signal));
+    const pending = collect(deepSeekProvider(baseUrl, false).generate(REQUEST, controller.signal));
     setTimeout(() => controller.abort(new DOMException("cancel test", "AbortError")), 20);
     await assert.rejects(pending, /cancel|abort/i);
   });
@@ -106,19 +108,19 @@ test("DeepSeek normalizes an AbortSignal timeout", async () => {
   }, async (baseUrl) => {
     const signal = AbortSignal.timeout(20);
     await assert.rejects(
-      collect(new DeepSeekProvider(profile(baseUrl, false), resolver()).generate(REQUEST, signal)),
+      collect(deepSeekProvider(baseUrl, false).generate(REQUEST, signal)),
       /timeout/i,
     );
   });
 });
 
-function profile(baseUrl: string, reasoning: boolean): ProviderProfile {
+function profile(reasoning: boolean): ProviderProfile {
   return {
     schemaVersion: 2,
     id: reasoning ? "deepseek-reasoner" : "deepseek-chat",
     name: reasoning ? "DeepSeek Reasoner" : "DeepSeek Chat",
     kind: "deepseek",
-    baseUrl,
+    presetId: "deepseek",
     model: reasoning ? "deepseek-reasoner" : "deepseek-chat",
     protocol: "chat-completions",
     auth: { mode: "bearer-env", environmentVariable: "DEEPSEEK_API_KEY" },
@@ -126,6 +128,14 @@ function profile(baseUrl: string, reasoning: boolean): ProviderProfile {
     revision: 1,
     active: true,
   };
+}
+
+function deepSeekProvider(baseUrl: string, reasoning: boolean): DeepSeekProvider {
+  return new DeepSeekProvider(profile(reasoning), resolver(), endpoint(baseUrl));
+}
+
+function endpoint(baseUrl: string): Readonly<{ endpoint: () => string }> {
+  return { endpoint: () => baseUrl };
 }
 
 function resolver() {

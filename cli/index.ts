@@ -68,20 +68,22 @@ async function providerCommand(store: SqliteStore, command: string | undefined, 
   if (command === "set") {
     const id = requiredFlag(parsed, "id");
     const authEnvironment = flagValue(parsed, "auth-env");
-    const kindValue = flagValue(parsed, "kind") ?? "openai-compatible";
-    if (kindValue !== "openai-compatible" && kindValue !== "deepseek") {
-      throw new AlphionError("validation", "--kind must be openai-compatible or deepseek.", { stage: "cli" });
+    const presetId = flagValue(parsed, "preset") ?? "deepseek";
+    const { providerPreset } = await import("../adapters/model/provider-catalog.js");
+    const preset = providerPreset(presetId);
+    if (!preset.requiresBaseUrl && flagValue(parsed, "base-url") !== undefined) {
+      throw new AlphionError("validation", "Built-in Provider presets do not accept --base-url.", { stage: "config" });
     }
-    const protocol = flagValue(parsed, "protocol") ?? (kindValue === "deepseek" ? "chat-completions" : undefined);
+    const kindValue = preset.kind;
+    const protocol = flagValue(parsed, "protocol") ?? preset.protocol;
     if (protocol !== "chat-completions" && protocol !== "responses") {
       throw new AlphionError("validation", "--protocol must be chat-completions or responses.", { stage: "cli" });
     }
-    const profile = await store.upsertProfile({
+    const common = {
       schemaVersion: 2,
       id,
       name: flagValue(parsed, "name") ?? id,
       kind: kindValue,
-      baseUrl: requiredFlag(parsed, "base-url"),
       model: requiredFlag(parsed, "model"),
       protocol,
       auth: authEnvironment ? { mode: "bearer-env", environmentVariable: authEnvironment } : { mode: "none" },
@@ -92,7 +94,10 @@ async function providerCommand(store: SqliteStore, command: string | undefined, 
         reasoning: booleanFlag(parsed, "reasoning", kindValue === "deepseek" && requiredFlag(parsed, "model") === "deepseek-reasoner"),
       },
       active: hasFlag(parsed, "active"),
-    });
+    } as const;
+    const profile = await store.upsertProfile(kindValue === "custom-openai-compatible"
+      ? { ...common, kind: kindValue, baseUrl: requiredFlag(parsed, "base-url") }
+      : { ...common, kind: kindValue, presetId });
     process.stdout.write(`${JSON.stringify(profile, null, 2)}\n`);
     return 0;
   }
@@ -342,7 +347,7 @@ function safeEventMessage(payload: Readonly<Record<string, unknown>>): string {
 function printHelp(): void {
   process.stdout.write(`Alphion v0.4.0\n\n`);
   process.stdout.write(`Commands:\n`);
-  process.stdout.write(`  provider set --id ID --kind openai-compatible|deepseek --base-url URL --model MODEL [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
+  process.stdout.write(`  provider set --id ID --preset deepseek|deepseek-international|kimi|kimi-international|qwen|qwen-international|glm|glm-international|custom-openai-compatible --model MODEL [--base-url URL for custom only] [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
   process.stdout.write(`  provider list\n  provider activate ID\n`);
   process.stdout.write(`  policy shell allow --executable ABSOLUTE_PATH [--arg-prefix VALUE ...]\n`);
   process.stdout.write(`  policy shell list\n  policy shell remove ID\n`);

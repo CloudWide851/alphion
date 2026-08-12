@@ -32,7 +32,7 @@ import type {
   SessionManager,
 } from "../../src/ports/index.js";
 import { MemoryLruCache } from "../cache/memory-cache.js";
-import { DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_MODELS } from "../model/deepseek.js";
+import { LOCAL_PROVIDER_PRESETS } from "../model/provider-catalog.js";
 import { LocalModelResolver } from "../model/local-model-resolver.js";
 import { NodeProjectProfiler } from "../project/project-profiler.js";
 import { projectRevision } from "../project/project-revision.js";
@@ -52,25 +52,6 @@ export interface LocalApplicationOptions {
 }
 
 const execFileAsync = promisify(execFile);
-const LOCAL_PROVIDER_PRESETS: readonly ProviderPreset[] = Object.freeze([
-  Object.freeze({
-    id: "deepseek",
-    label: "DeepSeek",
-    kind: "deepseek",
-    baseUrl: DEEPSEEK_DEFAULT_BASE_URL,
-    models: DEEPSEEK_MODELS,
-    protocol: "chat-completions",
-  }),
-  Object.freeze({
-    id: "openai-compatible",
-    label: "OpenAI 兼容接口",
-    kind: "openai-compatible",
-    baseUrl: "https://api.openai.com/v1",
-    models: Object.freeze(["gpt-5-mini"]),
-    protocol: "responses",
-  }),
-]);
-
 export class LocalAlphionApplication implements AgentApplication {
   readonly configuration: ProviderConfigurationService;
   readonly agent: AgentContract;

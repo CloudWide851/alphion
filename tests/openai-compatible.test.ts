@@ -131,7 +131,7 @@ function profile(baseUrl: string, protocol: OpenAICompatibleProtocol): ProviderP
     schemaVersion: 2,
     id: `fake-${protocol}`,
     name: `fake-${protocol}`,
-    kind: "openai-compatible",
+    kind: "custom-openai-compatible",
     baseUrl,
     model: "fake-model",
     protocol,

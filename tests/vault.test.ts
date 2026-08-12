@@ -21,7 +21,7 @@ test("encrypted SQLite vault imports, locks, rotates, removes, and never stores 
       id: "deepseek",
       name: "DeepSeek",
       kind: "deepseek",
-      baseUrl: "https://api.deepseek.com",
+      presetId: "deepseek",
       model: "deepseek-reasoner",
       protocol: "chat-completions",
       auth: { mode: "none" },
@@ -69,7 +69,7 @@ test("vault password rotation rolls back metadata and ciphertext together", asyn
       id: "deepseek",
       name: "DeepSeek",
       kind: "deepseek",
-      baseUrl: "https://api.deepseek.com",
+      presetId: "deepseek",
       model: "deepseek-chat",
       protocol: "chat-completions",
       auth: { mode: "none" },
@@ -108,7 +108,7 @@ test("vault detects ciphertext tampering and reset preserves profiles", async ()
       id: "deepseek",
       name: "DeepSeek",
       kind: "deepseek",
-      baseUrl: "https://api.deepseek.com",
+      presetId: "deepseek",
       model: "deepseek-chat",
       protocol: "chat-completions",
       auth: { mode: "none" },
@@ -147,7 +147,7 @@ test("vault auto-lock expires an unlocked key", async () => {
   });
 });
 
-test("SQLite schema v1 profiles migrate through schema v4 without losing environment auth", async () => {
+test("SQLite schema v1 profiles migrate through schema v5 without losing environment auth", async () => {
   await withTemporaryDirectory(async (directory) => {
     const path = join(directory, "v1.sqlite3");
     createV1Database(path);
@@ -155,12 +155,12 @@ test("SQLite schema v1 profiles migrate through schema v4 without losing environ
     try {
       const profile = await store.getActiveProfile();
       assert.equal(profile?.schemaVersion, 2);
-      assert.equal(profile?.kind, "openai-compatible");
+      assert.equal(profile?.kind, "custom-openai-compatible");
       assert.equal(profile?.auth.mode, "bearer-env");
       assert.equal(profile?.capabilities.reasoning, false);
       const database = openSqliteDatabase(path, { readOnly: true });
       try {
-        assert.equal((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 4);
+        assert.equal((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
       } finally {
         database.close();
       }

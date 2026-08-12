@@ -35,7 +35,7 @@ interface ProviderDraft {
   readonly kind: ProviderProfile["kind"];
   readonly protocol: ProviderProfile["protocol"];
   readonly model: string;
-  readonly baseUrl: string;
+  readonly baseUrl?: string;
 }
 
 interface WorkbenchSnapshot {
@@ -449,15 +449,19 @@ function VaultSetup(props: Readonly<{ onComplete: (password: string) => Promise<
       }} onCancel={() => setFirst(undefined)} />;
 }
 
-function ProviderForm(props: Readonly<{ draft: ProviderDraft; presets: readonly ProviderPreset[]; onSave: (draft: ProviderDraft) => void; onCancel: () => void }>): React.JSX.Element {
+export function ProviderForm(props: Readonly<{ draft: ProviderDraft; presets: readonly ProviderPreset[]; onSave: (draft: ProviderDraft) => void; onCancel: () => void }>): React.JSX.Element {
   const [step, setStep] = useState(0);
   const [value, setValue] = useState(props.draft);
   if (step === 0 && !value.existing && props.presets.length > 1) {
     return <PresetPicker presets={props.presets} selectedId={value.presetId} onSelect={(preset) => { setValue(presetDraft(preset)); setStep(1); }} onCancel={props.onCancel} />;
   }
   if (step <= 1) return <TextEntry label="配置名称" initialValue={value.name} onSubmit={(name) => { setValue({ ...value, name }); setStep(2); }} onCancel={props.onCancel} />;
-  if (step === 2) return <TextEntry label="模型" initialValue={value.model} onSubmit={(model) => { setValue({ ...value, model }); setStep(3); }} onCancel={() => setStep(1)} />;
-  return <TextEntry label="Base URL" initialValue={value.baseUrl} onSubmit={(baseUrl) => props.onSave({ ...value, baseUrl })} onCancel={() => setStep(2)} />;
+  if (step === 2) return <TextEntry label="模型" initialValue={value.model} onSubmit={(model) => {
+    const next = { ...value, model };
+    if (next.kind === "custom-openai-compatible") { setValue(next); setStep(3); }
+    else props.onSave(next);
+  }} onCancel={() => setStep(1)} />;
+  return <TextEntry label="Base URL（仅自定义 Provider）" initialValue={value.baseUrl} onSubmit={(baseUrl) => props.onSave({ ...value, baseUrl })} onCancel={() => setStep(2)} />;
 }
 
 function PresetPicker(props: Readonly<{ presets: readonly ProviderPreset[]; selectedId: string; onSelect: (preset: ProviderPreset) => void; onCancel: () => void }>): React.JSX.Element {
@@ -563,28 +567,26 @@ function RunView(props: Readonly<{ application: AgentApplication; approval: TuiA
     <Text dimColor>tokens 输入={projection.inputTokens} 输出={projection.outputTokens} 缓存={projection.cachedInputTokens}</Text>
     {projection.message ? <Text {...(projection.status === "failed" ? textColor("red") : {})}>{projection.message}</Text> : null}
     {pendingApproval ? <Box flexDirection="column" borderStyle="round" {...borderColor("yellow")} paddingX={1}><Text bold>! 需要逐次审批：{sanitizeTerminalText(pendingApproval.request.toolName)}</Text><Text>{sanitizeTerminalText(pendingApproval.request.summary)}</Text><Text>y 批准此精确动作 · n 拒绝</Text></Box> : null}
-    <Text dimColor>{projection.status === "running" ? "s steer · f follow-up · Ctrl+C 取消 · t 查看推理" : "f follow-up · Enter 返回工作台"}</Text>
+    <Text dimColor>{projection.status === "running" ? "s steer · f follow-up · Ctrl+C 取消" : "f follow-up · Enter 返回工作台"}</Text>
   </Box>;
 }
 
 function presetDraft(preset: ProviderPreset | undefined): ProviderDraft {
-  const fallback: ProviderPreset = { id: "deepseek", label: "DeepSeek", kind: "deepseek", baseUrl: "https://api.deepseek.com", models: ["deepseek-chat"], protocol: "chat-completions" };
+  const fallback: ProviderPreset = { id: "deepseek", label: "DeepSeek（中国大陆）", kind: "deepseek", region: "mainland", requiresBaseUrl: false, models: ["deepseek-chat"], protocol: "chat-completions" };
   const value = preset ?? fallback;
-  return { presetId: value.id, name: value.label, kind: value.kind, protocol: value.protocol, model: value.models[0] ?? "", baseUrl: value.baseUrl };
+  return { presetId: value.id, name: value.label, kind: value.kind, protocol: value.protocol, model: value.models[0] ?? "", ...(value.requiresBaseUrl ? { baseUrl: "" } : {}) };
 }
 
 function profileDraft(profile: ProviderProfile): ProviderDraft {
-  return { existing: profile, presetId: profile.kind, name: profile.name, kind: profile.kind, protocol: profile.protocol, model: profile.model, baseUrl: profile.baseUrl };
+  return { existing: profile, presetId: profile.kind === "custom-openai-compatible" ? profile.kind : profile.presetId, name: profile.name, kind: profile.kind, protocol: profile.protocol, model: profile.model, ...(profile.kind === "custom-openai-compatible" ? { baseUrl: profile.baseUrl } : {}) };
 }
 
 function toProfileInput(draft: ProviderDraft, firstProfile: boolean): ProviderProfileInput {
   const id = draft.existing?.id ?? toProfileId(draft.name);
-  return {
+  const common = {
     schemaVersion: 2,
     id,
     name: draft.name.trim(),
-    kind: draft.kind,
-    baseUrl: draft.baseUrl.trim(),
     model: draft.model.trim(),
     protocol: draft.kind === "deepseek" ? "chat-completions" : draft.protocol,
     auth: draft.existing?.auth ?? { mode: "none" },
@@ -596,6 +598,9 @@ function toProfileInput(draft: ProviderDraft, firstProfile: boolean): ProviderPr
     },
     active: draft.existing?.active ?? firstProfile,
   };
+  return draft.kind === "custom-openai-compatible"
+    ? { ...common, kind: draft.kind, baseUrl: draft.baseUrl?.trim() ?? "" }
+    : { ...common, kind: draft.kind, presetId: draft.presetId };
 }
 
 function toProfileId(value: string): string {
