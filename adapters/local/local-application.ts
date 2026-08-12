@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { access, realpath, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { DatabaseSync } from "node:sqlite";
+import { openSqliteDatabase, type SqliteDatabase } from "../store/database.js";
 import { Agent } from "../../src/application/agent.js";
 import { AgentSession } from "../../src/application/agent-session.js";
 import { DefaultSessionManager } from "../../src/application/session-manager.js";
@@ -254,9 +254,9 @@ async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
   } catch {
     return [Object.freeze({ id: "sqlite", label: "本地状态", status: "warning", summary: "SQLite 状态尚未创建。", remediation: "首次配置 Provider 时会创建本地状态。" })];
   }
-  let database: DatabaseSync | undefined;
+  let database: SqliteDatabase | undefined;
   try {
-    database = new DatabaseSync(path, { readOnly: true });
+    database = openSqliteDatabase(path, { readOnly: true });
     const schema = numericCell(database.prepare("PRAGMA user_version").get(), "user_version");
     const integrity = firstCell(database.prepare("PRAGMA quick_check").get()) === "ok";
     if (!integrity) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: "SQLite 完整性检查失败。", remediation: "请备份 .alphion 后按 Runbook 恢复。" })];
@@ -270,7 +270,7 @@ async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
       label: "本地状态",
       status: activeCount > 0 ? "pass" : "warning",
       summary: `schema ${schema} 完整；Provider ${providerCount} 个，活动 ${activeCount} 个，Vault ${vaultCount > 0 ? "已初始化" : "未初始化"}。`,
-      ...(activeCount === 0 ? { remediation: "请在工程工作台中配置并激活 Provider。" } : {}),
+      ...(activeCount === 0 ? { remediation: "请在 Alphion 设置中配置并激活 Provider。" } : {}),
     })];
   } catch {
     return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: "SQLite 无法以只读方式验证。", remediation: "请备份 .alphion 后检查数据库文件。" })];

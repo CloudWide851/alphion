@@ -81,11 +81,13 @@
     "node": ">=22.13"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "ink": "^7.1.1",
     "openai": "^7.4.0",
     "react": "^19.2.8"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "ink-testing-library": "^4.0.0",

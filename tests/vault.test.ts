@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DatabaseSync } from "node:sqlite";
+import { openSqliteDatabase } from "../adapters/store/database.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
 
 const MASTER_ONE = "correct horse battery staple";
@@ -79,7 +79,7 @@ test("vault password rotation rolls back metadata and ciphertext together", asyn
     const profile = await store.importCredential("deepseek", secret);
     if (profile.auth.mode !== "encrypted-sqlite") assert.fail("Expected encrypted auth.");
 
-    const database = new DatabaseSync(path);
+    const database = openSqliteDatabase(path);
     database.exec(`
       CREATE TRIGGER reject_vault_rotation
       BEFORE UPDATE OF ciphertext ON vault_secrets
@@ -120,7 +120,7 @@ test("vault detects ciphertext tampering and reset preserves profiles", async ()
     const secretId = profile.auth.secretId;
     store.close();
 
-    const database = new DatabaseSync(path);
+    const database = openSqliteDatabase(path);
     const row = database.prepare("SELECT ciphertext FROM vault_secrets WHERE secret_id = ?").get(secretId) as { ciphertext: Uint8Array };
     const corrupted = Buffer.from(row.ciphertext);
     corrupted[0] = (corrupted[0] ?? 0) ^ 0xff;
@@ -158,7 +158,7 @@ test("SQLite schema v1 profiles migrate through schema v4 without losing environ
       assert.equal(profile?.kind, "openai-compatible");
       assert.equal(profile?.auth.mode, "bearer-env");
       assert.equal(profile?.capabilities.reasoning, false);
-      const database = new DatabaseSync(path, { readOnly: true });
+      const database = openSqliteDatabase(path, { readOnly: true });
       try {
         assert.equal((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 4);
       } finally {
@@ -171,7 +171,7 @@ test("SQLite schema v1 profiles migrate through schema v4 without losing environ
 });
 
 function createV1Database(path: string): void {
-  const database = new DatabaseSync(path);
+  const database = openSqliteDatabase(path);
   try {
     database.exec(`
     CREATE TABLE provider_profiles (
@@ -214,7 +214,7 @@ function createV1Database(path: string): void {
 }
 
 function readVaultNonce(path: string, secretId: string): Buffer {
-  const database = new DatabaseSync(path, { readOnly: true });
+  const database = openSqliteDatabase(path, { readOnly: true });
   try {
     const row = database.prepare("SELECT nonce FROM vault_secrets WHERE secret_id = ?").get(secretId) as {
       nonce: Uint8Array;

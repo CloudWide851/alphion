@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DatabaseSync } from "node:sqlite";
+import { openSqliteDatabase } from "../adapters/store/database.js";
 import { AgentLoop } from "../src/application/agent-runtime.js";
 import { SingleFlight, TieredCache } from "../src/application/cache.js";
 import { sha256 } from "../src/application/canonical.js";
@@ -77,7 +77,7 @@ test("SQLite profiles, cache, hash-chain events, and shell rules round-trip", as
     assert.equal(await store.removeShellRule(rule.id), true);
     store.close();
 
-    const database = new DatabaseSync(path);
+    const database = openSqliteDatabase(path);
     database.prepare("UPDATE events SET payload_json = ? WHERE run_id = ? AND sequence = 2").run('{"ok":false}', "run_test");
     database.close();
     const reopened = new SqliteStore({ path });
@@ -89,7 +89,7 @@ test("SQLite profiles, cache, hash-chain events, and shell rules round-trip", as
 test("SQLite rejects an unknown future schema", async () => {
   await withTemporaryDirectory(async (directory) => {
     const path = join(directory, "future.sqlite3");
-    const database = new DatabaseSync(path);
+    const database = openSqliteDatabase(path);
     database.exec("PRAGMA user_version = 999");
     database.close();
     assert.throws(() => new SqliteStore({ path }), /newer than supported/);

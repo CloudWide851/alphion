@@ -3,7 +3,7 @@ import { access, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DatabaseSync } from "node:sqlite";
+import { openSqliteDatabase } from "../adapters/store/database.js";
 import { MemoryLruCache } from "../adapters/cache/memory-cache.js";
 import { diagnoseLocalProject } from "../adapters/local/local-application.js";
 import { NodeProjectProfiler } from "../adapters/project/project-profiler.js";
@@ -200,12 +200,12 @@ test("doctor fails closed on corrupt and future SQLite state without migration",
   const directory = await mkdtemp(join(tmpdir(), "alphion-doctor-state-"));
   try {
     const futurePath = join(directory, "future.sqlite3");
-    const future = new DatabaseSync(futurePath);
+    const future = openSqliteDatabase(futurePath);
     future.exec("PRAGMA user_version = 99");
     future.close();
     const futureReport = await diagnoseLocalProject({ projectRoot: directory, statePath: futurePath });
     assert.ok(futureReport.checks.some((check) => check.id === "sqlite" && check.status === "fail" && check.summary.includes("99")));
-    const verify = new DatabaseSync(futurePath, { readOnly: true });
+    const verify = openSqliteDatabase(futurePath, { readOnly: true });
     const version = verify.prepare("PRAGMA user_version").get() as Readonly<Record<string, number>>;
     verify.close();
     assert.equal(version.user_version, 99);
@@ -223,7 +223,7 @@ test("doctor reports schema v2 as a pending read-only upgrade to v4", async () =
   const directory = await mkdtemp(join(tmpdir(), "alphion-doctor-v2-"));
   try {
     const statePath = join(directory, "v2.sqlite3");
-    const database = new DatabaseSync(statePath);
+    const database = openSqliteDatabase(statePath);
     database.exec(`
       PRAGMA user_version = 2;
       CREATE TABLE provider_profiles (id TEXT PRIMARY KEY, active INTEGER NOT NULL);
@@ -234,7 +234,7 @@ test("doctor reports schema v2 as a pending read-only upgrade to v4", async () =
     const check = report.checks.find((item) => item.id === "sqlite");
     assert.equal(check?.status, "warning");
     assert.match(check?.summary ?? "", /schema 2.*4/u);
-    const verify = new DatabaseSync(statePath, { readOnly: true });
+    const verify = openSqliteDatabase(statePath, { readOnly: true });
     const version = verify.prepare("PRAGMA user_version").get() as Readonly<Record<string, number>>;
     verify.close();
     assert.equal(version.user_version, 2);

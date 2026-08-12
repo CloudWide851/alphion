@@ -472,11 +472,22 @@ function PresetPicker(props: Readonly<{ presets: readonly ProviderPreset[]; sele
   return <Box flexDirection="column"><Text>选择 Provider 预设</Text>{props.presets.map((preset, index) => <Text key={preset.id} {...(index === selected ? accent(process.env.NO_COLOR === undefined) : {})}>{index === selected ? "◆" : "◇"} {preset.label}</Text>)}</Box>;
 }
 
-export function TextEntry(props: Readonly<{ label: string; initialValue?: string; masked?: boolean; onSubmit: (value: string) => void; onCancel?: () => void }>): React.JSX.Element {
+export function TextEntry(props: Readonly<{ label: string; initialValue?: string; masked?: boolean; clearOnSubmit?: boolean; resetKey?: string | number; onSubmit: (value: string) => void; onCancel?: () => void }>): React.JSX.Element {
   const [value, setValue] = useState(props.initialValue ?? "");
+  useEffect(() => {
+    setValue(props.initialValue ?? "");
+    return () => setValue("");
+  }, [props.initialValue, props.label, props.masked, props.resetKey]);
   useInput((input, key) => {
-    if (key.return) { if (value.trim().length > 0) props.onSubmit(value); return; }
-    if (key.escape) { props.onCancel?.(); return; }
+    if (key.return) {
+      if (value.trim().length > 0) {
+        const submitted = value;
+        if (props.masked || props.clearOnSubmit) setValue("");
+        props.onSubmit(submitted);
+      }
+      return;
+    }
+    if (key.escape) { setValue(""); props.onCancel?.(); return; }
     if (key.backspace || key.delete) { setValue((current) => current.slice(0, -1)); return; }
     if (!key.ctrl && !key.meta && input) setValue((current) => current + input);
   });

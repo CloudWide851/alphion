@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DatabaseSync } from "node:sqlite";
+import { openSqliteDatabase } from "../adapters/store/database.js";
 import { LocalResourceLoader, decodeManifest } from "../adapters/resources/local-resource-loader.js";
 import { LocalProviderResolver } from "../adapters/model/provider-resolver.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
@@ -80,7 +80,7 @@ test("SQLite v3 to v4 creates backup and requires explicit reshape for migrated 
     let store = new SqliteStore({ path });
     const fresh = await store.createSession({ title: "legacy-v3", idempotencyKey: "create:migrate:0001" });
     store.close();
-    const database = new DatabaseSync(path);
+    const database = openSqliteDatabase(path);
     database.exec("DROP TABLE session_shapes; ALTER TABLE sessions DROP COLUMN shape_status; ALTER TABLE sessions DROP COLUMN shape_revision; ALTER TABLE sessions DROP COLUMN shape_digest; ALTER TABLE runs DROP COLUMN shape_revision; ALTER TABLE runs DROP COLUMN shape_digest; PRAGMA user_version = 3;");
     database.close();
     store = new SqliteStore({ path });

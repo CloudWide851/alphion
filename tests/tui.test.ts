@@ -55,6 +55,24 @@ test("masked TUI entry never renders the entered credential", async () => {
   view.stdin.write("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(submitted, "secret-value");
+  assert.doesNotMatch(view.lastFrame() ?? "", /•+/u);
+  view.stdin.write("next-secret");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.match(view.lastFrame() ?? "", /•+/u);
+  view.unmount();
+});
+
+test("TUI entry resets when its purpose changes and preserves ordinary drafts after submit", async () => {
+  const submitted: string[] = [];
+  const view = render(React.createElement(TextEntry, { label: "名称", onSubmit: (value: string) => submitted.push(value) }));
+  view.stdin.write("draft");
+  view.stdin.write("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(submitted, ["draft"]);
+  assert.match(view.lastFrame() ?? "", /draft/u);
+  view.rerender(React.createElement(TextEntry, { label: "模型", onSubmit: (value: string) => submitted.push(value) }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.doesNotMatch(view.lastFrame() ?? "", /draft/u);
   view.unmount();
 });
 

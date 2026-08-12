@@ -7,8 +7,8 @@ import { sha256 } from "../src/application/canonical.js";
 import { AlphionError, normalizeError } from "../src/application/errors.js";
 import type { DiagnosticReport, ProjectProfile, ResourceScope } from "../src/domain/contracts.js";
 import type { ApprovalDecision, ApprovalPort, ApprovalRequest } from "../src/ports/index.js";
-import { diagnoseLocalProject, openLocalAlphionApplication } from "../adapters/local/local-application.js";
-import { SqliteStore } from "../adapters/store/sqlite-store.js";
+import type { LocalAlphionApplication } from "../adapters/local/local-application.js";
+import type { SqliteStore } from "../adapters/store/sqlite-store.js";
 
 interface ParsedArguments {
   readonly positionals: readonly string[];
@@ -26,6 +26,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const requestedRoot = resolve(flagValue(parsed, "project-root") ?? process.cwd());
   const requestedState = flagValue(parsed, "state");
   if (group === "doctor") {
+    const { diagnoseLocalProject } = await import("../adapters/local/local-application.js");
     const report = await diagnoseLocalProject({
       projectRoot: requestedRoot,
       ...(requestedState ? { statePath: resolve(requestedState) } : {}),
@@ -51,7 +52,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   if (group === "desktop") { const { runDesktopHost } = await import("../desktop/main.js"); await runDesktopHost({ projectRoot, statePath }); return 0; }
   if (group === "harness" && command === "plan") return harnessPlanCommand(parsed, projectRoot, statePath);
   if (group === "run") return runCommand(parsed, projectRoot, statePath);
-  const store = new SqliteStore({ path: statePath });
+  const { SqliteStore: Store } = await import("../adapters/store/sqlite-store.js");
+  const store = new Store({ path: statePath });
   try {
     if (group === "provider") return await providerCommand(store, command, parsed);
     if (group === "policy" && command === "shell") return await shellPolicyCommand(store, parsed);
@@ -154,7 +156,7 @@ async function cacheCommand(store: SqliteStore, command: string | undefined, par
 async function runCommand(parsed: ParsedArguments, projectRoot: string, statePath: string): Promise<number> {
   const prompt = requiredFlag(parsed, "prompt");
   const selected = flagValue(parsed, "provider");
-  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  const application = await openApplication(projectRoot, statePath);
   try {
     const session = await application.sessions.create({ title: prompt.slice(0, 80), ...(selected ? { providerId: selected } : {}) });
     const record = await session.get();
@@ -180,7 +182,7 @@ async function runCommand(parsed: ParsedArguments, projectRoot: string, statePat
 }
 
 async function sessionCommand(command: string | undefined, parsed: ParsedArguments, projectRoot: string, statePath: string): Promise<number> {
-  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  const application = await openApplication(projectRoot, statePath);
   try {
     if (command === "create") {
       const providerId = flagValue(parsed, "provider");
@@ -210,7 +212,7 @@ async function sessionCommand(command: string | undefined, parsed: ParsedArgumen
 
 async function resourceCommand(command: string | undefined, parsed: ParsedArguments, projectRoot: string, statePath: string): Promise<number> {
   if (command !== "list" && command !== "doctor") throw new AlphionError("validation", "resource command must be list or doctor.", { stage: "cli" });
-  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  const application = await openApplication(projectRoot, statePath);
   try {
     const resolution = await application.loadResources({ ...(parsed.flags.has("disable-scope") ? { disabledScopes: resourceScopes(parsed.flags.get("disable-scope") ?? []) } : {}), ...(parsed.flags.has("disable-id") ? { disabledIds: parsed.flags.get("disable-id") ?? [] } : {}) });
     process.stdout.write(`${JSON.stringify(command === "list" ? resolution.resources : resolution, null, 2)}\n`);
@@ -219,15 +221,20 @@ async function resourceCommand(command: string | undefined, parsed: ParsedArgume
 }
 
 async function harnessPlanCommand(parsed: ParsedArguments, projectRoot: string, statePath: string): Promise<number> {
-  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  const application = await openApplication(projectRoot, statePath);
   try { process.stdout.write(`${JSON.stringify(await application.planHarness(requiredFlag(parsed, "prompt")), null, 2)}\n`); return 0; }
   finally { await application.close(); }
 }
 
 function createCliKey(action: string | undefined): string { return `cli:${action ?? "command"}:${process.pid}:${Date.now()}`; }
 
+async function openApplication(projectRoot: string, statePath: string): Promise<LocalAlphionApplication> {
+  const { openLocalAlphionApplication } = await import("../adapters/local/local-application.js");
+  return openLocalAlphionApplication({ projectRoot, statePath });
+}
+
 async function projectInspectCommand(projectRoot: string, statePath: string, parsed: ParsedArguments): Promise<number> {
-  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  const application = await openApplication(projectRoot, statePath);
   try {
     const profile = await application.inspectProject({ ...(hasFlag(parsed, "refresh") ? { refresh: true } : {}) });
     if (hasFlag(parsed, "json")) process.stdout.write(`${JSON.stringify(profile, null, 2)}\n`);
@@ -335,8 +342,8 @@ function printHelp(): void {
 
 function launcherCommand(command: string | undefined, parsed: ParsedArguments): number {
   if (command === "menu") {
-    process.stdout.write(`\n  ALPHION 0.4.0  工程工作台\n  ==========================\n\n`);
-    process.stdout.write(`  1. 启动 Alphion 工程工作台\n  2. 运行只读诊断\n  3. 查看命令帮助\n  4. 退出\n\n`);
+    process.stdout.write(`\n  ALPHION 0.5.0\n  =============\n\n`);
+    process.stdout.write(`  1. 启动 Alphion\n  2. 启动 doctor\n  3. 查看命令帮助\n  4. 退出\n\n`);
     return 0;
   }
   if (command === "result") {

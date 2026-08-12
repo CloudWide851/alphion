@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:
 import { existsSync, mkdirSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { openSqliteDatabase, type SqliteDatabase } from "./database.js";
 import type { AgentMessage, AgentSessionRecord, AgentShape, AgentShapeReceipt, PendingMessageKind, PendingSessionMessage, ProviderProfile, ProviderProfileInput, SessionEntry, SessionView, SessionWriteOptions, SessionWriteReceipt, ShellRule, VaultStatus } from "../../src/domain/contracts.js";
 import type {
   CacheEntry,
@@ -36,7 +36,7 @@ export interface SqliteStoreOptions {
 export class SqliteStore
   implements EventStore, CacheStore, ProviderProfileStore, SecretVault, ShellPolicyStore, SessionStore
 {
-  readonly #database: DatabaseSync;
+  readonly #database: SqliteDatabase;
   readonly #databaseKey: string;
   readonly #databasePath: string;
   readonly #ownerId = createId("store");
@@ -66,10 +66,10 @@ export class SqliteStore
       });
     }
     mkdirSync(dirname(databasePath), { recursive: true });
-    let database: DatabaseSync | undefined;
+    let database: SqliteDatabase | undefined;
     OPEN_DATABASES.add(this.#databaseKey);
     try {
-      database = new DatabaseSync(databasePath);
+      database = openSqliteDatabase(databasePath);
       this.#database = database;
       this.#database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;");
       this.#assertIntegrity();
@@ -1140,7 +1140,7 @@ export class SqliteStore
     const backupPath = `${this.#databasePath}.v2-backup`;
     const sourceDigest = logicalDatabaseDigest(this.#database);
     if (existsSync(backupPath)) {
-      const existing = new DatabaseSync(backupPath, { readOnly: true });
+      const existing = openSqliteDatabase(backupPath, { readOnly: true });
       try {
         assertDatabaseHealthy(existing, "Existing v2 backup failed its integrity check.");
         const row = requiredRow(existing.prepare("PRAGMA user_version").get());
@@ -1153,7 +1153,7 @@ export class SqliteStore
     }
     this.#database.exec("PRAGMA wal_checkpoint(FULL)");
     this.#database.exec(`VACUUM INTO '${backupPath.replaceAll("'", "''")}'`);
-    const backup = new DatabaseSync(backupPath, { readOnly: true });
+    const backup = openSqliteDatabase(backupPath, { readOnly: true });
     try {
       assertDatabaseHealthy(backup, "Created v2 backup failed its integrity check.");
       const version = readNumber(requiredRow(backup.prepare("PRAGMA user_version").get()), "user_version");
@@ -1167,7 +1167,7 @@ export class SqliteStore
     if (this.#databasePath === ":memory:") return;
     const sourceDigest = logicalDatabaseDigest(this.#database);
     if (existsSync(backupPath)) {
-      const existing = new DatabaseSync(backupPath, { readOnly: true });
+      const existing = openSqliteDatabase(backupPath, { readOnly: true });
       try {
         assertDatabaseHealthy(existing, `Existing v${version} backup failed its integrity check.`);
         if (readNumber(requiredRow(existing.prepare("PRAGMA user_version").get()), "user_version") !== version || logicalDatabaseDigest(existing) !== sourceDigest) throw new AlphionError("conflict", `Existing v${version} backup does not match the database being migrated.`, { stage: "database" });
@@ -1176,7 +1176,7 @@ export class SqliteStore
     }
     this.#database.exec("PRAGMA wal_checkpoint(FULL)");
     this.#database.exec(`VACUUM INTO '${backupPath.replaceAll("'", "''")}'`);
-    const backup = new DatabaseSync(backupPath, { readOnly: true });
+    const backup = openSqliteDatabase(backupPath, { readOnly: true });
     try {
       assertDatabaseHealthy(backup, `Created v${version} backup failed its integrity check.`);
       if (readNumber(requiredRow(backup.prepare("PRAGMA user_version").get()), "user_version") !== version || logicalDatabaseDigest(backup) !== sourceDigest) throw new AlphionError("integrity-failed", `Created v${version} backup is not a recoverable snapshot.`, { stage: "database" });
@@ -1444,16 +1444,16 @@ export class SqliteStore
   }
 }
 
-function tableColumns(database: DatabaseSync, table: string): Set<string> {
+function tableColumns(database: SqliteDatabase, table: string): Set<string> {
   return new Set(database.prepare(`PRAGMA table_info('${table.replaceAll("'", "''")}')`).all().map((row) => readString(requiredRow(row), "name")));
 }
 
-function assertDatabaseHealthy(database: DatabaseSync, message: string): void {
+function assertDatabaseHealthy(database: SqliteDatabase, message: string): void {
   const rows = database.prepare("PRAGMA quick_check").all();
   if (rows.length !== 1 || Object.values(requiredRow(rows[0]))[0] !== "ok") throw new AlphionError("integrity-failed", message, { stage: "database" });
 }
 
-function logicalDatabaseDigest(database: DatabaseSync): string {
+function logicalDatabaseDigest(database: SqliteDatabase): string {
   const schema = database.prepare("SELECT name, type, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all().map(requiredRow);
   const tables = schema.filter((row) => readString(row, "type") === "table").map((row) => readString(row, "name"));
   const content = tables.map((table) => {

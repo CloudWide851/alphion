@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DatabaseSync } from "node:sqlite";
+import { openSqliteDatabase } from "../adapters/store/database.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
 import { LocalResourceLoader } from "../adapters/resources/local-resource-loader.js";
 import { CapabilityRegistry, planHarness } from "../src/application/harness.js";
@@ -80,13 +80,13 @@ test("schema v2 migration creates backup and read-only legacy session", async ()
   const path = join(directory, "state.sqlite3");
   let store = new SqliteStore({ path });
   store.close();
-  const db = new DatabaseSync(path);
+  const db = openSqliteDatabase(path);
   db.exec("DROP TABLE session_shapes; DROP TABLE session_commands; DROP TABLE pending_messages; DROP TABLE session_entries; DROP TABLE sessions; DROP TABLE session_owners; DROP INDEX events_session_sequence; ALTER TABLE events DROP COLUMN session_sequence; ALTER TABLE events DROP COLUMN schema_version; ALTER TABLE runs DROP COLUMN shape_revision; ALTER TABLE runs DROP COLUMN shape_digest; CREATE TABLE backup_fixture (value TEXT NOT NULL); INSERT INTO backup_fixture VALUES ('wal-visible'); PRAGMA user_version = 2;");
   db.close();
   store = new SqliteStore({ path });
   try {
     assert.equal(existsSync(`${path}.v2-backup`), true);
-    const backup = new DatabaseSync(`${path}.v2-backup`, { readOnly: true });
+    const backup = openSqliteDatabase(`${path}.v2-backup`, { readOnly: true });
     try {
       assert.equal((backup.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 2);
       assert.equal((backup.prepare("SELECT value FROM backup_fixture").get() as { value: string }).value, "wal-visible");
@@ -170,7 +170,7 @@ test("opening a store recovers orphaned leases and pending claims", async () => 
   await store.enqueuePending(session.id, "steer", user("recover me"), { expectedRevision: leased.revision, idempotencyKey: "steer:recover:0001" });
   await store.drainPending(session.id, "steer", "orphan-run");
   store.close();
-  const raw = new DatabaseSync(path);
+  const raw = openSqliteDatabase(path);
   raw.prepare("UPDATE sessions SET status = 'running', active_run_id = 'orphan-run', lease_owner = 'dead-owner', lease_expires_at = '2000-01-01T00:00:00.000Z'").run();
   raw.prepare("UPDATE pending_messages SET claimed_run_id = 'orphan-run', claimed_at = '2000-01-01T00:00:00.000Z', claim_owner = 'dead-owner'").run();
   raw.prepare("DELETE FROM session_owners").run();
