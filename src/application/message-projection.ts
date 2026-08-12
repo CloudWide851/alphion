@@ -11,7 +11,9 @@ export function projectAgentMessages(messages: readonly AgentMessage[]): readonl
       case "memory": result.push({ role: "system", content: `Session memory (${message.digest}):\n${message.content}` }); break;
       case "system-event": result.push({ role: "system", content: `[${message.eventKind}] ${message.content}` }); break;
       case "human-approval": result.push({ role: "system", content: `Approval ${message.requestId}: ${message.approved ? "approved" : "denied"}. ${message.content}` }); break;
-      case "agent": result.push({ role: "system", content: `Agent ${message.agentId}: ${message.content}` }); break;
+      case "agent": result.push({ role: "system", content: message.schemaVersion === 2
+        ? `Session ${message.sourceSessionId} (${message.domainId}, hop ${message.hop}): ${message.content}`
+        : `Agent ${message.agentId}: ${message.content}` }); break;
       case "workflow": result.push({ role: "system", content: `Workflow ${message.state}: ${message.content}` }); break;
     }
   }

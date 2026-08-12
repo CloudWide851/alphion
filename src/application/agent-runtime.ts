@@ -50,6 +50,7 @@ export interface AgentLoopOptions {
   readonly policy?: CapabilityPolicy;
   readonly eventBufferCapacity?: number;
   readonly beforeModelBoundary?: (runId: string, signal: AbortSignal) => Promise<readonly ProviderMessage[]>;
+  readonly deliverSessionMessage?: (targetSessionId: string, content: string, idempotencyKey: string) => Promise<import("../domain/contracts.js").SessionMessageReceipt>;
 }
 
 interface RuntimeContext {
@@ -87,6 +88,7 @@ export class AgentLoop {
   readonly #policy: CapabilityPolicy;
   readonly #eventBufferCapacity: number;
   readonly #beforeModelBoundary: ((runId: string, signal: AbortSignal) => Promise<readonly ProviderMessage[]>) | undefined;
+  readonly #deliverSessionMessage: AgentLoopOptions["deliverSessionMessage"];
   readonly #providerFlights = new SingleFlight<readonly ProviderEvent[]>();
   readonly #toolFlights = new SingleFlight<ToolResult>();
 
@@ -99,13 +101,14 @@ export class AgentLoop {
     this.#policy = options.policy ?? new DefaultCapabilityPolicy();
     this.#eventBufferCapacity = options.eventBufferCapacity ?? 256;
     this.#beforeModelBoundary = options.beforeModelBoundary;
+    this.#deliverSessionMessage = options.deliverSessionMessage;
   }
 
   execute(request: AgentRunRequest): AgentRunHandle {
     validateRunRequest(request);
     const runId = request.runId ?? createId("run");
     const sessionId = request.sessionId ?? createId("session");
-    const correlationId = createId("correlation");
+    const correlationId = request.collaboration?.correlationId ?? createId("correlation");
     const controller = new AbortController();
     const channel = new BoundedEventChannel<AgentStreamEvent>(this.#eventBufferCapacity);
     const budgets = mergeBudgets(request.budgets);
@@ -484,6 +487,7 @@ export class AgentLoop {
           if (bufferedUpdates) bufferedUpdates.push(safeContent);
           else await this.#emit(context, "tool.updated", { toolCallId: call.id, toolName: call.name, content: safeContent });
         },
+        ...(this.#deliverSessionMessage ? { sendSessionMessage: (targetSessionId: string, content: string, idempotencyKey: string) => this.#deliverSessionMessage!(targetSessionId, content, idempotencyKey) } : {}),
       };
       for (const hook of executor.before ?? []) {
         const outcome = await hook(finalArguments, toolContext);
@@ -647,13 +651,14 @@ export class AgentLoop {
     payload: Readonly<Record<string, unknown>>,
     causationId?: string,
   ): Promise<AgentEvent> {
+    const effectiveCausationId = causationId ?? context.request.collaboration?.causationId;
     const draft: AgentEventDraft = {
       runId: context.runId,
       sessionId: context.sessionId,
       correlationId: context.correlationId,
       kind,
       payload: sanitizeRecord(payload),
-      ...(causationId ? { causationId } : {}),
+      ...(effectiveCausationId ? { causationId: effectiveCausationId } : {}),
     };
     const event = await this.#eventStore.append(draft);
     context.workingMemory = reduceWorkingMemory(context.workingMemory, event);

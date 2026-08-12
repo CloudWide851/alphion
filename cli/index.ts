@@ -44,8 +44,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     return runTui({ projectRoot, statePath });
   }
   if (group === "project") {
-    if (command !== "inspect") throw new AlphionError("validation", "project command must be inspect.", { stage: "cli" });
-    return projectInspectCommand(projectRoot, statePath, parsed);
+    if (command === "inspect") return projectInspectCommand(projectRoot, statePath, parsed);
+    return projectRegistryCommand(command, parsed);
   }
   if (group === "session") return sessionCommand(command, parsed, projectRoot, statePath);
   if (group === "resource") return resourceCommand(command, parsed, projectRoot, statePath);
@@ -245,6 +245,22 @@ async function projectInspectCommand(projectRoot: string, statePath: string, par
   }
 }
 
+async function projectRegistryCommand(command: string | undefined, parsed: ParsedArguments): Promise<number> {
+  const { LocalProjectManager } = await import("../adapters/project/project-manager.js");
+  const manager = new LocalProjectManager(flagValue(parsed, "registry"));
+  if (command === "list") { process.stdout.write(`${JSON.stringify(await manager.list(), null, 2)}\n`); return 0; }
+  if (command === "current") { process.stdout.write(`${JSON.stringify(await manager.current() ?? null, null, 2)}\n`); return 0; }
+  if (command === "register" || command === "create") {
+    const input = { name: requiredFlag(parsed, "name"), root: requiredFlag(parsed, "root") };
+    process.stdout.write(`${JSON.stringify(await manager[command](input), null, 2)}\n`); return 0;
+  }
+  const projectId = parsed.positionals[2];
+  if (!projectId) throw new AlphionError("validation", `project ${command ?? "command"} requires PROJECT_ID.`, { stage: "cli" });
+  if (command === "activate") { process.stdout.write(`${JSON.stringify(await manager.activate(projectId), null, 2)}\n`); return 0; }
+  if (command === "remove") { const removed = await manager.remove(projectId); process.stdout.write(`${removed ? "removed" : "not found"}\n`); return removed ? 0 : 1; }
+  throw new AlphionError("validation", "project command must be inspect, register, create, list, current, activate, or remove.", { stage: "cli" });
+}
+
 class CliApprovalPort implements ApprovalPort {
   readonly revision = "cli-per-call-approval-v1";
 
@@ -332,7 +348,7 @@ function printHelp(): void {
   process.stdout.write(`  policy shell list\n  policy shell remove ID\n`);
   process.stdout.write(`  cache stats\n  cache clear [--namespace NAME]\n`);
   process.stdout.write(`  doctor [--json] [--project-root PATH] [--state PATH]\n`);
-  process.stdout.write(`  project inspect [--refresh] [--json] [--project-root PATH]\n`);
+  process.stdout.write(`  project inspect [--refresh] [--json] [--project-root PATH]\n  project register|create --name NAME --root PATH\n  project list|current|activate|remove ...\n`);
   process.stdout.write(`  run --prompt TEXT [--provider ID] [--project-root PATH] [--no-cache]\n\n`);
   process.stdout.write(`  session create|list|show|shape|reshape|checkout|send|steer|follow-up ...\n  harness plan --prompt TEXT\n`);
   process.stdout.write(`  resource list|doctor [--disable-scope SCOPE] [--disable-id ID]\n  desktop [--project-root PATH] [--state PATH]\n`);

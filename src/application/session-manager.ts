@@ -1,4 +1,4 @@
-import type { AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
+import type { AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, SessionMessageReceipt, SessionMessageRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
 import type { AgentRunHandle, AgentSessionContract, ApprovalPort, SessionManager, SessionStore } from "../ports/index.js";
 import type { AgentStreamEvent } from "../protocol/events.js";
 import { createId } from "./canonical.js";
@@ -46,6 +46,13 @@ export class DefaultSessionManager implements SessionManager {
   send(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.send(content, options, approval))); }
   steer(sessionId: string, content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.steer(content, options))); }
   followUp(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.followUp(content, options, approval))); }
+  deliver(request: SessionMessageRequest): Promise<SessionMessageReceipt> { this.options.assertOpen(); return this.#own(this.#deliver(request)); }
+
+  async #deliver(request: SessionMessageRequest): Promise<SessionMessageReceipt> {
+    const receipt = await this.options.store.deliverSessionMessage(request);
+    if (receipt.delivery === "follow-up") this.#session(receipt.targetSessionId).resumePending(DENY_UNATTENDED_APPROVAL);
+    return receipt;
+  }
   subscribe(sessionId: string, afterSessionSequence = 0): AsyncIterable<AgentStreamEvent> {
     this.options.assertOpen();
     const subscription = this.#own(this.#get(sessionId).then((session) => session.subscribe(afterSessionSequence)));
@@ -79,3 +86,8 @@ export class DefaultSessionManager implements SessionManager {
     return task;
   }
 }
+
+const DENY_UNATTENDED_APPROVAL: ApprovalPort = Object.freeze({
+  revision: "unattended-deny-v1",
+  requestApproval: () => Promise.resolve(Object.freeze({ approved: false, reason: "No approval client is attached to this automatically started Run." })),
+});

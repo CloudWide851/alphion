@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { openSqliteDatabase, type SqliteDatabase } from "./database.js";
-import type { AgentMessage, AgentSessionRecord, AgentShape, AgentShapeReceipt, PendingMessageKind, PendingSessionMessage, ProviderProfile, ProviderProfileInput, SessionEntry, SessionView, SessionWriteOptions, SessionWriteReceipt, ShellRule, VaultStatus } from "../../src/domain/contracts.js";
+import type { AgentMessage, AgentSessionRecord, AgentShape, AgentShapeReceipt, PendingMessageKind, PendingSessionMessage, ProviderProfile, ProviderProfileInput, SessionEntry, SessionMessageReceipt, SessionMessageRequest, SessionView, SessionWriteOptions, SessionWriteReceipt, ShellRule, VaultStatus } from "../../src/domain/contracts.js";
 import type {
   CacheEntry,
   CacheStats,
@@ -19,7 +19,7 @@ import { canonicalJson, createId, sha256 } from "../../src/application/canonical
 import { AlphionError } from "../../src/application/errors.js";
 import { containsPotentialSecret, sanitizeRecord } from "../../src/application/sensitive-data.js";
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const VAULT_SCHEMA_VERSION = 1;
 const VAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
 const VAULT_VERIFIER = "alphion-vault-verifier-v1";
@@ -29,6 +29,8 @@ const DEFAULT_RUN_LEASE_MS = 2 * 60 * 1000;
 
 export interface SqliteStoreOptions {
   readonly path: string;
+  readonly domainId?: string;
+  readonly projectId?: string;
   readonly vaultAutoLockMs?: number;
   readonly runLeaseMs?: number;
 }
@@ -41,6 +43,8 @@ export class SqliteStore
   readonly #databasePath: string;
   readonly #ownerId = createId("store");
   readonly #runLeaseMs: number;
+  readonly #domainId: string;
+  readonly #projectId: string | undefined;
   #leaseHeartbeat: NodeJS.Timeout | undefined;
   #closed = false;
   #vaultKey: Buffer | undefined;
@@ -52,6 +56,8 @@ export class SqliteStore
     const databasePath = resolve(options.path);
     this.#databasePath = databasePath;
     this.#databaseKey = pathKey(databasePath);
+    this.#domainId = options.domainId ?? `domain_${sha256(pathKey(databasePath)).slice(0, 32)}`;
+    this.#projectId = options.projectId;
     this.#vaultAutoLockMs = options.vaultAutoLockMs ?? VAULT_AUTO_LOCK_MS;
     this.#runLeaseMs = options.runLeaseMs ?? DEFAULT_RUN_LEASE_MS;
     if (!Number.isSafeInteger(this.#vaultAutoLockMs) || this.#vaultAutoLockMs <= 0) {
@@ -74,7 +80,7 @@ export class SqliteStore
       this.#database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;");
       this.#assertIntegrity();
       this.#migrate();
-      this.#reconcileSessionSchemaV4();
+      this.#reconcileSessionSchemaV5();
       this.#registerOwnerAndRecover();
       this.#leaseHeartbeat = setInterval(() => this.#heartbeatOwner(), Math.max(500, Math.floor(this.#runLeaseMs / 3)));
       this.#leaseHeartbeat.unref();
@@ -95,6 +101,7 @@ export class SqliteStore
     if (this.#leaseHeartbeat) clearInterval(this.#leaseHeartbeat);
     this.#leaseHeartbeat = undefined;
     try { this.#retireOwner(); } catch { /* Closing still releases the local handle. Expiry remains the crash fallback. */ }
+    try { this.#database.exec("PRAGMA wal_checkpoint(PASSIVE)"); } catch { /* Checkpoint is maintenance-only; close still releases the handle. */ }
     this.lock();
     this.#database.close();
     OPEN_DATABASES.delete(this.#databaseKey);
@@ -236,8 +243,8 @@ export class SqliteStore
       const id = createId("session");
       const now = new Date().toISOString();
       this.#database.prepare(
-        "INSERT INTO sessions (id, title, current_leaf_id, revision, status, active_run_id, provider_id, created_at, updated_at, audit_only) VALUES (?, ?, NULL, 0, 'idle', NULL, ?, ?, ?, 0)",
-      ).run(id, input.title.trim() || "新会话", input.providerId ?? null, now, now);
+        "INSERT INTO sessions (id, title, current_leaf_id, revision, status, active_run_id, provider_id, created_at, updated_at, audit_only, domain_id, project_id) VALUES (?, ?, NULL, 0, 'idle', NULL, ?, ?, ?, 0, ?, ?)",
+      ).run(id, input.title.trim() || "新会话", input.providerId ?? null, now, now, this.#domainId, this.#projectId ?? null);
       const session = this.#requireSession(id);
       this.#recordSessionCommand(input.idempotencyKey, id, session);
       return session;
@@ -392,7 +399,7 @@ export class SqliteStore
     });
   }
 
-  async enqueuePending(sessionId: string, kind: PendingMessageKind, message: Extract<AgentMessage, { readonly kind: "user" }>, options: SessionWriteOptions): Promise<SessionWriteReceipt> {
+  async enqueuePending(sessionId: string, kind: PendingMessageKind, message: Extract<AgentMessage, { readonly kind: "user" | "agent" }>, options: SessionWriteOptions): Promise<SessionWriteReceipt> {
     return this.#transaction(() => {
       const replay = this.#replayedReceipt(options.idempotencyKey, sessionId);
       if (replay) return replay;
@@ -412,6 +419,47 @@ export class SqliteStore
       const receipt: SessionWriteReceipt = { sessionId, revision, pendingMessageId: id, replayed: false };
       this.#recordSessionCommand(options.idempotencyKey, sessionId, receipt);
       return receipt;
+    });
+  }
+
+  async deliverSessionMessage(request: SessionMessageRequest): Promise<SessionMessageReceipt> {
+    return this.#transaction(() => {
+      validateIdempotencyKey(request.idempotencyKey);
+      const replay = optionalRow(this.#database.prepare("SELECT * FROM collaboration_messages WHERE idempotency_key = ?").get(request.idempotencyKey));
+      if (replay) return decodeCollaborationReceipt(replay, true);
+      const source = this.#requireSession(request.sourceSessionId);
+      const target = this.#requireSession(request.targetSessionId);
+      if (source.domainId !== request.domainId || target.domainId !== request.domainId || request.domainId !== this.#domainId) throw new AlphionError("forbidden", "Sessions in different Project domains cannot collaborate.", { stage: "session" });
+      if (source.id === target.id) throw new AlphionError("validation", "Session collaboration target must be different from the source.", { stage: "session" });
+      if (source.activeRunId !== request.sourceRunId || source.status !== "running") throw new AlphionError("conflict", "Source Run no longer owns its Session lease.", { stage: "session" });
+      if (source.shapeDigest !== request.shapeDigest) throw new AlphionError("conflict", "Source shape identity changed.", { stage: "session" });
+      if (target.auditOnly || target.shapeStatus !== "shaped") throw new AlphionError("forbidden", "Target Session is not available for collaboration.", { stage: "session" });
+      if (!Number.isSafeInteger(request.hop) || request.hop < 1 || request.hop > 8) throw new AlphionError("budget-exceeded", "Session collaboration hop budget exceeded.", { stage: "session" });
+      const content = request.content.trim();
+      if (!content || content.length > 16_384) throw new AlphionError("validation", "Collaboration message must contain 1-16384 characters.", { stage: "session" });
+      const budget = optionalRow(this.#database.prepare("SELECT sent_count FROM collaboration_run_budgets WHERE source_run_id = ?").get(request.sourceRunId));
+      const sentCount = budget ? readNumber(budget, "sent_count") : 0;
+      if (sentCount >= 4) throw new AlphionError("budget-exceeded", "Per-Run Session collaboration budget exceeded.", { stage: "session" });
+      const delivery = target.status === "running" ? "steer" : "follow-up";
+      const queued = requiredRow(this.#database.prepare("SELECT COUNT(*) AS count FROM pending_messages WHERE session_id = ? AND kind = ?").get(target.id, delivery));
+      if (readNumber(queued, "count") >= 64) throw new AlphionError("budget-exceeded", `${delivery} queue is full.`, { stage: "session" });
+      const messageId = createId("agent-message");
+      const now = new Date().toISOString();
+      const message: Extract<AgentMessage, { readonly schemaVersion: 2; readonly kind: "agent" }> = Object.freeze({ schemaVersion: 2, kind: "agent", id: messageId, createdAt: now, sourceSessionId: source.id, targetSessionId: target.id, domainId: request.domainId, idempotencyKey: request.idempotencyKey, correlationId: request.correlationId, ...(request.causationId ? { causationId: request.causationId } : {}), hop: request.hop, delivery, content });
+      validateAgentMessage(message);
+      const sourceEntryId = createId("entry");
+      this.#database.prepare("INSERT INTO session_entries (id, parent_id, session_id, run_id, timestamp, message_json) VALUES (?, ?, ?, ?, ?, ?)").run(sourceEntryId, source.currentLeafId ?? null, source.id, request.sourceRunId, now, canonicalJson(message));
+      const sourceRevision = source.revision + 1;
+      this.#database.prepare("UPDATE sessions SET current_leaf_id = ?, revision = ?, updated_at = ? WHERE id = ?").run(sourceEntryId, sourceRevision, now, source.id);
+      const targetEntryId = createId("entry");
+      this.#database.prepare("INSERT INTO session_entries (id, parent_id, session_id, run_id, timestamp, message_json) VALUES (?, ?, ?, NULL, ?, ?)").run(targetEntryId, target.currentLeafId ?? null, target.id, now, canonicalJson(message));
+      const targetRevision = target.revision + 1;
+      this.#database.prepare("UPDATE sessions SET current_leaf_id = ?, revision = ?, updated_at = ? WHERE id = ?").run(targetEntryId, targetRevision, now, target.id);
+      const pendingId = createId("pending");
+      this.#database.prepare("INSERT INTO pending_messages (id, session_id, kind, message_json, idempotency_key, created_at, claimed_run_id, claimed_at, claim_owner) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)").run(pendingId, target.id, delivery, canonicalJson(message), `delivery:${sha256(request.idempotencyKey)}`, now);
+      this.#database.prepare("INSERT INTO collaboration_messages (message_id, source_session_id, source_run_id, target_session_id, target_revision, domain_id, shape_digest, idempotency_key, correlation_id, causation_id, hop, delivery, content_digest, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(messageId, source.id, request.sourceRunId, target.id, targetRevision, request.domainId, request.shapeDigest, request.idempotencyKey, request.correlationId, request.causationId ?? null, request.hop, delivery, sha256(content), now);
+      this.#database.prepare("INSERT INTO collaboration_run_budgets (source_run_id, sent_count) VALUES (?, 1) ON CONFLICT(source_run_id) DO UPDATE SET sent_count = sent_count + 1").run(request.sourceRunId);
+      return Object.freeze({ messageId, sourceSessionId: source.id, targetSessionId: target.id, targetRevision, delivery, hop: request.hop, replayed: false });
     });
   }
 
@@ -1023,17 +1071,23 @@ export class SqliteStore
         this.#createSchemaV2();
         this.#createSessionSchemaV3();
         this.#createShapeSchemaV4(false);
+        this.#createProjectSessionSchemaV5();
       });
       return;
     }
     if (current === 2) {
       this.#backupV2();
-      this.#transaction(() => { this.#createSessionSchemaV3(); this.#createShapeSchemaV4(false); });
+      this.#transaction(() => { this.#createSessionSchemaV3(); this.#createShapeSchemaV4(false); this.#createProjectSessionSchemaV5(); });
       return;
     }
     if (current === 3) {
       this.#backupV3();
-      this.#transaction(() => this.#createShapeSchemaV4(true));
+      this.#transaction(() => { this.#createShapeSchemaV4(true); this.#createProjectSessionSchemaV5(); });
+      return;
+    }
+    if (current === 4) {
+      this.#backupSchema(4, `${this.#databasePath}.v4-backup`);
+      this.#transaction(() => this.#createProjectSessionSchemaV5());
       return;
     }
     if (current !== 1) {
@@ -1078,6 +1132,7 @@ export class SqliteStore
       this.#database.exec("PRAGMA user_version = 2");
       this.#createSessionSchemaV3();
       this.#createShapeSchemaV4(false);
+      this.#createProjectSessionSchemaV5();
     });
   }
 
@@ -1263,7 +1318,39 @@ export class SqliteStore
     `);
   }
 
-  #reconcileSessionSchemaV4(): void {
+  #createProjectSessionSchemaV5(): void {
+    const sessionColumns = tableColumns(this.#database, "sessions");
+    if (!sessionColumns.has("domain_id")) this.#database.exec("ALTER TABLE sessions ADD COLUMN domain_id TEXT");
+    if (!sessionColumns.has("project_id")) this.#database.exec("ALTER TABLE sessions ADD COLUMN project_id TEXT");
+    this.#database.prepare("UPDATE sessions SET domain_id = ? WHERE domain_id IS NULL").run(this.#domainId);
+    this.#database.exec(`
+      CREATE INDEX IF NOT EXISTS sessions_domain ON sessions(domain_id, updated_at, id);
+      CREATE TABLE IF NOT EXISTS collaboration_messages (
+        message_id TEXT PRIMARY KEY,
+        source_session_id TEXT NOT NULL REFERENCES sessions(id),
+        source_run_id TEXT NOT NULL,
+        target_session_id TEXT NOT NULL REFERENCES sessions(id),
+        target_revision INTEGER NOT NULL,
+        domain_id TEXT NOT NULL,
+        shape_digest TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        correlation_id TEXT NOT NULL,
+        causation_id TEXT,
+        hop INTEGER NOT NULL CHECK (hop BETWEEN 1 AND 8),
+        delivery TEXT NOT NULL CHECK (delivery IN ('steer', 'follow-up')),
+        content_digest TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS collaboration_target ON collaboration_messages(target_session_id, created_at, message_id);
+      CREATE TABLE IF NOT EXISTS collaboration_run_budgets (
+        source_run_id TEXT PRIMARY KEY,
+        sent_count INTEGER NOT NULL CHECK (sent_count BETWEEN 0 AND 4)
+      );
+      PRAGMA user_version = 5;
+    `);
+  }
+
+  #reconcileSessionSchemaV5(): void {
     const sessionColumns = tableColumns(this.#database, "sessions");
     const pendingColumns = tableColumns(this.#database, "pending_messages");
     this.#transaction(() => {
@@ -1272,6 +1359,9 @@ export class SqliteStore
       if (!pendingColumns.has("claimed_at")) this.#database.exec("ALTER TABLE pending_messages ADD COLUMN claimed_at TEXT");
       if (!pendingColumns.has("claim_owner")) this.#database.exec("ALTER TABLE pending_messages ADD COLUMN claim_owner TEXT");
       this.#database.exec("CREATE TABLE IF NOT EXISTS session_owners (owner_id TEXT PRIMARY KEY, expires_at TEXT NOT NULL)");
+      if (!sessionColumns.has("domain_id")) this.#database.exec("ALTER TABLE sessions ADD COLUMN domain_id TEXT");
+      if (!sessionColumns.has("project_id")) this.#database.exec("ALTER TABLE sessions ADD COLUMN project_id TEXT");
+      this.#database.prepare("UPDATE sessions SET domain_id = ? WHERE domain_id IS NULL").run(this.#domainId);
     });
   }
 
@@ -1609,9 +1699,14 @@ function decodeSession(row: Readonly<Record<string, unknown>>): AgentSessionReco
   if (shapeStatus !== "unshaped" && shapeStatus !== "shaped" && shapeStatus !== "legacy-unshaped") throw new AlphionError("integrity-failed", "Stored Session shape status is invalid.", { stage: "database" });
   const shapeRevision = row.shape_revision === null || row.shape_revision === undefined ? undefined : readNumber(row, "shape_revision");
   const shapeDigest = readNullableString(row, "shape_digest");
+  const domainId = readString(row, "domain_id");
+  const projectId = readNullableString(row, "project_id");
+  if (!domainId) throw new AlphionError("integrity-failed", "Stored Session domain identity is missing.", { stage: "database" });
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: readString(row, "id"),
+    domainId,
+    ...(projectId ? { projectId } : {}),
     title: readString(row, "title"),
     ...(currentLeafId ? { currentLeafId } : {}),
     revision: readNumber(row, "revision"),
@@ -1660,7 +1755,7 @@ function decodePendingMessage(row: Readonly<Record<string, unknown>>): PendingSe
   const kind = readString(row, "kind");
   if (kind !== "steer" && kind !== "follow-up") throw new AlphionError("integrity-failed", "Stored pending-message kind is invalid.", { stage: "database" });
   const message = parseAgentMessage(readString(row, "message_json"));
-  if (message.kind !== "user") throw new AlphionError("integrity-failed", "Pending session message must be a user message.", { stage: "database" });
+  if (message.kind !== "user" && message.kind !== "agent") throw new AlphionError("integrity-failed", "Pending session message must be a user or agent message.", { stage: "database" });
   return { id: readString(row, "id"), sessionId: readString(row, "session_id"), kind, message, idempotencyKey: readString(row, "idempotency_key"), createdAt: readString(row, "created_at") };
 }
 
@@ -1685,11 +1780,31 @@ function validateAgentMessage(message: unknown): asserts message is AgentMessage
   if (!message || typeof message !== "object" || Array.isArray(message)) throw new AlphionError("validation", "Agent message must be an object.", { stage: "session" });
   const value = message as Readonly<Record<string, unknown>>;
   const kinds = ["user", "assistant", "tool-call", "observation", "memory", "system-event", "human-approval", "agent", "workflow"];
-  if (value.schemaVersion !== 1 || typeof value.id !== "string" || value.id.length === 0 || typeof value.createdAt !== "string" || !kinds.includes(String(value.kind))) {
+  if ((value.schemaVersion !== 1 && value.schemaVersion !== 2) || typeof value.id !== "string" || value.id.length === 0 || typeof value.createdAt !== "string" || !kinds.includes(String(value.kind))) {
     throw new AlphionError("validation", "Agent message envelope is invalid.", { stage: "session" });
+  }
+  if (value.schemaVersion === 2) {
+    const exact = ["schemaVersion", "kind", "id", "createdAt", "sourceSessionId", "targetSessionId", "domainId", "idempotencyKey", "correlationId", "causationId", "hop", "delivery", "content"];
+    if (value.kind !== "agent" || Object.keys(value).some((key) => !exact.includes(key))) throw new AlphionError("validation", "Schema-v2 Agent message contains an invalid field.", { stage: "session" });
+    for (const key of ["sourceSessionId", "targetSessionId", "domainId", "correlationId", "content"] as const) {
+      if (typeof value[key] !== "string" || !value[key]) throw new AlphionError("validation", `Schema-v2 Agent message ${key} is invalid.`, { stage: "session" });
+    }
+    if (value.causationId !== undefined && (typeof value.causationId !== "string" || !value.causationId)) throw new AlphionError("validation", "Schema-v2 Agent message causationId is invalid.", { stage: "session" });
+    if (!Number.isSafeInteger(value.hop) || (value.hop as number) < 1 || (value.hop as number) > 8 || (value.delivery !== "steer" && value.delivery !== "follow-up")) throw new AlphionError("validation", "Schema-v2 Agent message delivery identity is invalid.", { stage: "session" });
+    validateIdempotencyKey(String(value.idempotencyKey));
+  } else if (value.kind === "agent" && typeof value.agentId !== "string") {
+    throw new AlphionError("validation", "Schema-v1 Agent message identity is invalid.", { stage: "session" });
   }
   if (typeof value.content !== "string" && value.kind !== "tool-call") throw new AlphionError("validation", "Agent message content is invalid.", { stage: "session" });
   if (containsPotentialSecret(value)) throw new AlphionError("forbidden", "Agent messages cannot contain probable secrets.", { stage: "session" });
+}
+
+function decodeCollaborationReceipt(row: Readonly<Record<string, unknown>>, replayed: boolean): SessionMessageReceipt {
+  const delivery = readString(row, "delivery");
+  if (delivery !== "steer" && delivery !== "follow-up") throw new AlphionError("integrity-failed", "Stored collaboration delivery is invalid.", { stage: "database" });
+  const hop = readNumber(row, "hop");
+  if (!Number.isSafeInteger(hop) || hop < 1 || hop > 8) throw new AlphionError("integrity-failed", "Stored collaboration hop is invalid.", { stage: "database" });
+  return Object.freeze({ messageId: readString(row, "message_id"), sourceSessionId: readString(row, "source_session_id"), targetSessionId: readString(row, "target_session_id"), targetRevision: readNumber(row, "target_revision"), delivery, hop, replayed });
 }
 
 function validateIdempotencyKey(value: string): void {

@@ -21,6 +21,7 @@ export class Agent implements AgentContract {
       approval,
       ...(this.options.cache ? { cache: this.options.cache } : {}),
       ...(hooks ? { beforeModelBoundary: async (runId, signal) => projectAgentMessages(await hooks.drainSteering(runId, signal)) } : {}),
+      ...(hooks?.deliverSessionMessage ? { deliverSessionMessage: hooks.deliverSessionMessage } : {}),
     });
     const providerHistory = projectAgentMessages(request.history);
     const contextResources = (request.shape?.resources ?? request.environment.resources).filter((resource) => resource.kind === "context");

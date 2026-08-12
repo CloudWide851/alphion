@@ -41,11 +41,14 @@ import { EnvironmentSecretResolver } from "../secrets/environment-secret.js";
 import { LocalResourceLoader } from "../resources/local-resource-loader.js";
 import { ProjectCodeRecall } from "../recall/project-code-recall.js";
 import { SqliteStore } from "../store/sqlite-store.js";
-import { EditTool, GrepTool, ReadTool, ShellTool, WriteTool } from "../tools/index.js";
+import { EditTool, GrepTool, ReadTool, SessionSendTool, ShellTool, WriteTool } from "../tools/index.js";
 
 export interface LocalApplicationOptions {
   readonly projectRoot: string;
   readonly statePath?: string;
+  readonly projectId?: string;
+  readonly domainId?: string;
+  readonly unowned?: boolean;
 }
 
 const execFileAsync = promisify(execFile);
@@ -82,32 +85,31 @@ export class LocalAlphionApplication implements AgentApplication {
   readonly #resources = new LocalResourceLoader();
   readonly #recall = new ProjectCodeRecall();
   readonly #models: LocalModelResolver;
+  readonly #unowned: boolean;
   readonly #capabilities = new CapabilityRegistry([
     { id: "project.read", description: "Read bounded project context.", taskLabels: ["explain", "diagnose", "implement", "verify", "release"], permissions: ["project:read"], defaultBudget: 20 },
     { id: "project.write", description: "Modify project files.", taskLabels: ["implement", "release"], permissions: ["project:write"], defaultBudget: 12 },
     { id: "quality.verify", description: "Run project verification.", taskLabels: ["diagnose", "verify", "release"], permissions: ["process:approved"], defaultBudget: 8 },
+    { id: "session.collaborate", description: "Send bounded messages to shaped Sessions in the same Project domain.", taskLabels: ["explain", "diagnose", "implement", "verify", "release"], permissions: ["session:send"], defaultBudget: 4 },
   ]);
   readonly #shaper: AgentShaper;
   #closed = false;
   #closePromise: Promise<void> | undefined;
 
-  private constructor(projectRoot: string, statePath: string, store: SqliteStore) {
+  private constructor(projectRoot: string, statePath: string, store: SqliteStore, unowned: boolean) {
     this.#projectRoot = projectRoot;
+    this.#unowned = unowned;
     this.#statePath = statePath;
     this.#store = store;
     this.#secrets = new CompositeSecretResolver([new EnvironmentSecretResolver(), store]);
     this.#cache = new TieredCache(new MemoryLruCache(), store);
-    this.#tools = new ToolRegistry([
-      new ReadTool(),
-      new GrepTool(),
-      new EditTool(),
-      new WriteTool(),
-      new ShellTool(store),
-    ]);
+    this.#tools = new ToolRegistry(unowned
+      ? [new SessionSendTool()]
+      : [new ReadTool(), new GrepTool(), new EditTool(), new WriteTool(), new ShellTool(store), new SessionSendTool()]);
     this.#profiler = new NodeProjectProfiler({ cache: this.#cache });
     this.configuration = new ProviderConfigurationManager(store, store);
     this.#models = new LocalModelResolver(store, this.#secrets);
-    this.#shaper = new AgentShaper({ capabilities: this.#capabilities.list().map((item) => item.id), policies: ["default-deny", "approval-for-side-effects"], tools: this.#tools.names(), toolCapabilities: { read: "project.read", grep: "project.read", edit: "project.write", write: "project.write", shell: "quality.verify" } });
+    this.#shaper = new AgentShaper({ capabilities: this.#capabilities.list().map((item) => item.id).filter((id) => !unowned || id === "session.collaborate"), policies: ["default-deny", "approval-for-side-effects", "same-domain-session-collaboration", ...(unowned ? ["no-project-filesystem"] : [])], tools: this.#tools.names(), toolCapabilities: { read: "project.read", grep: "project.read", edit: "project.write", write: "project.write", shell: "quality.verify", "session.send": "session.collaborate" } });
     this.agent = new Agent({ models: this.#models, tools: this.#tools, eventStore: store, cache: this.#cache });
     this.sessions = new DefaultSessionManager({ store, session: (sessionId) => this.#session(sessionId), assertOpen: () => this.#assertOpen() });
   }
@@ -115,14 +117,15 @@ export class LocalAlphionApplication implements AgentApplication {
   static async open(options: LocalApplicationOptions): Promise<LocalAlphionApplication> {
     const projectRoot = await realpath(resolve(options.projectRoot));
     const statePath = resolve(options.statePath ?? join(projectRoot, ".alphion", "alphion.sqlite3"));
-    return new LocalAlphionApplication(projectRoot, statePath, new SqliteStore({ path: statePath }));
+    return new LocalAlphionApplication(projectRoot, statePath, new SqliteStore({ path: statePath, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.domainId ? { domainId: options.domainId } : {}) }), options.unowned === true);
   }
 
   planHarness(prompt: string, overlay?: HarnessTaskOverlay): Promise<HarnessPlan> { this.#assertOpen(); return Promise.resolve(planHarness(prompt, this.#capabilities, overlay)); }
 
   async loadResources(request: Omit<ResourceLoadRequest, "projectRoot"> = {}): Promise<ResourceResolution> {
     this.#assertOpen();
-    return this.#resources.resolve({ projectRoot: this.#projectRoot, ...request });
+    const disabledScopes = this.#unowned ? Object.freeze([...(request.disabledScopes ?? []), "project" as const]) : request.disabledScopes;
+    return this.#resources.resolve({ projectRoot: this.#projectRoot, ...request, ...(disabledScopes ? { disabledScopes } : {}) });
   }
 
   inspectProject(options: Readonly<{ refresh?: boolean }> = {}): Promise<ProjectProfile> {
@@ -164,10 +167,11 @@ export class LocalAlphionApplication implements AgentApplication {
     return new AgentSession({ sessionId, store: this.#store, agent: this.agent, projectRoot: this.#projectRoot,
       projectProfile: () => this.#profiler.inspect({ projectRoot: this.#projectRoot }),
       environment: async (profile, shape) => createAgentEnvironment({ identity: shape.identity, projectRoot: this.#projectRoot, projectRevision: profile.projectRevision, capabilities: shape.capabilities, policies: shape.policies, loaded: { schemaVersion: 1, resources: shape.resources, shadows: [], omissions: shape.omissions, diagnostics: [], digest: shape.resourceDigest }, goal: shape.goal, behavior: shape.behavior, harnessPlan: shape.harnessPlan, systemPromptPlan: shape.systemPromptPlan }),
-      shape: async (request: AgentShapeRequest, revision, profile, harness) => this.#shaper.shape({ sessionId, revision, request, profile, resources: await this.#resources.resolve({ projectRoot: this.#projectRoot }), harness }),
+      shape: async (request: AgentShapeRequest, revision, profile, harness) => this.#shaper.shape({ sessionId, revision, request, profile, resources: await this.#resources.resolve({ projectRoot: this.#projectRoot, ...(this.#unowned ? { disabledScopes: ["project"] } : {}) }), harness }),
       plan: (prompt) => planHarness(prompt, this.#capabilities),
       models: this.#models,
-      recall: this.#recall });
+      ...(this.#unowned ? {} : { recall: this.#recall }),
+      deliverSessionMessage: (request) => this.sessions.deliver(request) });
   }
 }
 
@@ -260,8 +264,8 @@ async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
     const schema = numericCell(database.prepare("PRAGMA user_version").get(), "user_version");
     const integrity = firstCell(database.prepare("PRAGMA quick_check").get()) === "ok";
     if (!integrity) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: "SQLite 完整性检查失败。", remediation: "请备份 .alphion 后按 Runbook 恢复。" })];
-    if (schema > 4) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: `SQLite schema ${schema} 高于当前支持的 4。`, remediation: "请使用兼容版本的 Alphion。" })];
-    if (schema < 4) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "warning", summary: `SQLite schema ${schema} 尚未迁移至 4；doctor 未做修改。`, remediation: "备份后通过正常应用启动执行迁移。" })];
+    if (schema > 5) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: `SQLite schema ${schema} 高于当前支持的 5。`, remediation: "请使用兼容版本的 Alphion。" })];
+    if (schema < 5) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "warning", summary: `SQLite schema ${schema} 尚未迁移至 5；doctor 未做修改。`, remediation: "备份后通过正常应用启动执行迁移。" })];
     const providerCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles").get(), "count");
     const activeCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles WHERE active = 1").get(), "count");
     const vaultCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM vault_metadata").get(), "count");

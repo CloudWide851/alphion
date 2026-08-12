@@ -273,6 +273,8 @@ export interface AgentRunRequest {
   readonly workingMemory?: WorkingMemorySnapshot;
   /** Immutable identity of the Session shape used by this run. */
   readonly shape?: AgentShape;
+  /** Bounded causal identity for project-scoped Session collaboration. */
+  readonly collaboration?: CollaborationContext;
 }
 
 /** Immutable, session-derived inputs used to assemble one model context. */
@@ -317,13 +319,21 @@ export type AgentMessage =
   | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "system-event"; readonly eventKind: string; readonly content: string }>
   | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "human-approval"; readonly requestId: string; readonly approved: boolean; readonly content: string }>
   | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "agent"; readonly agentId: string; readonly content: string }>
-  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "workflow"; readonly state: string; readonly content: string }>;
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "workflow"; readonly state: string; readonly content: string }>
+  | Readonly<AgentMessageBase & {
+      readonly schemaVersion: 2; readonly kind: "agent";
+      readonly sourceSessionId: string; readonly targetSessionId: string; readonly domainId: string;
+      readonly idempotencyKey: string; readonly correlationId: string; readonly causationId?: string;
+      readonly hop: number; readonly delivery: "steer" | "follow-up"; readonly content: string;
+    }>;
 
 export type SessionStatus = "idle" | "running" | "legacy-audit";
 
 export interface AgentSessionRecord {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly id: string;
+  readonly domainId: string;
+  readonly projectId?: string;
   readonly title: string;
   readonly currentLeafId?: string;
   readonly revision: number;
@@ -359,9 +369,31 @@ export interface PendingSessionMessage {
   readonly id: string;
   readonly sessionId: string;
   readonly kind: PendingMessageKind;
-  readonly message: Extract<AgentMessage, { readonly kind: "user" }>;
+  readonly message: Extract<AgentMessage, { readonly kind: "user" | "agent" }>;
   readonly idempotencyKey: string;
   readonly createdAt: string;
+}
+
+export interface CollaborationContext {
+  readonly correlationId: string;
+  readonly causationId?: string;
+  readonly hop: number;
+}
+
+export interface SessionMessageRequest {
+  readonly sourceSessionId: string; readonly sourceRunId: string; readonly targetSessionId: string;
+  readonly domainId: string; readonly shapeDigest: string; readonly idempotencyKey: string;
+  readonly correlationId: string; readonly causationId?: string; readonly hop: number; readonly content: string;
+}
+
+export interface SessionMessageReceipt {
+  readonly messageId: string; readonly sourceSessionId: string; readonly targetSessionId: string;
+  readonly targetRevision: number; readonly delivery: "steer" | "follow-up"; readonly hop: number; readonly replayed: boolean;
+}
+
+export interface ProjectRecord {
+  readonly schemaVersion: 1; readonly id: string; readonly name: string; readonly root: string;
+  readonly statePath: string; readonly domainId: string; readonly createdAt: string; readonly updatedAt: string;
 }
 
 export interface SessionWriteOptions {

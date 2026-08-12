@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentRunResult, AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, HarnessPlan, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
+import type { AgentMessage, AgentRunResult, AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, CollaborationContext, HarnessPlan, SessionMessageReceipt, SessionMessageRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
 import type { AgentContract, AgentRunHandle, AgentSessionContract, ApprovalPort, CodeRecall, ModelResolver, SessionStore } from "../ports/index.js";
 import type { AgentStreamEvent } from "../protocol/events.js";
 import { BoundedEventChannel } from "./event-channel.js";
@@ -21,6 +21,7 @@ export interface AgentSessionOptions {
   readonly plan: (prompt: string) => HarnessPlan;
   readonly models?: ModelResolver;
   readonly recall?: CodeRecall;
+  readonly deliverSessionMessage?: (request: SessionMessageRequest) => Promise<SessionMessageReceipt>;
 }
 
 export class AgentSession implements AgentSessionContract {
@@ -97,7 +98,7 @@ export class AgentSession implements AgentSessionContract {
     if (started.receipt.replayed) throw new AlphionError("conflict", "This send command was already applied; subscribe to the session instead of starting it again.", { stage: "session" });
     let handle: AgentRunHandle;
     try {
-      handle = await this.#executeLeased(prompt, runId, started.session.providerId, started.shape, approval);
+      handle = await this.#executeLeased(prompt, runId, started.session.providerId, started.shape, approval, Object.freeze({ correlationId: createId("correlation"), hop: 0 }));
     } catch (error) {
       await this.options.store.releaseRunLease(this.id, runId);
       throw error;
@@ -126,6 +127,11 @@ export class AgentSession implements AgentSessionContract {
       this.#launchQueuedFollowUps(approval);
     }
     return receipt;
+  }
+
+  resumePending(approval: ApprovalPort): void {
+    this.#assertOpen();
+    this.#launchQueuedFollowUps(approval);
   }
 
   subscribe(afterSessionSequence = 0): AsyncIterable<AgentStreamEvent> {
@@ -187,7 +193,8 @@ export class AgentSession implements AgentSessionContract {
     }
   }
 
-  async #executeLeased(prompt: string, runId: string, providerId: string | undefined, shape: AgentShape, approval: ApprovalPort): Promise<AgentRunHandle> {
+  async #executeLeased(prompt: string, runId: string, providerId: string | undefined, shape: AgentShape, approval: ApprovalPort, collaboration: CollaborationContext): Promise<AgentRunHandle> {
+    let activeCollaboration = collaboration;
     const branch = await this.#view();
     const profile = await this.options.projectProfile();
     const environment = await this.options.environment(profile, shape);
@@ -200,15 +207,19 @@ export class AgentSession implements AgentSessionContract {
       ? await compactSessionEntriesWithProvider(branch.entries, compactionProvider, AbortSignal.timeout(15_000))
       : compactSessionEntries(branch.entries);
     const effectiveProviderId = selectedProviderId ?? compactionProvider?.profile.id;
-    return this.options.agent.execute({ prompt, runId, sessionId: this.id, projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}), projectProfile: profile, history, environment, harnessPlan: shape.harnessPlan, shape, ...(recall ? { recall } : {}) }, approval, {
+    return this.options.agent.execute({ prompt, runId, sessionId: this.id, projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}), projectProfile: profile, history, environment, harnessPlan: shape.harnessPlan, shape, collaboration, ...(recall ? { recall } : {}) }, approval, {
       drainSteering: async (activeRunId, signal) => {
         if (signal.aborted) throw signal.reason ?? new DOMException("Steering drain cancelled.", "AbortError");
         const drained = await this.options.store.drainPending(this.id, "steer", activeRunId);
         const messages: AgentMessage[] = [];
         try {
           for (const pending of drained) {
-            const current = await this.#get();
-            await this.options.store.appendSessionEntry(this.id, pending.message, { expectedRevision: current.revision, idempotencyKey: `drain:${activeRunId}:${pending.id}` }, activeRunId);
+            if (pending.message.kind === "user") {
+              const current = await this.#get();
+              await this.options.store.appendSessionEntry(this.id, pending.message, { expectedRevision: current.revision, idempotencyKey: `drain:${activeRunId}:${pending.id}` }, activeRunId);
+            } else if (pending.message.schemaVersion === 2) {
+              activeCollaboration = Object.freeze({ correlationId: pending.message.correlationId, causationId: pending.message.id, hop: pending.message.hop });
+            }
             messages.push(pending.message);
           }
           await this.options.store.acknowledgePending(this.id, "steer", activeRunId, drained.map((item) => item.id));
@@ -218,6 +229,7 @@ export class AgentSession implements AgentSessionContract {
         }
         return Object.freeze(messages);
       },
+      ...(this.options.deliverSessionMessage ? { deliverSessionMessage: (targetSessionId: string, content: string, idempotencyKey: string) => this.options.deliverSessionMessage!({ sourceSessionId: this.id, sourceRunId: runId, targetSessionId, domainId: (branch.session).domainId, shapeDigest: shape.digest, idempotencyKey, correlationId: activeCollaboration.correlationId, ...(activeCollaboration.causationId ? { causationId: activeCollaboration.causationId } : {}), hop: activeCollaboration.hop + 1, content }) } : {}),
     });
   }
 
@@ -235,7 +247,7 @@ export class AgentSession implements AgentSessionContract {
       const pending = await this.options.store.drainPending(this.id, "follow-up", runId);
     if (pending.length === 0) { await this.options.store.releaseRunLease(this.id, runId); return; }
     try {
-      for (const item of pending) {
+      for (const item of pending) if (item.message.kind === "user") {
         const current = await this.#get();
         await this.options.store.appendSessionEntry(this.id, item.message, { expectedRevision: current.revision, idempotencyKey: `drain:${runId}:${item.id}` }, runId);
       }
@@ -243,7 +255,11 @@ export class AgentSession implements AgentSessionContract {
       const prompt = pending.map((item) => item.message.content).join("\n\n");
       const shape = await this.options.store.getSessionShape(this.id);
       if (!shape) throw new AlphionError("conflict", "Queued follow-up requires a shaped Session.", { stage: "shape" });
-      const handle = await this.#executeLeased(prompt, runId, leased.providerId, shape, approval);
+      const inbound = [...pending].reverse().find((item) => item.message.kind === "agent" && item.message.schemaVersion === 2)?.message;
+      const collaboration: CollaborationContext = inbound && inbound.kind === "agent" && inbound.schemaVersion === 2
+        ? Object.freeze({ correlationId: inbound.correlationId, causationId: inbound.id, hop: inbound.hop })
+        : Object.freeze({ correlationId: createId("correlation"), hop: 0 });
+      const handle = await this.#executeLeased(prompt, runId, leased.providerId, shape, approval, collaboration);
       this.#activeRuns.add(handle);
       if (this.#closed) handle.cancel("Session is closing.");
       await this.#observe(handle, undefined, approval);
