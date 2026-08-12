@@ -21,7 +21,8 @@ export type AgentEventKind =
   | "run.cancelled";
 
 export type AgentTransientEventKind = "model.reasoning.delta";
-export type AgentStreamEventKind = AgentEventKind | AgentTransientEventKind;
+export type AgentStreamControlEventKind = "stream.resync-required";
+export type AgentStreamEventKind = AgentEventKind | AgentTransientEventKind | AgentStreamControlEventKind;
 
 export interface AgentEvent {
   readonly schemaVersion: 1 | 2;
@@ -50,7 +51,16 @@ export interface AgentTransientEvent {
   readonly payload: Readonly<Record<string, unknown>>;
 }
 
-export type AgentStreamEvent = AgentEvent | AgentTransientEvent;
+/** Non-durable control record emitted only to a lagging subscriber. */
+export interface AgentStreamControlEvent {
+  readonly delivery: "control";
+  readonly sessionId: string;
+  readonly timestamp: string;
+  readonly kind: AgentStreamControlEventKind;
+  readonly payload: Readonly<{ afterSessionSequence: number; reason: "slow-consumer" }>;
+}
+
+export type AgentStreamEvent = AgentEvent | AgentTransientEvent | AgentStreamControlEvent;
 
 export type AgentEventDraft = Omit<
   AgentEvent,

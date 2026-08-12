@@ -269,6 +269,32 @@ test("session branch replay retains tool, evidence, approval and failure events 
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test("a stalled Session subscriber receives resync without delaying Run completion", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "alphion-slow-subscriber-"));
+  const store = new SqliteStore({ path: join(directory, "state.sqlite3") });
+  const agent = new SessionAgentDouble();
+  try {
+    const record = await store.createSession({ title: "slow", idempotencyKey: "create:slow:0001" });
+    const session = testSession(record.id, store, agent);
+    const subscription = session.subscribe()[Symbol.asyncIterator]();
+    const handle = await session.send("stream", { expectedRevision: record.revision, idempotencyKey: "send:slow:0001" }, allowApproval());
+    for (let sequence = 1; sequence <= 300; sequence += 1) {
+      await agent.emit(0, sessionEvent(handle.runId, record.id, sequence, "provider.started", { model: `test-${sequence}` }));
+    }
+    agent.complete(0, "done");
+    await Promise.race([handle.result, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("slow subscriber blocked the run")), 500))]);
+    let sawResync = false;
+    for (let count = 0; count < 257; count += 1) {
+      const next = await subscription.next();
+      if (next.done) break;
+      if ("delivery" in next.value && next.value.delivery === "control") { sawResync = true; break; }
+    }
+    assert.equal(sawResync, true);
+    await subscription.return?.();
+    await session.close();
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 class SessionAgentDouble implements AgentContract {
   readonly requests: Array<{ readonly prompt: string }> = [];
   readonly hooks: AgentExecutionHooks[] = [];

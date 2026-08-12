@@ -138,7 +138,7 @@ test("memory cache evicts, expires, and single-flight shares one result", async 
   assert.equal(await follower.promise, 42);
 });
 
-test("bounded event channel coalesces progress and backpressures critical events", async () => {
+test("bounded event channel coalesces progress and offers non-blocking resync boundaries", async () => {
   const channel = new BoundedEventChannel<number>(1);
   assert.equal(await channel.push(1, false), true);
   assert.equal(await channel.push(2, false), true);
@@ -150,6 +150,12 @@ test("bounded event channel coalesces progress and backpressures critical events
   assert.deepEqual(await channel.next(), { value: 4, done: false });
   channel.close();
   assert.equal((await channel.next()).done, true);
+  const fanout = new BoundedEventChannel<string>(1, { maxBytes: 4, measure: (value) => Buffer.byteLength(value) });
+  assert.equal(fanout.offer("ab", false), true);
+  assert.equal(fanout.offer("cd", false, (previous) => `${previous}cd`), true);
+  assert.equal(fanout.offer("overflow", true), false);
+  assert.equal(fanout.replace("sync", true), true);
+  assert.deepEqual(await fanout.next(), { value: "sync", done: false });
 });
 
 test("safe file tools read, grep, edit, write, and reject secret or stale access", async () => {
@@ -299,8 +305,7 @@ test("Agent runtime preserves reasoning for tool continuation but excludes it fr
     const collected = await runAndCollect(runtime, directory, "reasoning-revision");
     assert.equal(collected.result.finalText, "observed answer");
     assert.equal(collected.result.finalText.includes("inspect first"), false);
-    assert.ok(collected.events.some((event) => event.kind === "model.reasoning.delta"));
-    assert.equal(collected.events.some((event) => event.kind === "model.reasoning.delta" && !("delivery" in event)), false);
+    assert.equal(collected.events.some((event) => event.kind === "model.reasoning.delta"), false);
     const replay = await store.listSessionEvents(collected.result.sessionId);
     assert.equal(JSON.stringify(replay).includes("inspect first"), false);
     assert.equal(provider.sawReasoningContinuation, true);

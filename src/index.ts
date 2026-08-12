@@ -138,6 +138,6 @@ export type {
   ToolBeforeHook,
   ToolAfterHook,
 } from "./ports/index.js";
-export type { AgentEvent, AgentEventDraft, AgentEventKind, AgentStreamEvent, AgentStreamEventKind, AgentTransientEvent, AgentTransientEventKind } from "./protocol/events.js";
+export type { AgentEvent, AgentEventDraft, AgentEventKind, AgentStreamControlEvent, AgentStreamControlEventKind, AgentStreamEvent, AgentStreamEventKind, AgentTransientEvent, AgentTransientEventKind } from "./protocol/events.js";
 export { assembleContextPack, summarizeContextPack } from "./application/context-pack.js";
 export { EMPTY_WORKING_MEMORY, reduceWorkingMemory } from "./application/working-memory.js";

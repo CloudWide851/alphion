@@ -496,7 +496,6 @@ export function TextEntry(props: Readonly<{ label: string; initialValue?: string
 
 function RunView(props: Readonly<{ application: AgentApplication; approval: TuiApprovalPort; projectRoot: string; prompt: string; providerId?: string; session?: AgentSessionContract; onDone: () => void; onExit: () => void }>): React.JSX.Element {
   const [projection, dispatch] = useReducer(reduceRunProjection, EMPTY_RUN_PROJECTION);
-  const [showReasoning, setShowReasoning] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | undefined>();
   const handle = useRef<AgentRunHandle | undefined>(undefined);
   const started = useRef(false);
@@ -511,14 +510,12 @@ function RunView(props: Readonly<{ application: AgentApplication; approval: TuiA
     let active = true;
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
     let answerBuffer = "";
-    let reasoningBuffer = "";
     let lastFlush = Date.now();
     const flush = () => {
       if (flushTimer) clearTimeout(flushTimer);
       flushTimer = undefined;
       if (!active) return;
       if (answerBuffer) { dispatch({ type: "answer-delta", delta: answerBuffer }); answerBuffer = ""; }
-      if (reasoningBuffer) { dispatch({ type: "reasoning-delta", delta: reasoningBuffer }); reasoningBuffer = ""; }
       lastFlush = Date.now();
     };
     const scheduleFlush = () => {
@@ -532,7 +529,6 @@ function RunView(props: Readonly<{ application: AgentApplication; approval: TuiA
         handle.current = runHandle;
         for await (const event of runHandle.events) {
           if (event.kind === "model.delta" && typeof event.payload.delta === "string") { answerBuffer += event.payload.delta; scheduleFlush(); }
-          else if (event.kind === "model.reasoning.delta" && typeof event.payload.delta === "string") { reasoningBuffer += event.payload.delta; scheduleFlush(); }
           else if (!("delivery" in event)) { flush(); dispatch({ type: "event", event }); }
         }
         flush();
@@ -545,7 +541,6 @@ function RunView(props: Readonly<{ application: AgentApplication; approval: TuiA
   useInput((input, key) => {
     if (queueMode) return;
     if (pendingApproval && (input === "y" || input === "n")) pendingApproval.decide(input === "y");
-    else if (input === "t") setShowReasoning((value) => !value);
     else if (input === "s" && projection.status === "running") setQueueMode("steer");
     else if (input === "f") setQueueMode("follow-up");
     else if (key.ctrl && input === "c") { if (projection.status === "running") handle.current?.cancel("Cancelled from TUI."); else props.onExit(); }
@@ -564,7 +559,6 @@ function RunView(props: Readonly<{ application: AgentApplication; approval: TuiA
 
   return <Box flexDirection="column" marginTop={1}>
     <Text bold>状态 · {projection.status}</Text>
-    {projection.reasoning ? <Box flexDirection="column"><Text {...textColor("yellow")}>模型推理（非事实证据）· {showReasoning ? "t 折叠" : "t 展开"}</Text>{showReasoning ? <Text dimColor>{projection.reasoning}</Text> : <Text dimColor>[已折叠 · {projection.reasoning.length} 字符]</Text>}</Box> : null}
     <Text>{projection.answer || "◌ 等待模型输出…"}</Text>
     <Text dimColor>tokens 输入={projection.inputTokens} 输出={projection.outputTokens} 缓存={projection.cachedInputTokens}</Text>
     {projection.message ? <Text {...(projection.status === "failed" ? textColor("red") : {})}>{projection.message}</Text> : null}

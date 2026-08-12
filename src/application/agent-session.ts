@@ -103,7 +103,7 @@ export class AgentSession implements AgentSessionContract {
       await this.options.store.releaseRunLease(this.id, runId);
       throw error;
     }
-    const publicEvents = new BoundedEventChannel<AgentStreamEvent>(256);
+    const publicEvents = subscriberChannel();
     this.#publicEvents.add(publicEvents);
     this.#activeRuns.add(handle);
     if (this.#closed) handle.cancel("Session is closing.");
@@ -136,7 +136,7 @@ export class AgentSession implements AgentSessionContract {
 
   subscribe(afterSessionSequence = 0): AsyncIterable<AgentStreamEvent> {
     this.#assertOpen();
-    const channel = new BoundedEventChannel<AgentStreamEvent>(256);
+    const channel = subscriberChannel();
     this.#events.add(channel);
     const store = this.options.store;
     const subscribers = this.#events;
@@ -151,7 +151,11 @@ export class AgentSession implements AgentSessionContract {
             yield event;
           }
           for await (const event of channel) {
-            if ("delivery" in event) { yield event; continue; }
+            if ("delivery" in event) {
+              yield event;
+              if (event.delivery === "control") return;
+              continue;
+            }
             if ((event.sessionSequence ?? 0) <= cursor) continue;
             cursor = event.sessionSequence ?? cursor;
             yield event;
@@ -165,8 +169,10 @@ export class AgentSession implements AgentSessionContract {
     try {
       for await (const event of handle.events) {
         if ("delivery" in event) {
-          await publicEvents?.push(event, false);
-          for (const channel of this.#events) await channel.push(event, false);
+          if (event.delivery === "transient") {
+            fanOut(publicEvents, event, 0);
+            for (const channel of this.#events) fanOut(channel, event, 0);
+          }
           continue;
         }
         const projected = projectEvent(event);
@@ -174,8 +180,8 @@ export class AgentSession implements AgentSessionContract {
           const session = await this.#get();
           await this.options.store.appendSessionEntry(this.id, projected, { expectedRevision: session.revision, idempotencyKey: `event:${event.eventId}` }, event.runId);
         }
-        await publicEvents?.push(event, event.kind !== "model.delta");
-        for (const channel of this.#events) await channel.push(event, event.kind !== "model.delta");
+        fanOut(publicEvents, event, event.sessionSequence ?? 0);
+        for (const channel of this.#events) fanOut(channel, event, event.sessionSequence ?? 0);
       }
       const result = await handle.result;
       if (result.finalText) {
@@ -376,4 +382,35 @@ function userMessage(content: string): Extract<AgentMessage, { readonly kind: "u
   const value = content.trim();
   if (!value) throw new AlphionError("validation", "Session message cannot be empty.", { stage: "session" });
   return Object.freeze({ schemaVersion: 1, kind: "user", id: createId("message"), createdAt: new Date().toISOString(), content: value });
+}
+
+const SUBSCRIBER_BYTES = 1024 * 1024;
+
+function subscriberChannel(): BoundedEventChannel<AgentStreamEvent> {
+  return new BoundedEventChannel<AgentStreamEvent>(256, { maxBytes: SUBSCRIBER_BYTES, measure: eventBytes });
+}
+
+function fanOut(channel: BoundedEventChannel<AgentStreamEvent> | undefined, event: AgentStreamEvent, cursor: number): void {
+  if (!channel) return;
+  const critical = !("delivery" in event) && event.kind !== "model.delta" && event.kind !== "tool.updated";
+  const accepted = channel.offer(event, critical, critical ? undefined : (previous) => mergeStreamProgress(previous, event));
+  if (!accepted) {
+    channel.replace(Object.freeze({ delivery: "control", sessionId: event.sessionId, timestamp: new Date().toISOString(), kind: "stream.resync-required", payload: Object.freeze({ afterSessionSequence: cursor, reason: "slow-consumer" }) }));
+    channel.close();
+  }
+}
+
+function mergeStreamProgress(previous: AgentStreamEvent, next: AgentStreamEvent): AgentStreamEvent | undefined {
+  if ("delivery" in previous || "delivery" in next || previous.kind !== next.kind || previous.runId !== next.runId) return undefined;
+  if (next.kind === "model.delta") {
+    const left = typeof previous.payload.delta === "string" ? previous.payload.delta : "";
+    const right = typeof next.payload.delta === "string" ? next.payload.delta : "";
+    return Object.freeze({ ...next, payload: Object.freeze({ ...next.payload, delta: `${left}${right}` }) });
+  }
+  if (next.kind === "tool.updated" && previous.payload.toolCallId === next.payload.toolCallId) return next;
+  return undefined;
+}
+
+function eventBytes(event: AgentStreamEvent): number {
+  return Buffer.byteLength(JSON.stringify(event), "utf8");
 }

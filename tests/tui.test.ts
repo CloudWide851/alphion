@@ -8,12 +8,10 @@ import { AppShell, HarnessPlanView, ProviderList, SessionWorkbenchView, TextEntr
 import type { AgentApplication, AgentSessionContract } from "../src/index.js";
 import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "../tui/run-projection.js";
 
-test("TUI strips terminal controls and keeps reasoning separate from the answer", () => {
+test("TUI strips terminal controls without exposing reasoning", () => {
   assert.equal(sanitizeTerminalText("safe\u001b[31m red\u0000"), "safe[31m red");
   const running = reduceRunProjection(EMPTY_RUN_PROJECTION, { type: "reset" });
-  const reasoned = reduceRunProjection(running, { type: "reasoning-delta", delta: "private\u001b[2J thought" });
-  const answered = reduceRunProjection(reasoned, { type: "answer-delta", delta: "observed answer" });
-  assert.equal(answered.reasoning, "private[2J thought");
+  const answered = reduceRunProjection(running, { type: "answer-delta", delta: "observed answer" });
   assert.equal(answered.answer, "observed answer");
   const failed = reduceRunProjection(answered, { type: "run-error", message: "failed\u001b[2J safely" });
   assert.equal(failed.status, "failed");

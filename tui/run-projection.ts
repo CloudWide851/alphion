@@ -2,7 +2,6 @@ import type { AgentEvent } from "../src/protocol/events.js";
 
 export interface TuiRunProjection {
   readonly answer: string;
-  readonly reasoning: string;
   readonly status: "idle" | "running" | "completed" | "failed" | "cancelled";
   readonly message: string;
   readonly inputTokens: number;
@@ -12,7 +11,6 @@ export interface TuiRunProjection {
 
 export const EMPTY_RUN_PROJECTION: TuiRunProjection = Object.freeze({
   answer: "",
-  reasoning: "",
   status: "idle",
   message: "",
   inputTokens: 0,
@@ -23,16 +21,12 @@ export const EMPTY_RUN_PROJECTION: TuiRunProjection = Object.freeze({
 export type TuiProjectionAction =
   | Readonly<{ readonly type: "event"; readonly event: AgentEvent }>
   | Readonly<{ readonly type: "answer-delta"; readonly delta: string }>
-  | Readonly<{ readonly type: "reasoning-delta"; readonly delta: string }>
   | Readonly<{ readonly type: "run-error"; readonly message: string }>
   | Readonly<{ readonly type: "reset" }>;
 
 export function reduceRunProjection(state: TuiRunProjection, action: TuiProjectionAction): TuiRunProjection {
   if (action.type === "reset") return { ...EMPTY_RUN_PROJECTION, status: "running" };
   if (action.type === "answer-delta") return { ...state, answer: state.answer + sanitizeTerminalText(action.delta) };
-  if (action.type === "reasoning-delta") {
-    return { ...state, reasoning: state.reasoning + sanitizeTerminalText(action.delta) };
-  }
   if (action.type === "run-error") {
     return { ...state, status: "failed", message: sanitizeTerminalText(action.message) };
   }

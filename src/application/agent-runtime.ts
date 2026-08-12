@@ -395,7 +395,7 @@ export class AgentLoop {
         await this.#emit(context, "model.delta", { delta: event.delta });
         return;
       case "reasoning-delta":
-        await this.#emitTransientReasoning(context, event.delta);
+        // Reasoning remains only in the current Provider continuation state.
         return;
       case "usage":
         await this.#emit(context, "model.usage", { usage: event.usage });
@@ -666,18 +666,6 @@ export class AgentLoop {
     return event;
   }
 
-  async #emitTransientReasoning(context: RuntimeContext, delta: string): Promise<void> {
-    const event: AgentStreamEvent = Object.freeze({
-      delivery: "transient",
-      runId: context.runId,
-      sessionId: context.sessionId,
-      correlationId: context.correlationId,
-      timestamp: new Date().toISOString(),
-      kind: "model.reasoning.delta",
-      payload: sanitizeRecord({ delta }),
-    });
-    await context.channel.push(event, false);
-  }
 }
 
 function validateRunRequest(request: AgentRunRequest): void {

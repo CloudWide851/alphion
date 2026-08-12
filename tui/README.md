@@ -33,7 +33,7 @@ terminal view  <- TUI adapter <- core event boundary
 - vault 初始化/解锁，遮罩输入主密码；
 - provider 列表、新增/编辑/激活及 API key 导入、轮换和删除；
 - 单次任务输入、流式答案、工具审批、取消、token 用量；
-- DeepSeek reasoning 默认折叠并标记为“非证据”。
+- Provider reasoning 仅用于当前工具续轮，不进入 TUI、Session 或持久化投影。
 
 数字键或 Tab 切换区域，Enter 确认，Esc 返回首页，`?` 查看帮助，`q` 退出。Ctrl+C 在任务运行中优先取消任务。Provider 预设由本地 application façade 提供，TUI 不导入 DeepSeek 或其他模型 adapter 常量。
 
