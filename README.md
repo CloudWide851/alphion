@@ -6,11 +6,11 @@
 
 Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前 **v0.4.0** 在项目级共享 Agent 与持久化分支 Session 之上增加资源驱动塑形：每个 Session 持有可审计的 `AgentShape` revision/digest，由四层 ResourceLoader、确定性 SystemPromptPlan、能力/工具/策略和 Provider 要求共同生成。新的 headless Desktop Host 通过严格的 stdin/stdout JSONL RPC 暴露非敏感业务能力，供未来 Electron、Tauri 或原生壳注入使用。
+当前 **v0.5.0** 把运行层级扩展为 `Project → shared Agent → Session → Run → Turn → ToolCall`：每个活动 Project 拥有一个无 Session 可变状态的 Agent，同域 Session 可在有界预算内协作，跨 Project 严格隔离。中文聊天式 TUI、本地 loopback WebUI 和 Electron Desktop 共享命令、事件、Markdown 与 revision/cursor 合同。
 
 资源优先级固定为内置 → 用户共享 → 项目 `.alphion-resources/manifest.json` → Session overrides。扩展包仅支持声明式资源，不执行第三方 JavaScript。用户资源根可通过 `ALPHION_RESOURCE_HOME` 指定，否则使用平台标准配置目录。
 
-这是新的 0.x 能力里程碑，公开 ResourceLoader、Session 和应用 API 有合同变化。首次打开 schema v3 数据库时，会先 checkpoint，再通过 SQLite `VACUUM INTO` 创建相邻且自包含的 `.v3-backup` snapshot。回滚时必须停止所有 Alphion 进程、恢复该 snapshot 并切回 `v0.3.2`；迁移后新增的 v4 数据将丢失。
+这是新的 0.x 能力里程碑。SQLite 已迁移到 `better-sqlite3` 和 user_version 5；首次打开 v4 数据库会先 checkpoint 并创建相邻 `.v4-backup`。v0.4.x Desktop JSONL Host 已移除，`alphion/desktop` 现在是 Electron IPC 合同。回滚必须停止所有 Alphion 进程、恢复 `.v4-backup` 并切回 v0.4.0；迁移后的 v5 Project/协作数据会丢失。
 
 ## 当前能力
 
@@ -19,23 +19,22 @@ Alphion 是一个面向不同软件项目、在证据和安全边界内持续优
 - Node/TypeScript 优先的确定性只读 Project Profile，识别语言、运行时、模块系统、包管理器、框架、质量命令、Git/CI、约束、风险和冲突；未知项目安全降级。
 - 每次运行自动注入最多 2,048 estimated tokens 的不可变 ContextPack；安全、目标、权限和强约束不会被可选画像事实挤出预算。
 - 运行期 Working Memory 仅由当前任务事件 reducer 重放，跟踪阶段、轮次、工具、Evidence、错误和用量，不写入长期记忆。
-- OpenAI-compatible Chat Completions 与 Responses 双协议；模型、Base URL 和能力均由本地 profile 配置。
-- 独立 DeepSeek Chat Completions provider，支持 `deepseek-chat`、`deepseek-reasoner`、推理流、工具续轮和 prompt-cache 命中用量。
-- 简体中文 Ink + React 工程工作台，宽终端使用侧栏、窄终端使用顶部导航，并提供首页、画像、Provider/Vault、Session、资源、Harness、任务与只读诊断区域。
+- OpenAI-compatible Chat Completions 与 Responses 双协议；DeepSeek、Kimi、Qwen、GLM 提供内置大陆/国际 official endpoint，普通配置无需 Base URL，只有自定义兼容 Provider 接受 URL。
+- 简体中文聊天式 Ink TUI、React/Vite loopback WebUI 和 Electron Desktop；三端完整渲染共享安全 Markdown（GFM 表格、任务、代码、链接与 TeX），reasoning 不可见。
 - `read`、`grep`、`edit`、`write` 和 `shell` 工具；写入和进程执行必须逐次审批。
-- 单写者类型化事件、背压、关键事件持久化及 SHA-256 审计链。
+- SQLite 权威事件写入与 SHA-256 审计链；UI fan-out 为每订阅者 256 项/1 MiB 的非阻塞队列，慢消费者通过 cursor/snapshot resync，不延迟 AgentLoop。
 - 进程内 LRU + SQLite L2 缓存、single-flight 合并、策略/权限/项目修订失效和可选 provider prompt caching；疑似秘密不进入缓存。
-- 项目内 SQLite v4 保存配置、审计、缓存、Session 分支/队列/shape、shell 白名单和 AES-256-GCM 密文凭据；用户主密码通过 scrypt 解锁，明文不写入数据库、事件、shape、RPC 或缓存。
-- 可注入的项目级 Desktop Host 使用版本化 stdin/stdout JSONL RPC；握手、严格解码、订阅游标、取消、背压和双向审批均 fail-closed，Vault/API key 不属于 RPC 面。
+- Project 注册层保证名称/realpath 唯一、每项目独立 SQLite v5；同域 `session.send` 支持 idle 自动 Run 与 busy steering，并限制 8 hop/每 Run 4 次发送。
+- WebUI 只绑定 `127.0.0.1`，采用 HttpOnly/Origin/CSRF/SSE；Electron 开启 sandbox/contextIsolation、禁用 Node integration/任意导航，preload 仅暴露五个 allowlisted IPC 通道。
 
-本版不会实现 Desktop GUI、WebUI、SubAgent、自我进化执行或原生 Anthropic/Gemini/Azure provider。这些能力将在对应证据门和回放基线稳定后逐步加入。
+本版不会实现 LAN/远程部署、多用户、跨 Project 协作、动态代码插件、SubAgent 或长期记忆。
 
 ## 安装与构建
 
 - Node.js 22.13+
 - TypeScript 5.9+
 - ESM
-- 运行时依赖仅包含官方 `openai` JavaScript 客户端以及位于 TUI 层的 Ink/React
+- `better-sqlite3` 含原生 ABI；Electron 打包前需运行 `npm run desktop:deps`
 
 ```bash
 npm install
@@ -49,16 +48,19 @@ npm run build
 npm run tui
 # 或
 alphion.bat tui
+npm run desktop
+# 或本地 WebUI
+alphion.bat web
 ```
 
-首次启动会创建主密码。主密码无法恢复；忘记后只能重置 vault 并重新导入 API key。reasoning 默认折叠、明确标记为模型推理，且不会被当作 Evidence 或最终答案。
+主密码无法恢复；忘记后只能重置 vault 并重新导入 API key。reasoning 仅在 Provider 当前 Run 的工具续轮中短暂存在，不进入任何用户界面、SQLite 或重放。
 
 ## 配置兼容服务
 
-以下示例配置一个本机无认证 Chat Completions 服务：
+以下示例配置一个本机无认证自定义 Chat Completions 服务：
 
 ```bat
-alphion.bat provider set --id local --base-url http://127.0.0.1:11434/v1 --model your-model --protocol chat-completions --active
+alphion.bat provider set --id local --preset custom-openai-compatible --base-url http://127.0.0.1:11434/v1 --model your-model --protocol chat-completions --active
 alphion.bat run --prompt "读取 README 并概括当前能力"
 ```
 
@@ -66,7 +68,7 @@ alphion.bat run --prompt "读取 README 并概括当前能力"
 
 ```bat
 set COMPATIBLE_API_KEY=replace-me
-alphion.bat provider set --id hosted --base-url https://example.com/v1 --model model-id --protocol responses --auth-env COMPATIBLE_API_KEY --active
+alphion.bat provider set --id hosted --preset custom-openai-compatible --base-url https://example.com/v1 --model model-id --protocol responses --auth-env COMPATIBLE_API_KEY --active
 ```
 
 常用命令：
@@ -80,6 +82,7 @@ project inspect [--refresh] [--json]
 session create/list/show/shape/reshape/checkout/send/steer/follow-up
 resource list/doctor
 desktop
+web [--port PORT]
 run --prompt ...
 tui
 ```
@@ -93,8 +96,9 @@ src/          模型和界面无关的领域、应用、端口与协议核心
 adapters/     只读画像、OpenAI-compatible、DeepSeek、SQLite/vault、缓存、秘密和工具实现
 cli/          命令行、Session/资源/shape 与一次性 run 适配器
 tui/          Ink 终端界面、运行投影和逐次审批适配器
-desktop/      可注入的项目级 stdin/stdout JSONL RPC Host
-webui/        未来 Web 界面边界；当前仅 README
+ui/           三端共享命令、事件队列与安全 Markdown AST
+webui/        loopback HTTP/SSE 与 React/Vite renderer
+desktop/      Electron Main、sandbox preload 与 IPC 合同
 tests/        单元、合同、集成、安全与 CLI 验证
 benchmarks/   通信、缓存和 SQLite 基线
 ```
@@ -103,7 +107,7 @@ benchmarks/   通信、缓存和 SQLite 基线
 
 ## 公共接口
 
-根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 Agent、Session、AgentShape、HarnessPlan、ResourceResolution、SystemPromptPlan 与 Provider/runtime 端口。稳定子路径包括 `alphion/runtime`、`alphion/providers`、`alphion/resources`、`alphion/desktop` 及既有具体 adapter。Provider profile schema v2 继续支持环境变量或加密 SQLite 凭据引用；SQLite user_version 现为 4。
+根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 Agent、Project/Session、AgentShape、HarnessPlan、ResourceResolution、SystemPromptPlan 与 Provider/runtime 端口。稳定子路径包括 `alphion/runtime`、`alphion/providers`、`alphion/resources`、`alphion/webui`、`alphion/desktop` 及既有具体 adapter。Provider profile schema v2 继续支持环境变量或加密 SQLite 凭据引用；SQLite user_version 现为 5。
 
 当当前分支超过模型上下文预算时，会话会从原始分支重建压缩：保留最近两个交互周期及系统/目标/验收、权限/约束/revision、失败、Evidence 和未解决项，并可调用同一 Provider 生成禁用工具、`temperature: 0`、闭合 JSON schema 校验的结构化摘要；超时、非法输出或 Provider 失败会确定性回退。模型 reasoning 只存在于实时 `AgentStreamEvent`，不进入 SQLite 事件、会话条目、重放、Working Memory 或持久缓存。
 

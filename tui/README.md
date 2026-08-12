@@ -1,50 +1,24 @@
 # Alphion TUI 边界
 
-`tui/` 是 v0.4.0 的 Ink/React 终端适配器。运行 `alphion tui` 或 `npm run tui` 可进入简体中文“工程工作台”，查看 Project Profile/诊断、配置 provider、导入加密 API key，并通过共享 Agent 的持久化 Session 查看/重塑 AgentShape 和诊断四层资源。
+`tui/` 是 v0.5.0 的简体中文 Ink/React 终端适配器。首页直接进入聊天：紫色字符 ALPHION Logo、Session 消息流、状态和输入框；Project、Session、Provider、Resource、Harness、Profile、doctor 和帮助通过 `/settings` 及别名打开不写入历史的内嵌卡片。
 
-## 职责
+## 交互合同
 
-TUI 负责终端输入、增量渲染、键盘交互、审批提示和本地会话导航。它把用户操作转换为核心应用服务调用，并把核心事件 reducer 投影为文本界面，但不拥有 Agent 决策、权限判断或长期状态规则。
+- Enter 发送，Alt+Enter/Ctrl+J 换行；成功受理后清空聊天输入。
+- ↑/↓ 直观移动所有列表选择并由 Enter 确认；数字键、Tab、Esc、`?`、`q` 与 Ctrl+C 保留。
+- 密码/API key 在提交成功、失败、取消和卸载时立即清空；普通表单校验失败保留可编辑值。
+- `NO_COLOR` 可用，状态同时使用符号/文本。approval、错误与取消在窄/低终端仍有优先级。
+- reasoning 不显示、不进入 Session/Markdown/持久投影。
+
+## Markdown 与安全
+
+TUI 使用共享 `ui/markdown.ts` AST，支持段落、标题、表格、任务列表、代码、引用、链接和 TeX。常见公式转成 Unicode/多行文本，复杂公式回退为原始 TeX。raw HTML 不执行，C0/C1 控制字符被移除。外链只允许 HTTP/HTTPS、显示真实域名并要求确认。
 
 ## 依赖方向
 
 ```text
-terminal input -> TUI adapter -> core command boundary
-terminal view  <- TUI adapter <- core event boundary
+terminal input -> TUI -> AgentApplication/SessionManager
+terminal view  <- TUI <- typed events + shared Markdown
 ```
 
-- 核心永远不能导入 `tui/`。
-- TUI 只消费核心公开的版本化合同和本地 application façade，不直接解析状态文件。
-- TUI 不得直接调用模型、Git、进程、网络、缓存或存储；这些能力由核心端口和策略统一控制。
-- Provider/模型配置必须通过核心配置服务提交；TUI 不得直接打开或迁移 `.alphion/alphion.sqlite3`。
-- Ink/React 只存在于本目录；核心和 provider adapter 不得导入 UI 运行时。
-
-## 共享协议草案
-
-命令至少携带 `schemaVersion`、`requestId`、`sessionId`、`idempotencyKey`、`expectedRevision`、`kind` 和类型化 `payload`。事件至少携带 `schemaVersion`、单调递增的 `sequence`、`eventId`、`sessionId`、`correlationId`、`causationId`、`timestamp`、`kind` 和类型化 `payload`。
-
-适配器只能提交意图；核心负责验证、授权和落盘。重试必须复用幂等键。若 `expectedRevision` 已过期，核心返回冲突事件，TUI 重新同步事件游标，不能静默覆盖新状态。
-
-## 当前交互
-
-- 首页概览、项目画像、Provider/Vault、任务运行和只读诊断五个工作区；
-- 100 列及以上使用侧栏，窄终端使用顶部导航，低于 18 行启用紧凑布局；
-- 品牌紫 `#A377F6` 作为唯一主强调色，状态始终同时显示文字/符号，并支持 `NO_COLOR`；
-- vault 初始化/解锁，遮罩输入主密码；
-- provider 列表、新增/编辑/激活及 API key 导入、轮换和删除；
-- 单次任务输入、流式答案、工具审批、取消、token 用量；
-- Provider reasoning 仅用于当前工具续轮，不进入 TUI、Session 或持久化投影。
-
-数字键或 Tab 切换区域，Enter 确认，Esc 返回首页，`?` 查看帮助，`q` 退出。Ctrl+C 在任务运行中优先取消任务。Provider 预设由本地 application façade 提供，TUI 不导入 DeepSeek 或其他模型 adapter 常量。
-
-界面使用进程内异步事件流，不创建守护进程或网络服务。显示层最多约 30 FPS 合并模型 delta，但最终文本、审批和审计事件不会丢失。
-
-## 明确不属于本目录
-
-- Agent 推理、Harness 选择、自我进化和评估逻辑；
-- 命令/事件的权威类型、验证器和 reducer；
-- 凭据加密/解析、权限扩大或审批规则；
-- 直接读写核心 JSON/JSONL 状态；
-- Web 服务、浏览器资源和跨用户会话管理。
-
-API key 和主密码只在遮罩输入及应用服务调用期间位于内存；界面不得显示、记录或缓存它们。vault 的加密、迁移、自动锁定和恢复限制由 adapter/application 层统一实现。
+TUI 不直接打开 SQLite、调用 Provider/tool、解析秘密或定义领域策略。`src/` 不能导入 TUI/Ink/React。界面最多约 30 FPS 合并可折叠 delta；审批、错误、最终状态和审计事实不能丢失。

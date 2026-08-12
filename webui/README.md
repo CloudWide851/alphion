@@ -1,44 +1,20 @@
 # Alphion WebUI 边界
 
-`webui/` 是未来浏览器界面的适配器边界。当前目录只有本说明，没有前端工程、服务端实现、构建配置或 UI 依赖。
+`webui/` 是 v0.5.0 的本地 React/Vite 界面和 loopback Node HTTP/SSE adapter。它只绑定 `127.0.0.1`、面向一个本地用户和一个活动 Project；Renderer 也被 Electron 复用。
 
-## 职责
+## 传输与并发
 
-未来 WebUI 负责浏览器交互、运行时间线、证据与产物查看、差异展示、审批界面和可访问的响应式呈现。它把用户意图发送为核心命令，并从核心事件构建只读投影；领域状态和安全决策仍由核心拥有。
+- `POST /api/bootstrap` 建立短期 HttpOnly、SameSite=Strict 会话并返回 CSRF challenge。
+- `POST /api/command` 只接受共享严格 decoder 的版本化命令；写操作携带 revision/idempotency。
+- `GET /api/events` 以 cursor SSE 续传。落后客户端收到 `stream.resync-required` 后加载 Session snapshot，不采用最后写入者获胜。
+- Provider credential 与 approval 使用独立 CSRF-bound endpoint；秘密不进入 local/session storage、事件或普通命令。
 
-## 依赖方向
+## 界面与内容
 
-```text
-browser -> HTTP command adapter -> core command boundary
-browser <- SSE/WebSocket adapter <- core event boundary
-```
+界面使用 macOS 简白玻璃风，`#A377F6` 是唯一主强调色，正文 14–16px、标题不超过 24px，不使用副标题。说明统一进入可键盘操作的圆圈 `!` disclosure，玻璃只用于导航、浮层和层级边界，并尊重 reduced motion/transparency。
 
-- 核心永远不能导入 `webui/`。
-- WebUI 不得复制或重新解释权限、评估、进化和事件归并规则。
-- Provider/模型配置必须作为核心命令提交；浏览器和服务端适配器不得直接读写或迁移 `.alphion/alphion.sqlite3`。
-- 服务端适配器必须在信任边界验证所有浏览器输入，不能把 TypeScript 类型当作运行时验证。
-- 当前不选择 React、Vue、Svelte、Vite 或服务框架；后续选择必须保持核心合同与界面技术无关。
+模型内容通过共享安全 Markdown AST 渲染；支持 GFM 表格/任务/代码和 KaTeX，禁止 raw HTML 与 `dangerouslySetInnerHTML`。外链显示域名、仅允许 HTTP/HTTPS并要求确认。
 
-## 共享协议草案
+## 边界
 
-命令至少携带 `schemaVersion`、`requestId`、`sessionId`、`idempotencyKey`、`expectedRevision`、`kind` 和类型化 `payload`。事件至少携带 `schemaVersion`、单调递增的 `sequence`、`eventId`、`sessionId`、`correlationId`、`causationId`、`timestamp`、`kind` 和类型化 `payload`。
-
-HTTP 接受命令并返回受理、拒绝或修订冲突；SSE 适合单向事件流，WebSocket 只在确有双向低延迟需求时启用。客户端保存最后确认的 `sequence`，重连时请求续传；无法续传时获取版本化快照，再从快照游标继续。
-
-## 安全和并发
-
-- 每个命令都绑定已认证主体、授权范围、CSRF/Origin 策略和短期会话；
-- 日志、错误和事件投影必须在服务端完成秘密及私有路径脱敏；
-- `idempotencyKey` 防止网络重试重复执行，`expectedRevision` 防止多标签页静默覆盖；
-- 审批界面展示精确能力、资源、期限和计划摘要，计划变化后旧审批失效；
-- 浏览器永远不直接获得模型、Git、文件系统或沙箱凭据。
-
-## 明确不属于本目录
-
-- Agent 推理、Harness 选择、自我进化和评估逻辑；
-- 权威命令/事件类型、验证器、reducer 和审计日志；
-- 数据库、模型 provider、Git、进程或沙箱的直接客户端；
-- 未经核心策略确认的乐观领域状态；
-- 当前阶段的部署、认证系统或多租户能力。
-
-引入首个 WebUI 源文件前，必须复用 v0.2.1 的运行/事件、配置、取消和权限合同，并补充 HTTP + SSE/WebSocket 的输入验证、续传与传输级集成测试。
+WebUI 不直接读 SQLite、模型、文件工具或 Vault。`src/` 不依赖 Web/React/Vite。服务端负责输入验证、Origin/CSRF、秘密脱敏和安全错误；浏览器只持有短期 UI 状态。
