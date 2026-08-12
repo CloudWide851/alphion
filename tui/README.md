@@ -1,6 +1,6 @@
 # Alphion TUI 边界
 
-`tui/` 是 v0.3.2 的 Ink/React 终端适配器。运行 `alphion tui` 或 `npm run tui` 可进入简体中文“工程工作台”，查看 Project Profile/诊断、配置 provider、导入加密 API key，并通过共享 Agent 的持久化 Session 执行受控任务。
+`tui/` 是 v0.4.0 的 Ink/React 终端适配器。运行 `alphion tui` 或 `npm run tui` 可进入简体中文“工程工作台”，查看 Project Profile/诊断、配置 provider、导入加密 API key，并通过共享 Agent 的持久化 Session 查看/重塑 AgentShape 和诊断四层资源。
 
 ## 职责
 

@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { sha256 } from "../src/application/canonical.js";
 import { AlphionError, normalizeError } from "../src/application/errors.js";
-import type { DiagnosticReport, ProjectProfile } from "../src/domain/contracts.js";
+import type { DiagnosticReport, ProjectProfile, ResourceScope } from "../src/domain/contracts.js";
 import type { ApprovalDecision, ApprovalPort, ApprovalRequest } from "../src/ports/index.js";
 import { diagnoseLocalProject, openLocalAlphionApplication } from "../adapters/local/local-application.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
@@ -47,6 +47,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     return projectInspectCommand(projectRoot, statePath, parsed);
   }
   if (group === "session") return sessionCommand(command, parsed, projectRoot, statePath);
+  if (group === "resource") return resourceCommand(command, parsed, projectRoot, statePath);
+  if (group === "desktop") { const { runDesktopHost } = await import("../desktop/main.js"); await runDesktopHost({ projectRoot, statePath }); return 0; }
   if (group === "harness" && command === "plan") return harnessPlanCommand(parsed, projectRoot, statePath);
   if (group === "run") return runCommand(parsed, projectRoot, statePath);
   const store = new SqliteStore({ path: statePath });
@@ -190,17 +192,29 @@ async function sessionCommand(command: string | undefined, parsed: ParsedArgumen
     if (!id) throw new AlphionError("validation", `session ${command ?? "command"} requires SESSION_ID.`, { stage: "cli" });
     const session = await application.sessions.get(id);
     if (command === "show") { process.stdout.write(`${JSON.stringify(await session.view(), null, 2)}\n`); return 0; }
+    if (command === "shape") { process.stdout.write(`${JSON.stringify(await session.getShape(), null, 2)}\n`); return 0; }
     const record = await session.get();
     const options = { expectedRevision: Number(flagValue(parsed, "revision") ?? record.revision), idempotencyKey: flagValue(parsed, "idempotency-key") ?? createCliKey(command) };
     if (command === "checkout") { process.stdout.write(`${JSON.stringify(await session.checkout(flagValue(parsed, "entry"), options), null, 2)}\n`); return 0; }
     if (command === "steer") { process.stdout.write(`${JSON.stringify(await session.steer(requiredFlag(parsed, "message"), options), null, 2)}\n`); return 0; }
     if (command === "follow-up") { process.stdout.write(`${JSON.stringify(await session.followUp(requiredFlag(parsed, "message"), options, new CliApprovalPort()), null, 2)}\n`); return 0; }
+    if (command === "reshape") { const providerId = flagValue(parsed, "provider"); process.stdout.write(`${JSON.stringify(await session.reshape({ goal: requiredFlag(parsed, "goal"), ...(providerId ? { providerId } : {}) }, options), null, 2)}\n`); return 0; }
     if (command === "send") {
       const handle = await session.send(requiredFlag(parsed, "message"), options, new CliApprovalPort());
       for await (const event of handle.events) if (event.kind === "model.delta" && typeof event.payload.delta === "string") process.stdout.write(event.payload.delta);
       const result = await handle.result; process.stdout.write(`\n${JSON.stringify(result, null, 2)}\n`); return result.status === "completed" ? 0 : 1;
     }
-    throw new AlphionError("validation", "session command must be create, list, show, checkout, send, steer, or follow-up.", { stage: "cli" });
+    throw new AlphionError("validation", "session command must be create, list, show, shape, reshape, checkout, send, steer, or follow-up.", { stage: "cli" });
+  } finally { await application.close(); }
+}
+
+async function resourceCommand(command: string | undefined, parsed: ParsedArguments, projectRoot: string, statePath: string): Promise<number> {
+  if (command !== "list" && command !== "doctor") throw new AlphionError("validation", "resource command must be list or doctor.", { stage: "cli" });
+  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  try {
+    const resolution = await application.loadResources({ ...(parsed.flags.has("disable-scope") ? { disabledScopes: resourceScopes(parsed.flags.get("disable-scope") ?? []) } : {}), ...(parsed.flags.has("disable-id") ? { disabledIds: parsed.flags.get("disable-id") ?? [] } : {}) });
+    process.stdout.write(`${JSON.stringify(command === "list" ? resolution.resources : resolution, null, 2)}\n`);
+    return resolution.diagnostics.some((item) => item.severity === "error") ? 1 : 0;
   } finally { await application.close(); }
 }
 
@@ -291,13 +305,19 @@ function booleanFlag(parsed: ParsedArguments, name: string, fallback: boolean): 
   throw new AlphionError("validation", `--${name} must be true or false.`, { stage: "cli" });
 }
 
+function resourceScopes(values: readonly string[]): readonly ResourceScope[] {
+  const scopes = new Set<ResourceScope>(["builtin", "user", "project", "session"]);
+  if (values.some((value) => !scopes.has(value as ResourceScope))) throw new AlphionError("validation", "--disable-scope must be builtin, user, project, or session.", { stage: "cli" });
+  return values as readonly ResourceScope[];
+}
+
 function safeEventMessage(payload: Readonly<Record<string, unknown>>): string {
   const message = payload.message ?? payload.reason ?? payload.code;
   return typeof message === "string" ? message : "See the local audit event for details.";
 }
 
 function printHelp(): void {
-  process.stdout.write(`Alphion v0.3.2\n\n`);
+  process.stdout.write(`Alphion v0.4.0\n\n`);
   process.stdout.write(`Commands:\n`);
   process.stdout.write(`  provider set --id ID --kind openai-compatible|deepseek --base-url URL --model MODEL [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
   process.stdout.write(`  provider list\n  provider activate ID\n`);
@@ -307,14 +327,15 @@ function printHelp(): void {
   process.stdout.write(`  doctor [--json] [--project-root PATH] [--state PATH]\n`);
   process.stdout.write(`  project inspect [--refresh] [--json] [--project-root PATH]\n`);
   process.stdout.write(`  run --prompt TEXT [--provider ID] [--project-root PATH] [--no-cache]\n\n`);
-  process.stdout.write(`  session create|list|show|checkout|send|steer|follow-up ...\n  harness plan --prompt TEXT\n`);
+  process.stdout.write(`  session create|list|show|shape|reshape|checkout|send|steer|follow-up ...\n  harness plan --prompt TEXT\n`);
+  process.stdout.write(`  resource list|doctor [--disable-scope SCOPE] [--disable-id ID]\n  desktop [--project-root PATH] [--state PATH]\n`);
   process.stdout.write(`  tui [--project-root PATH] [--state PATH]\n\n`);
   process.stdout.write(`Global options: --state PATH --project-root PATH\n`);
 }
 
 function launcherCommand(command: string | undefined, parsed: ParsedArguments): number {
   if (command === "menu") {
-    process.stdout.write(`\n  ALPHION 0.3.2  工程工作台\n  ==========================\n\n`);
+    process.stdout.write(`\n  ALPHION 0.4.0  工程工作台\n  ==========================\n\n`);
     process.stdout.write(`  1. 启动 Alphion 工程工作台\n  2. 运行只读诊断\n  3. 查看命令帮助\n  4. 退出\n\n`);
     return 0;
   }

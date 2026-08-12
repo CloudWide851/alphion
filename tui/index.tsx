@@ -25,7 +25,7 @@ export interface RunTuiOptions {
 }
 
 type Screen = "loading" | "vault-setup" | "vault-unlock" | "workbench" | "provider-form" | "credential" | "prompt" | "run";
-export type WorkbenchSection = "home" | "profile" | "providers" | "sessions" | "harness" | "tasks" | "doctor";
+export type WorkbenchSection = "home" | "profile" | "providers" | "sessions" | "resources" | "harness" | "tasks" | "doctor";
 export type WorkbenchLayout = "wide" | "narrow" | "compact";
 
 interface ProviderDraft {
@@ -50,6 +50,7 @@ const SECTIONS: readonly Readonly<{ id: WorkbenchSection; label: string; short: 
   { id: "profile", label: "项目画像", short: "画像" },
   { id: "providers", label: "Provider / Vault", short: "Provider" },
   { id: "sessions", label: "共享会话", short: "会话" },
+  { id: "resources", label: "Agent 资源", short: "资源" },
   { id: "harness", label: "HarnessPlan", short: "Harness" },
   { id: "tasks", label: "任务运行", short: "运行" },
   { id: "doctor", label: "只读诊断", short: "诊断" },
@@ -230,6 +231,7 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
     /> : null}
     {section === "tasks" ? <TaskLauncher {...(activeProfile ? { activeProfile } : {})} onStart={() => setScreen("prompt")} /> : null}
     {section === "sessions" ? <SessionWorkbenchView application={application} approval={approval} onSend={(session, prompt) => beginRun(prompt, session)} onError={(cause) => setError(safeError(cause))} /> : null}
+    {section === "resources" ? <ResourceResolutionView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "harness" ? <HarnessPlanView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "doctor" ? <DoctorView {...(snapshot.diagnostics ? { report: snapshot.diagnostics } : {})} onRefresh={() => void refreshSnapshot().catch((cause: unknown) => setError(safeError(cause)))} /> : null}
   </AppShell>;
@@ -252,13 +254,13 @@ export function AppShell(props: Readonly<{
   const navigation = props.layout === "wide"
     ? <Box width={24} flexDirection="column" borderStyle="round" {...(props.colorEnabled ? { borderColor: BRAND_PURPLE } : {})} paddingX={1}>
         <Text bold {...accent(props.colorEnabled)}>ALPHION</Text>
-        <Text dimColor>工程工作台 · 0.3.2</Text>
+        <Text dimColor>工程工作台 · 0.4.0</Text>
         <Box flexDirection="column" marginTop={1}>
           {SECTIONS.map((entry, index) => <Text key={entry.id} {...(entry.id === props.section ? accent(props.colorEnabled) : {})}>{entry.id === props.section ? "◆" : "◇"} {index + 1}  {entry.label}</Text>)}
         </Box>
       </Box>
     : <Box flexDirection="column">
-        <Text bold {...accent(props.colorEnabled)}>ALPHION <Text dimColor>工程工作台 · 0.3.2</Text></Text>
+        <Text bold {...accent(props.colorEnabled)}>ALPHION <Text dimColor>工程工作台 · 0.4.0</Text></Text>
         <Box gap={2}>{SECTIONS.map((entry, index) => <Text key={entry.id} {...(entry.id === props.section ? accent(props.colorEnabled) : {})}>{entry.id === props.section ? "◆" : "◇"}{index + 1} {entry.short}</Text>)}</Box>
       </Box>;
   return <Box flexDirection="column" paddingX={1}>
@@ -343,7 +345,7 @@ export function SessionWorkbenchView(props: Readonly<{ application: AgentApplica
   const [selected, setSelected] = useState(0);
   const [session, setSession] = useState<AgentSessionContract | undefined>();
   const [detail, setDetail] = useState<string[]>([]);
-  const [entry, setEntry] = useState<"create" | "send" | "steer" | "follow-up" | "checkout" | undefined>();
+  const [entry, setEntry] = useState<"create" | "send" | "steer" | "follow-up" | "checkout" | "reshape" | undefined>();
   const refresh = useCallback(async () => {
     const values = await props.application.sessions.list();
     setSessions(values);
@@ -361,6 +363,8 @@ export function SessionWorkbenchView(props: Readonly<{ application: AgentApplica
     else if (input === "c" && current) setEntry("checkout");
     else if (input === "t" && current) setEntry("steer");
     else if (input === "f" && current) setEntry("follow-up");
+    else if (input === "p" && current?.status === "idle") setEntry("reshape");
+    else if (input === "i" && current) void props.application.sessions.getShape(current.id).then((shape) => setDetail(shape ? [`Shape rev ${shape.revision} · ${shape.digest}`, `目标 · ${shape.goal}`, `能力 · ${shape.capabilities.join(", ") || "无"}`, `工具 · ${shape.toolIds.join(", ") || "无"}`] : ["尚未塑形；首次发送时将原子生成 Shape。"])).catch(props.onError);
     else if (input === "r") void refresh().catch(props.onError);
   });
   if (entry === "create") return <TextEntry label="新会话标题" onCancel={() => setEntry(undefined)} onSubmit={(title) => void props.application.sessions.create({ title }).then(async () => { setEntry(undefined); await refresh(); }).catch(props.onError)} />;
@@ -368,10 +372,23 @@ export function SessionWorkbenchView(props: Readonly<{ application: AgentApplica
   if (entry === "steer" && current) return <TextEntry label={`转向 ${current.title}`} onCancel={() => setEntry(undefined)} onSubmit={(message) => void props.application.sessions.get(current.id).then(async (value) => { const record = await value.get(); await value.steer(message, { expectedRevision: record.revision, idempotencyKey: `tui:steer:${Date.now()}` }); setEntry(undefined); await refresh(); }).catch(props.onError)} />;
   if (entry === "follow-up" && current) return <TextEntry label={`后续消息 ${current.title}`} onCancel={() => setEntry(undefined)} onSubmit={(message) => void props.application.sessions.get(current.id).then(async (value) => { const record = await value.get(); await value.followUp(message, { expectedRevision: record.revision, idempotencyKey: `tui:follow-up:${Date.now()}` }, props.approval); setEntry(undefined); await refresh(); }).catch(props.onError)} />;
   if (entry === "checkout" && current) return <TextEntry label="checkout entry id（输入 root 回到根）" onCancel={() => setEntry(undefined)} onSubmit={(entryId) => void props.application.sessions.get(current.id).then(async (value) => { const record = await value.get(); await value.checkout(entryId === "root" ? undefined : entryId, { expectedRevision: record.revision, idempotencyKey: `tui:checkout:${Date.now()}` }); setEntry(undefined); await refresh(); }).catch(props.onError)} />;
+  if (entry === "reshape" && current) return <TextEntry label="新的 Agent Shape 目标" onCancel={() => setEntry(undefined)} onSubmit={(goal) => void props.application.sessions.get(current.id).then(async (value) => { const record = await value.get(); await value.reshape({ goal }, { expectedRevision: record.revision, idempotencyKey: `tui:reshape:${Date.now()}` }); setEntry(undefined); await refresh(); }).catch(props.onError)} />;
   return <Box flexDirection="column">
-    {sessions.length === 0 ? <Text dimColor>暂无会话。按 n 创建。</Text> : sessions.map((value, index) => <Text key={value.id} {...(index === selected ? accent(process.env.NO_COLOR === undefined) : {})}>{index === selected ? "◆" : "◇"} {value.status === "running" ? "◌ 运行中" : value.auditOnly ? "! 只读审计" : "✓ 空闲"} · {sanitizeTerminalText(value.title)} · rev {value.revision}</Text>)}
+    {sessions.length === 0 ? <Text dimColor>暂无会话。按 n 创建。</Text> : sessions.map((value, index) => <Text key={value.id} {...(index === selected ? accent(process.env.NO_COLOR === undefined) : {})}>{index === selected ? "◆" : "◇"} {value.status === "running" ? "◌ 运行中" : value.auditOnly ? "! 只读审计" : "✓ 空闲"} · {sanitizeTerminalText(value.title)} · {value.shapeStatus} · rev {value.revision}</Text>)}
     {session && detail.length > 0 ? <Box flexDirection="column" marginTop={1}><Text bold>当前分支</Text>{detail.slice(-10).map((line) => <Text key={line}>{line}</Text>)}</Box> : null}
-    <Text dimColor>↑↓ 选择 · n 创建 · o 查看 · c checkout · s 发送 · t 转向 · f 后续 · r 刷新</Text>
+    <Text dimColor>↑↓ 选择 · n 创建 · o 查看 · i Shape · p reshape(空闲) · c checkout · s 发送 · t 转向 · f 后续 · r 刷新</Text>
+  </Box>;
+}
+
+export function ResourceResolutionView(props: Readonly<{ application: AgentApplication; onError: (cause: unknown) => void }>): React.JSX.Element {
+  const [resolution, setResolution] = useState<Awaited<ReturnType<AgentApplication["loadResources"]>> | undefined>();
+  useEffect(() => { void props.application.loadResources().then(setResolution).catch(props.onError); }, [props.application, props.onError]);
+  if (!resolution) return <Text>◌ 正在解析四层 Agent 资源…</Text>;
+  return <Box flexDirection="column">
+    <Text>资源 {resolution.resources.length} · shadow {resolution.shadows.length} · omission {resolution.omissions.length}</Text>
+    {resolution.resources.map((item) => <Text key={item.id}>✓ [{item.provenance.scope}] {item.kind}:{item.id} · {item.digest.slice(0, 12)}</Text>)}
+    {resolution.diagnostics.map((item, index) => <Text key={`${item.code}-${index}`} {...(item.severity === "error" ? textColor("red") : item.severity === "warning" ? textColor("yellow") : {})}>{item.severity === "error" ? "✗" : item.severity === "warning" ? "!" : "·"} {sanitizeTerminalText(item.message)}</Text>)}
+    <Text dimColor>digest {resolution.digest}</Text>
   </Box>;
 }
 
