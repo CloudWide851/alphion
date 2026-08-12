@@ -2,16 +2,20 @@ import type {
   AgentRunResult,
   AgentExecutionRequest,
   AgentMessage,
-  AgentResource,
+  AgentShape,
+  AgentShapeReceipt,
+  AgentShapeRequest,
   AgentSessionRecord,
   HarnessPlan,
   HarnessTaskOverlay,
+  ModelDescriptor,
   ModelSelectionRequest,
+  ModelRouteCandidate,
   PendingMessageKind,
   PendingSessionMessage,
   RecallResult,
   ResourceLoadRequest,
-  ResourceLoadResult,
+  ResourceResolution,
   SessionView,
   SessionWriteOptions,
   SessionWriteReceipt,
@@ -38,8 +42,32 @@ export interface ModelResolver {
   resolveModel(request: ModelSelectionRequest): Promise<AgentProvider>;
 }
 
+export interface ModelRegistry {
+  list(): Promise<readonly ProviderProfile[]>;
+  get(idOrName: string): Promise<ProviderProfile | undefined>;
+  active(): Promise<ProviderProfile | undefined>;
+}
+
+/** Non-secret model metadata source. It never constructs SDK clients or resolves credentials. */
+export interface ModelMetadataRegistry {
+  listModels(): Promise<readonly ModelDescriptor[]>;
+  getModel(id: string): Promise<ModelDescriptor | undefined>;
+}
+
+export interface RoutingPolicy {
+  route(request: ModelSelectionRequest, profiles: readonly ProviderProfile[]): readonly ModelRouteCandidate[];
+}
+
+export interface ProviderFactory {
+  create(profile: ProviderProfile): AgentProvider;
+}
+
+export interface ProviderResolver extends ModelResolver {
+  resolve(request: ModelSelectionRequest): Promise<Readonly<{ provider: AgentProvider; reasons: readonly string[] }>>;
+}
+
 export interface ResourceLoader {
-  load(request: ResourceLoadRequest, signal?: AbortSignal): Promise<ResourceLoadResult>;
+  resolve(request: ResourceLoadRequest, signal?: AbortSignal): Promise<ResourceResolution>;
 }
 
 export interface CodeRecall {
@@ -69,6 +97,7 @@ export interface ApprovalRequest {
   readonly toolName: string;
   readonly risk: "write" | "process";
   readonly actionDigest: string;
+  readonly shapeDigest?: string;
   readonly summary: string;
   readonly input: Readonly<Record<string, unknown>>;
 }
@@ -108,8 +137,10 @@ export interface SessionStore {
   getSessionView(sessionId: string): Promise<SessionView | undefined>;
   listSessionEvents(sessionId: string, afterSessionSequence?: number): Promise<readonly AgentEvent[]>;
   appendSessionEntry(sessionId: string, message: AgentMessage, options: SessionWriteOptions, runId?: string): Promise<SessionWriteReceipt>;
-  /** Atomically appends the initiating user entry and acquires the session's sole run lease. */
-  beginSessionRun(sessionId: string, runId: string, message: Extract<AgentMessage, { readonly kind: "user" }>, options: SessionWriteOptions): Promise<Readonly<{ receipt: SessionWriteReceipt; session: AgentSessionRecord }>>;
+  getSessionShape(sessionId: string): Promise<AgentShape | undefined>;
+  reshapeSession(sessionId: string, shape: AgentShape, options: SessionWriteOptions): Promise<AgentShapeReceipt>;
+  /** Atomically freezes an initial shape, appends the user entry and acquires the sole run lease. */
+  beginShapedSessionRun(sessionId: string, runId: string, message: Extract<AgentMessage, { readonly kind: "user" }>, initialShape: AgentShape | undefined, options: SessionWriteOptions): Promise<Readonly<{ receipt: SessionWriteReceipt; session: AgentSessionRecord; shape: AgentShape }>>;
   checkoutSession(sessionId: string, entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
   enqueuePending(sessionId: string, kind: PendingMessageKind, message: Extract<AgentMessage, { readonly kind: "user" }>, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
   /** Claims the complete FIFO snapshot currently visible to a run. Claimed rows remain durable until acknowledged. */
@@ -212,11 +243,13 @@ export interface AgentSessionContract {
   readonly id: string;
   get(): Promise<AgentSessionRecord>;
   view(): Promise<SessionView>;
+  getShape(): Promise<AgentShape | undefined>;
+  reshape(request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt>;
   checkout(entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
   send(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle>;
   steer(content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
   followUp(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt>;
-  subscribe(): AsyncIterable<AgentStreamEvent>;
+  subscribe(afterSessionSequence?: number): AsyncIterable<AgentStreamEvent>;
   /** Stops new work, cancels active runs, and drains all store-owning tasks. */
   close(): Promise<void>;
 }
@@ -227,11 +260,13 @@ export interface SessionManager {
   list(): Promise<readonly AgentSessionRecord[]>;
   get(sessionId: string): Promise<AgentSessionContract>;
   view(sessionId: string): Promise<SessionView>;
+  getShape(sessionId: string): Promise<AgentShape | undefined>;
+  reshape(sessionId: string, request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt>;
   checkout(sessionId: string, entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
   send(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle>;
   steer(sessionId: string, content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
   followUp(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt>;
-  subscribe(sessionId: string): AsyncIterable<AgentStreamEvent>;
+  subscribe(sessionId: string, afterSessionSequence?: number): AsyncIterable<AgentStreamEvent>;
   /** Drains every materialized session before its backing store is closed. */
   close(): Promise<void>;
 }
@@ -241,10 +276,11 @@ export interface AgentApplication {
   readonly agent: AgentContract;
   readonly sessions: SessionManager;
   planHarness(prompt: string, overlay?: HarnessTaskOverlay): Promise<HarnessPlan>;
-  loadResources(request?: Omit<ResourceLoadRequest, "projectRoot">): Promise<readonly AgentResource[]>;
+  loadResources(request?: Omit<ResourceLoadRequest, "projectRoot">): Promise<ResourceResolution>;
   inspectProject(options?: Readonly<{ refresh?: boolean }>): Promise<ProjectProfile>;
   diagnose(): Promise<DiagnosticReport>;
   providerPresets(): readonly ProviderPreset[];
   cacheStats(): Promise<CacheStats>;
+  clearCache(namespace?: string): Promise<number>;
   close(): Promise<void>;
 }

@@ -1,5 +1,6 @@
-import type { AgentEnvironment, AgentIdentity, ResourceLoadResult } from "../domain/contracts.js";
+import type { AgentEnvironment, AgentIdentity, HarnessPlan, ResourceResolution, SessionBehavior, SystemPromptPlan } from "../domain/contracts.js";
 import { canonicalJson, sha256 } from "./canonical.js";
+import { SystemPromptComposer } from "./system-prompt.js";
 
 export function createAgentEnvironment(input: Readonly<{
   identity?: AgentIdentity;
@@ -7,18 +8,18 @@ export function createAgentEnvironment(input: Readonly<{
   projectRevision: string;
   capabilities: readonly string[];
   policies: readonly string[];
-  loaded: ResourceLoadResult;
+  loaded: ResourceResolution;
+  goal?: string;
+  behavior?: SessionBehavior;
+  harnessPlan?: HarnessPlan;
+  promptBudgetTokens?: number;
+  systemPromptPlan?: SystemPromptPlan;
 }>): AgentEnvironment {
   const identity = Object.freeze(input.identity ?? { id: "alphion", name: "Alphion", description: "Evidence-grounded project Agent" });
   const skills = Object.freeze(input.loaded.resources.filter((item) => item.kind === "skill"));
   const resources = Object.freeze([...input.loaded.resources]);
-  const systemPrompt = renderAgentEnvironment({ identity, projectRevision: input.projectRevision, capabilities: input.capabilities, policies: input.policies, resources });
-  const base = { identity, projectRoot: input.projectRoot, projectRevision: input.projectRevision, capabilities: Object.freeze([...input.capabilities]), policies: Object.freeze([...input.policies]), skills, resources, systemPrompt };
+  const behavior = input.behavior ?? Object.freeze({ compaction: "hybrid" as const, steering: true, followUps: true });
+  const systemPromptPlan = input.systemPromptPlan ?? new SystemPromptComposer().compose({ identity, projectRevision: input.projectRevision, goal: input.goal ?? "Assist with the current project task.", sessionBehavior: behavior, capabilities: input.capabilities, policies: input.policies, resources, ...(input.harnessPlan ? { harnessPlan: input.harnessPlan } : {}), ...(input.promptBudgetTokens ? { budgetTokens: input.promptBudgetTokens } : {}) });
+  const base = { identity, projectRoot: input.projectRoot, projectRevision: input.projectRevision, capabilities: Object.freeze([...input.capabilities]), policies: Object.freeze([...input.policies]), skills, resources, systemPromptPlan };
   return Object.freeze({ ...base, digest: sha256(canonicalJson(base)) });
-}
-
-function renderAgentEnvironment(input: Readonly<{ identity: AgentIdentity; projectRevision: string; capabilities: readonly string[]; policies: readonly string[]; resources: AgentEnvironment["resources"] }>): string {
-  const resources = input.resources.filter((item) => item.kind === "prompt" || item.kind === "context" || item.kind === "skill")
-    .map((item) => `## ${item.kind}:${item.id}\n${item.content}`).join("\n\n");
-  return [`# Identity\n${input.identity.name}: ${input.identity.description}`, `# Workspace\nrevision=${input.projectRevision}`, `# Capabilities\n${input.capabilities.join("\n") || "none"}`, `# Policies\n${input.policies.join("\n") || "default-deny"}`, resources].filter(Boolean).join("\n\n");
 }

@@ -20,6 +20,9 @@ export { AgentSession } from "./application/agent-session.js";
 export { DefaultSessionManager } from "./application/session-manager.js";
 export { CapabilityRegistry, classifyTask, planHarness } from "./application/harness.js";
 export { createAgentEnvironment } from "./application/agent-environment.js";
+export { AgentShaper } from "./application/agent-shaper.js";
+export { SystemPromptComposer } from "./application/system-prompt.js";
+export { DeterministicRoutingPolicy, InMemoryModelMetadataRegistry, ProfileModelRegistry } from "./application/model-routing.js";
 export { compactMessages, compactSessionEntries, compactSessionEntriesWithProvider } from "./application/compaction.js";
 export { projectAgentMessages } from "./application/message-projection.js";
 export { validateJsonSchema } from "./application/json-schema.js";
@@ -38,6 +41,9 @@ export type {
   RuntimeState,
   AgentExecutionRequest,
   AgentResource,
+  AgentShape,
+  AgentShapeReceipt,
+  AgentShapeRequest,
   AgentSessionRecord,
   CapabilityDescriptor,
   HarnessPlan,
@@ -47,6 +53,11 @@ export type {
   RecallResult,
   ResourceLoadRequest,
   ResourceLoadResult,
+  ResourceManifest,
+  ResourceManifestEntry,
+  ResourceResolution,
+  ResourceScope,
+  SystemPromptPlan,
   SessionEntry,
   SessionView,
   SessionWriteOptions,
@@ -105,6 +116,11 @@ export type {
   SessionStore,
   ResourceLoader,
   ModelResolver,
+  ModelMetadataRegistry,
+  ModelRegistry,
+  ProviderFactory,
+  ProviderResolver,
+  RoutingPolicy,
   CodeRecall,
   ProviderProfileStore,
   ProviderConfigurationService,

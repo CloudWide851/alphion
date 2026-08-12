@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { AgentMessage, AgentSessionRecord, PendingMessageKind, PendingSessionMessage, ProviderProfile, ProviderProfileInput, SessionEntry, SessionView, SessionWriteOptions, SessionWriteReceipt, ShellRule, VaultStatus } from "../../src/domain/contracts.js";
+import type { AgentMessage, AgentSessionRecord, AgentShape, AgentShapeReceipt, PendingMessageKind, PendingSessionMessage, ProviderProfile, ProviderProfileInput, SessionEntry, SessionView, SessionWriteOptions, SessionWriteReceipt, ShellRule, VaultStatus } from "../../src/domain/contracts.js";
 import type {
   CacheEntry,
   CacheStats,
@@ -19,7 +19,7 @@ import { canonicalJson, createId, sha256 } from "../../src/application/canonical
 import { AlphionError } from "../../src/application/errors.js";
 import { containsPotentialSecret, sanitizeRecord } from "../../src/application/sensitive-data.js";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const VAULT_SCHEMA_VERSION = 1;
 const VAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
 const VAULT_VERIFIER = "alphion-vault-verifier-v1";
@@ -74,7 +74,7 @@ export class SqliteStore
       this.#database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;");
       this.#assertIntegrity();
       this.#migrate();
-      this.#reconcileSessionSchemaV3();
+      this.#reconcileSessionSchemaV4();
       this.#registerOwnerAndRecover();
       this.#leaseHeartbeat = setInterval(() => this.#heartbeatOwner(), Math.max(500, Math.floor(this.#runLeaseMs / 3)));
       this.#leaseHeartbeat.unref();
@@ -145,11 +145,13 @@ export class SqliteStore
         digest,
       };
       if (event.kind === "run.started") {
+        const shapeRevision = typeof safePayload.shapeRevision === "number" ? safePayload.shapeRevision : null;
+        const shapeDigest = typeof safePayload.shapeDigest === "string" ? safePayload.shapeDigest : null;
         this.#database
           .prepare(
-            "INSERT INTO runs (run_id, session_id, status, created_at, updated_at) VALUES (?, ?, 'running', ?, ?)",
+            "INSERT INTO runs (run_id, session_id, status, created_at, updated_at, shape_revision, shape_digest) VALUES (?, ?, 'running', ?, ?, ?, ?)",
           )
-          .run(event.runId, event.sessionId, event.timestamp, event.timestamp);
+          .run(event.runId, event.sessionId, event.timestamp, event.timestamp, shapeRevision, shapeDigest);
       }
       this.#database
         .prepare(
@@ -269,6 +271,46 @@ export class SqliteStore
     return { session, entries: Object.freeze(reversed.reverse()) };
   }
 
+  async getSessionShape(sessionId: string): Promise<AgentShape | undefined> {
+    const session = this.#requireSession(sessionId);
+    if (!session.shapeRevision) return undefined;
+    const row = optionalRow(this.#database.prepare("SELECT shape_json FROM session_shapes WHERE session_id = ? AND shape_revision = ?").get(sessionId, session.shapeRevision));
+    if (!row) throw new AlphionError("integrity-failed", "Session shape pointer references a missing shape.", { stage: "database" });
+    return parseAgentShape(readString(row, "shape_json"));
+  }
+
+  async reshapeSession(sessionId: string, shape: AgentShape, options: SessionWriteOptions): Promise<AgentShapeReceipt> {
+    return this.#transaction(() => {
+      validateIdempotencyKey(options.idempotencyKey);
+      const replay = optionalRow(this.#database.prepare("SELECT session_id, result_json FROM session_commands WHERE idempotency_key = ?").get(options.idempotencyKey));
+      if (replay) {
+        if (readString(replay, "session_id") !== sessionId) throw new AlphionError("conflict", "Idempotency key belongs to another session.", { stage: "session" });
+        const result = requiredRow(JSON.parse(readString(replay, "result_json")));
+        return { sessionId, revision: readNumber(result, "revision"), shapeRevision: readNumber(result, "shapeRevision"), shapeDigest: readString(result, "shapeDigest"), replayed: true };
+      }
+      const session = this.#requireSession(sessionId);
+      this.#assertRevision(session, options.expectedRevision);
+      if (session.auditOnly) throw new AlphionError("forbidden", "Legacy audit sessions are read-only.", { stage: "session" });
+      if (session.status !== "idle" || session.activeRunId) throw new AlphionError("conflict", "A Session can be reshaped only while idle.", { stage: "session" });
+      validateAgentShape(shape);
+      const expectedShapeRevision = (session.shapeRevision ?? 0) + 1;
+      if (shape.sessionId !== sessionId || shape.revision !== expectedShapeRevision) throw new AlphionError("conflict", "Agent shape revision does not match the next Session shape revision.", { stage: "session" });
+      const now = new Date().toISOString();
+      this.#database.prepare("INSERT INTO session_shapes (session_id, shape_revision, shape_digest, shape_json, created_at, command_key) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(sessionId, shape.revision, shape.digest, canonicalJson(shape), now, options.idempotencyKey);
+      const auditId = createId("entry");
+      const auditMessage: AgentMessage = Object.freeze({ schemaVersion: 1, kind: "system-event", id: createId("message"), createdAt: now, eventKind: "session.reshaped", content: `Agent shape revision ${shape.revision} selected (${shape.digest}).` });
+      this.#database.prepare("INSERT INTO session_entries (id, parent_id, session_id, run_id, timestamp, message_json) VALUES (?, ?, ?, NULL, ?, ?)")
+        .run(auditId, session.currentLeafId ?? null, sessionId, now, canonicalJson(auditMessage));
+      const revision = session.revision + 1;
+      this.#database.prepare("UPDATE sessions SET current_leaf_id = ?, shape_status = 'shaped', shape_revision = ?, shape_digest = ?, revision = ?, updated_at = ? WHERE id = ?")
+        .run(auditId, shape.revision, shape.digest, revision, now, sessionId);
+      const receipt: AgentShapeReceipt = { sessionId, revision, shapeRevision: shape.revision, shapeDigest: shape.digest, replayed: false };
+      this.#recordSessionCommand(options.idempotencyKey, sessionId, receipt);
+      return receipt;
+    });
+  }
+
   async appendSessionEntry(sessionId: string, message: AgentMessage, options: SessionWriteOptions, runId?: string): Promise<SessionWriteReceipt> {
     return this.#transaction(() => {
       const replay = this.#replayedReceipt(options.idempotencyKey, sessionId);
@@ -290,15 +332,32 @@ export class SqliteStore
     });
   }
 
-  async beginSessionRun(sessionId: string, runId: string, message: Extract<AgentMessage, { readonly kind: "user" }>, options: SessionWriteOptions): Promise<Readonly<{ receipt: SessionWriteReceipt; session: AgentSessionRecord }>> {
+  async beginShapedSessionRun(sessionId: string, runId: string, message: Extract<AgentMessage, { readonly kind: "user" }>, initialShape: AgentShape | undefined, options: SessionWriteOptions): Promise<Readonly<{ receipt: SessionWriteReceipt; session: AgentSessionRecord; shape: AgentShape }>> {
     return this.#transaction(() => {
       this.#recoverExpiredLeases();
       const replay = this.#replayedReceipt(options.idempotencyKey, sessionId);
-      if (replay) return Object.freeze({ receipt: replay, session: this.#requireSession(sessionId) });
+      if (replay) {
+        const replayedSession = this.#requireSession(sessionId);
+        const replayedShape = this.#requireSessionShape(replayedSession);
+        return Object.freeze({ receipt: replay, session: replayedSession, shape: replayedShape });
+      }
       const session = this.#requireSession(sessionId);
       this.#assertRevision(session, options.expectedRevision);
       if (session.auditOnly) throw new AlphionError("forbidden", "Legacy audit sessions are read-only.", { stage: "session" });
       if (session.status !== "idle" || session.activeRunId) throw new AlphionError("conflict", "A run is already active for this session.", { stage: "session" });
+      if (session.shapeStatus === "legacy-unshaped") throw new AlphionError("conflict", "This migrated Session must be explicitly reshaped before it can run.", { stage: "shape" });
+      let shape: AgentShape;
+      if (session.shapeStatus === "unshaped") {
+        if (!initialShape) throw new AlphionError("validation", "Initial Agent shape is required for the first send.", { stage: "shape" });
+        validateAgentShape(initialShape);
+        if (initialShape.sessionId !== sessionId || initialShape.revision !== 1) throw new AlphionError("conflict", "Initial Agent shape identity is invalid.", { stage: "shape" });
+        this.#database.prepare("INSERT INTO session_shapes (session_id, shape_revision, shape_digest, shape_json, created_at, command_key) VALUES (?, 1, ?, ?, ?, ?)")
+          .run(sessionId, initialShape.digest, canonicalJson(initialShape), new Date().toISOString(), options.idempotencyKey);
+        shape = initialShape;
+      } else {
+        if (initialShape) throw new AlphionError("conflict", "A shaped Session cannot replace its shape during send.", { stage: "shape" });
+        shape = this.#requireSessionShape(session);
+      }
       validateAgentMessage(message);
       const entryId = createId("entry");
       const now = new Date().toISOString();
@@ -306,11 +365,11 @@ export class SqliteStore
       this.#database.prepare("INSERT INTO session_entries (id, parent_id, session_id, run_id, timestamp, message_json) VALUES (?, ?, ?, ?, ?, ?)")
         .run(entryId, session.currentLeafId ?? null, sessionId, runId, now, canonicalJson(message));
       const revision = session.revision + 1;
-      this.#database.prepare("UPDATE sessions SET current_leaf_id = ?, status = 'running', active_run_id = ?, lease_owner = ?, lease_expires_at = ?, revision = ?, updated_at = ? WHERE id = ?")
-        .run(entryId, runId, this.#ownerId, expiresAt, revision, now, sessionId);
+      this.#database.prepare("UPDATE sessions SET current_leaf_id = ?, status = 'running', active_run_id = ?, lease_owner = ?, lease_expires_at = ?, shape_status = 'shaped', shape_revision = ?, shape_digest = ?, revision = ?, updated_at = ? WHERE id = ?")
+        .run(entryId, runId, this.#ownerId, expiresAt, shape.revision, shape.digest, revision, now, sessionId);
       const receipt: SessionWriteReceipt = { sessionId, revision, entryId, replayed: false };
       this.#recordSessionCommand(options.idempotencyKey, sessionId, receipt);
-      return Object.freeze({ receipt, session: this.#requireSession(sessionId) });
+      return Object.freeze({ receipt, session: this.#requireSession(sessionId), shape });
     });
   }
 
@@ -394,6 +453,7 @@ export class SqliteStore
       const session = this.#requireSession(sessionId);
       this.#assertRevision(session, expectedRevision);
       if (session.status !== "idle" || session.activeRunId) throw new AlphionError("conflict", "A run is already active for this session.", { stage: "session" });
+      if (session.shapeStatus !== "shaped") throw new AlphionError("conflict", "Session must be shaped before a queued follow-up can run.", { stage: "shape" });
       const now = new Date().toISOString();
       const expiresAt = new Date(Date.now() + this.#runLeaseMs).toISOString();
       this.#database.prepare("UPDATE sessions SET status = 'running', active_run_id = ?, lease_owner = ?, lease_expires_at = ?, revision = ?, updated_at = ? WHERE id = ?")
@@ -962,12 +1022,18 @@ export class SqliteStore
       this.#transaction(() => {
         this.#createSchemaV2();
         this.#createSessionSchemaV3();
+        this.#createShapeSchemaV4(false);
       });
       return;
     }
     if (current === 2) {
       this.#backupV2();
-      this.#transaction(() => this.#createSessionSchemaV3());
+      this.#transaction(() => { this.#createSessionSchemaV3(); this.#createShapeSchemaV4(false); });
+      return;
+    }
+    if (current === 3) {
+      this.#backupV3();
+      this.#transaction(() => this.#createShapeSchemaV4(true));
       return;
     }
     if (current !== 1) {
@@ -1011,6 +1077,7 @@ export class SqliteStore
       this.#createVaultTables();
       this.#database.exec("PRAGMA user_version = 2");
       this.#createSessionSchemaV3();
+      this.#createShapeSchemaV4(false);
     });
   }
 
@@ -1094,6 +1161,28 @@ export class SqliteStore
     } finally { backup.close(); }
   }
 
+  #backupV3(): void { this.#backupSchema(3, `${this.#databasePath}.v3-backup`); }
+
+  #backupSchema(version: number, backupPath: string): void {
+    if (this.#databasePath === ":memory:") return;
+    const sourceDigest = logicalDatabaseDigest(this.#database);
+    if (existsSync(backupPath)) {
+      const existing = new DatabaseSync(backupPath, { readOnly: true });
+      try {
+        assertDatabaseHealthy(existing, `Existing v${version} backup failed its integrity check.`);
+        if (readNumber(requiredRow(existing.prepare("PRAGMA user_version").get()), "user_version") !== version || logicalDatabaseDigest(existing) !== sourceDigest) throw new AlphionError("conflict", `Existing v${version} backup does not match the database being migrated.`, { stage: "database" });
+      } finally { existing.close(); }
+      return;
+    }
+    this.#database.exec("PRAGMA wal_checkpoint(FULL)");
+    this.#database.exec(`VACUUM INTO '${backupPath.replaceAll("'", "''")}'`);
+    const backup = new DatabaseSync(backupPath, { readOnly: true });
+    try {
+      assertDatabaseHealthy(backup, `Created v${version} backup failed its integrity check.`);
+      if (readNumber(requiredRow(backup.prepare("PRAGMA user_version").get()), "user_version") !== version || logicalDatabaseDigest(backup) !== sourceDigest) throw new AlphionError("integrity-failed", `Created v${version} backup is not a recoverable snapshot.`, { stage: "database" });
+    } finally { backup.close(); }
+  }
+
   #createSessionSchemaV3(): void {
     this.#database.exec(`
       ALTER TABLE events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1;
@@ -1151,7 +1240,30 @@ export class SqliteStore
     `);
   }
 
-  #reconcileSessionSchemaV3(): void {
+  #createShapeSchemaV4(migratingV3: boolean): void {
+    this.#database.exec(`
+      ALTER TABLE sessions ADD COLUMN shape_status TEXT NOT NULL DEFAULT '${migratingV3 ? "legacy-unshaped" : "unshaped"}' CHECK (shape_status IN ('unshaped', 'shaped', 'legacy-unshaped'));
+      ALTER TABLE sessions ADD COLUMN shape_revision INTEGER;
+      ALTER TABLE sessions ADD COLUMN shape_digest TEXT;
+      ALTER TABLE runs ADD COLUMN shape_revision INTEGER;
+      ALTER TABLE runs ADD COLUMN shape_digest TEXT;
+      CREATE TABLE session_shapes (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        shape_revision INTEGER NOT NULL,
+        shape_digest TEXT NOT NULL,
+        shape_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        command_key TEXT NOT NULL UNIQUE,
+        PRIMARY KEY (session_id, shape_revision),
+        UNIQUE (session_id, shape_digest)
+      );
+      CREATE INDEX session_shapes_digest ON session_shapes(shape_digest);
+      UPDATE sessions SET shape_status = 'legacy-unshaped' WHERE audit_only = 1;
+      PRAGMA user_version = 4;
+    `);
+  }
+
+  #reconcileSessionSchemaV4(): void {
     const sessionColumns = tableColumns(this.#database, "sessions");
     const pendingColumns = tableColumns(this.#database, "pending_messages");
     this.#transaction(() => {
@@ -1267,6 +1379,13 @@ export class SqliteStore
     const row = optionalRow(this.#database.prepare("SELECT * FROM sessions WHERE id = ?").get(sessionId));
     if (!row) throw new AlphionError("validation", `Unknown session: ${sessionId}`, { stage: "session" });
     return decodeSession(row);
+  }
+
+  #requireSessionShape(session: AgentSessionRecord): AgentShape {
+    if (!session.shapeRevision || !session.shapeDigest) throw new AlphionError("integrity-failed", "Shaped Session is missing its shape identity.", { stage: "database" });
+    const row = optionalRow(this.#database.prepare("SELECT shape_json FROM session_shapes WHERE session_id = ? AND shape_revision = ? AND shape_digest = ?").get(session.id, session.shapeRevision, session.shapeDigest));
+    if (!row) throw new AlphionError("integrity-failed", "Session shape identity has no matching stored shape.", { stage: "database" });
+    return parseAgentShape(readString(row, "shape_json"));
   }
 
   #assertRevision(session: AgentSessionRecord, expectedRevision: number): void {
@@ -1486,6 +1605,10 @@ function decodeSession(row: Readonly<Record<string, unknown>>): AgentSessionReco
   const currentLeafId = readNullableString(row, "current_leaf_id");
   const activeRunId = readNullableString(row, "active_run_id");
   const providerId = readNullableString(row, "provider_id");
+  const shapeStatus = readString(row, "shape_status");
+  if (shapeStatus !== "unshaped" && shapeStatus !== "shaped" && shapeStatus !== "legacy-unshaped") throw new AlphionError("integrity-failed", "Stored Session shape status is invalid.", { stage: "database" });
+  const shapeRevision = row.shape_revision === null || row.shape_revision === undefined ? undefined : readNumber(row, "shape_revision");
+  const shapeDigest = readNullableString(row, "shape_digest");
   return {
     schemaVersion: 1,
     id: readString(row, "id"),
@@ -1498,7 +1621,32 @@ function decodeSession(row: Readonly<Record<string, unknown>>): AgentSessionReco
     createdAt: readString(row, "created_at"),
     updatedAt: readString(row, "updated_at"),
     auditOnly: readNumber(row, "audit_only") === 1,
+    shapeStatus,
+    ...(shapeRevision ? { shapeRevision } : {}),
+    ...(shapeDigest ? { shapeDigest } : {}),
   };
+}
+
+function parseAgentShape(value: string): AgentShape {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch (error) { throw new AlphionError("integrity-failed", "Stored Agent shape JSON is invalid.", { stage: "database", cause: error }); }
+  validateAgentShape(parsed);
+  return parsed;
+}
+
+function validateAgentShape(shape: unknown): asserts shape is AgentShape {
+  if (!shape || typeof shape !== "object" || Array.isArray(shape)) throw new AlphionError("validation", "Agent shape must be an object.", { stage: "shape" });
+  const value = shape as Readonly<Record<string, unknown>>;
+  if (value.schemaVersion !== 1 || typeof value.sessionId !== "string" || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1 || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/u.test(value.digest)) throw new AlphionError("validation", "Agent shape envelope is invalid.", { stage: "shape" });
+  const exact = ["schemaVersion", "sessionId", "revision", "goal", "identity", "systemPromptPlan", "resources", "resourceIds", "resourceDigest", "toolIds", "capabilities", "policies", "behavior", "providerId", "requiredProviderCapabilities", "harnessPlan", "omissions", "diagnostics", "digest"];
+  if (Object.keys(value).some((key) => !exact.includes(key))) throw new AlphionError("validation", "Agent shape contains an unknown field.", { stage: "shape" });
+  for (const key of ["goal", "resourceDigest"] as const) if (typeof value[key] !== "string" || !value[key]) throw new AlphionError("validation", `Agent shape ${key} is invalid.`, { stage: "shape" });
+  for (const key of ["resources", "resourceIds", "toolIds", "capabilities", "policies", "requiredProviderCapabilities", "omissions", "diagnostics"] as const) if (!Array.isArray(value[key])) throw new AlphionError("validation", `Agent shape ${key} must be an array.`, { stage: "shape" });
+  for (const key of ["identity", "systemPromptPlan", "behavior", "harnessPlan"] as const) if (!value[key] || typeof value[key] !== "object" || Array.isArray(value[key])) throw new AlphionError("validation", `Agent shape ${key} must be an object.`, { stage: "shape" });
+  const digest = value.digest;
+  const { digest: _digest, ...base } = value;
+  if (sha256(canonicalJson(base)) !== digest) throw new AlphionError("integrity-failed", "Agent shape digest does not match its content.", { stage: "shape" });
+  if (containsPotentialSecret(value)) throw new AlphionError("forbidden", "Agent shape cannot contain probable secrets.", { stage: "shape" });
 }
 
 function decodeSessionEntry(row: Readonly<Record<string, unknown>>): SessionEntry {

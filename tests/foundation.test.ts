@@ -10,7 +10,7 @@ import { sha256 } from "../src/application/canonical.js";
 import { BoundedEventChannel } from "../src/application/event-channel.js";
 import { ToolRegistry } from "../src/application/tool-registry.js";
 import type { AgentProvider, ApprovalPort, ToolExecutor } from "../src/ports/index.js";
-import type { EvidenceRef, ProviderEvent, ProviderProfile, ProviderRequest } from "../src/domain/contracts.js";
+import type { EvidenceRef, ProviderEvent, ProviderProfile, ProviderRequest, SystemPromptPlan } from "../src/domain/contracts.js";
 import type { AgentStreamEvent } from "../src/protocol/events.js";
 import { MemoryLruCache } from "../adapters/cache/memory-cache.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
@@ -29,6 +29,8 @@ const PROFILE: ProviderProfile = Object.freeze({
   revision: 1,
   active: true,
 });
+
+const TEST_SYSTEM_PROMPT: SystemPromptPlan = Object.freeze({ schemaVersion: 1, sections: Object.freeze([]), omissions: Object.freeze([]), budgetTokens: 256, estimatedTokens: 1, rendered: "Test system instructions.", digest: sha256("Test system instructions.") });
 
 test("SQLite profiles, cache, hash-chain events, and shell rules round-trip", async () => {
   await withTemporaryDirectory(async (directory) => {
@@ -315,7 +317,7 @@ test("Agent runtime propagates caller cancellation to the provider", async () =>
       eventStore: store,
       approval: alwaysApprove(),
     });
-    const handle = runtime.execute({ prompt: "wait", projectRoot: directory, projectRevision: "cancel-revision" });
+    const handle = runtime.execute({ prompt: "wait", projectRoot: directory, projectRevision: "cancel-revision", systemPromptPlan: TEST_SYSTEM_PROMPT });
     const events: AgentStreamEvent[] = [];
     const consume = (async () => {
       for await (const event of handle.events) events.push(event);
@@ -399,6 +401,7 @@ test("Agent fails closed on incomplete, oversized, and timed-out provider output
         prompt: name,
         projectRoot: directory,
         projectRevision: `revision-${name}`,
+        systemPromptPlan: TEST_SYSTEM_PROMPT,
         ...(budgets ? { budgets } : {}),
       });
       const consume = (async () => {
@@ -610,7 +613,7 @@ function alwaysApprove(): ApprovalPort {
 }
 
 async function runAndCollect(runtime: AgentLoop, projectRoot: string, projectRevision: string, prompt = "Read the fact.") {
-  const handle = runtime.execute({ prompt, projectRoot, projectRevision });
+  const handle = runtime.execute({ prompt, projectRoot, projectRevision, systemPromptPlan: TEST_SYSTEM_PROMPT });
   const events: AgentStreamEvent[] = [];
   const consume = (async () => {
     for await (const event of handle.events) events.push(event);

@@ -263,12 +263,16 @@ export interface AgentRunRequest {
   readonly projectRoot: string;
   readonly projectRevision: string;
   readonly sessionId?: string;
-  readonly systemInstructions?: string;
+  /** Versioned privileged instructions. Runtime never assembles ad-hoc system strings. */
+  readonly systemPromptPlan: SystemPromptPlan;
+  readonly modelContextMessages?: readonly ProviderMessage[];
   readonly budgets?: Partial<AgentBudgets>;
   readonly cacheResponses?: boolean;
   readonly projectProfile?: ProjectProfile;
   readonly contextPack?: ContextPack;
   readonly workingMemory?: WorkingMemorySnapshot;
+  /** Immutable identity of the Session shape used by this run. */
+  readonly shape?: AgentShape;
 }
 
 /** Immutable, session-derived inputs used to assemble one model context. */
@@ -329,6 +333,9 @@ export interface AgentSessionRecord {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly auditOnly: boolean;
+  readonly shapeStatus: "unshaped" | "shaped" | "legacy-unshaped";
+  readonly shapeRevision?: number;
+  readonly shapeDigest?: string;
 }
 
 export interface SessionEntry {
@@ -371,6 +378,14 @@ export interface SessionWriteReceipt {
 }
 
 export type ResourceKind = "extension" | "skill" | "prompt" | "theme" | "context";
+export type ResourceScope = "builtin" | "user" | "project" | "session";
+
+export interface ResourceProvenance {
+  readonly scope: ResourceScope;
+  readonly packageId: string;
+  readonly manifestPath: string;
+  readonly sourcePath: string;
+}
 
 export interface AgentResource {
   readonly id: string;
@@ -378,22 +393,65 @@ export interface AgentResource {
   readonly source: string;
   readonly content: string;
   readonly digest: string;
+  readonly dependencies: readonly string[];
+  readonly tags: readonly string[];
+  readonly constraints?: readonly string[];
+  readonly provenance: ResourceProvenance;
 }
 
 export interface ResourceLoadRequest {
   readonly projectRoot: string;
+  readonly userResourceRoot?: string;
+  readonly disabledScopes?: readonly ResourceScope[];
   readonly disabledIds?: readonly string[];
-  readonly additionalSafePaths?: readonly string[];
-  readonly overrides?: Readonly<Record<string, string>>;
+  readonly sessionOverrides?: readonly ResourceManifestEntry[];
   readonly maxResources?: number;
+  readonly maxFileBytes?: number;
   readonly maxBytes?: number;
 }
 
-export interface ResourceLoadResult {
+export interface ResourceManifestEntry {
+  readonly id: string;
+  readonly kind: ResourceKind;
+  readonly path?: string;
+  readonly inline?: string;
+  readonly dependencies?: readonly string[];
+  readonly tags?: readonly string[];
+  readonly enabled?: boolean;
+}
+
+export interface ResourceManifest {
+  readonly schemaVersion: 1;
+  readonly packageId: string;
+  readonly resources: readonly ResourceManifestEntry[];
+}
+
+export interface ResourceShadow {
+  readonly id: string;
+  readonly selected: ResourceProvenance;
+  readonly shadowed: ResourceProvenance;
+}
+
+export interface ResourceDiagnostic {
+  readonly code: string;
+  readonly severity: "info" | "warning" | "error";
+  readonly message: string;
+  readonly scope?: ResourceScope;
+  readonly resourceId?: string;
+  readonly path?: string;
+}
+
+export interface ResourceResolution {
+  readonly schemaVersion: 1;
   readonly resources: readonly AgentResource[];
-  readonly diagnostics: readonly string[];
+  readonly shadows: readonly ResourceShadow[];
+  readonly omissions: readonly string[];
+  readonly diagnostics: readonly ResourceDiagnostic[];
   readonly digest: string;
 }
+
+/** @deprecated Use ResourceResolution. */
+export type ResourceLoadResult = ResourceResolution;
 
 export interface AgentIdentity {
   readonly id: string;
@@ -409,8 +467,78 @@ export interface AgentEnvironment {
   readonly policies: readonly string[];
   readonly skills: readonly AgentResource[];
   readonly resources: readonly AgentResource[];
-  readonly systemPrompt: string;
+  readonly systemPromptPlan: SystemPromptPlan;
   readonly digest: string;
+}
+
+export type SystemPromptSectionKind = "identity" | "workspace" | "session" | "policy" | "resource" | "harness";
+
+export interface SystemPromptSection {
+  readonly id: string;
+  readonly kind: SystemPromptSectionKind;
+  readonly authority: "root" | "application" | "session" | "resource";
+  readonly content: string;
+  readonly required: boolean;
+  readonly provenance: readonly string[];
+  readonly estimatedTokens: number;
+  readonly digest: string;
+}
+
+export interface SystemPromptPlan {
+  readonly schemaVersion: 1;
+  readonly sections: readonly SystemPromptSection[];
+  readonly omissions: readonly string[];
+  readonly budgetTokens: number;
+  readonly estimatedTokens: number;
+  readonly rendered: string;
+  readonly digest: string;
+}
+
+export interface SessionBehavior {
+  readonly compaction: "deterministic" | "hybrid";
+  readonly steering: boolean;
+  readonly followUps: boolean;
+}
+
+export interface AgentShapeRequest {
+  readonly goal: string;
+  readonly resourceIds?: readonly string[];
+  readonly capabilities?: readonly string[];
+  readonly policies?: readonly string[];
+  readonly toolIds?: readonly string[];
+  readonly providerId?: string;
+  readonly behavior?: Partial<SessionBehavior>;
+  readonly promptBudgetTokens?: number;
+}
+
+export interface AgentShape {
+  readonly schemaVersion: 1;
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly goal: string;
+  readonly identity: AgentIdentity;
+  readonly systemPromptPlan: SystemPromptPlan;
+  readonly resources: readonly AgentResource[];
+  readonly resourceIds: readonly string[];
+  readonly resourceDigest: string;
+  readonly toolIds: readonly string[];
+  readonly capabilities: readonly string[];
+  readonly policies: readonly string[];
+  readonly behavior: SessionBehavior;
+  readonly providerId?: string;
+  readonly requiredProviderCapabilities: readonly (keyof ProviderCapabilities)[];
+  readonly harnessPlan: HarnessPlan;
+  readonly omissions: readonly string[];
+  readonly diagnostics: readonly string[];
+  readonly digest: string;
+}
+
+export interface AgentShapeReceipt {
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly shapeRevision: number;
+  readonly shapeDigest: string;
+  readonly replayed: boolean;
 }
 
 export type TaskLabel = "explain" | "diagnose" | "implement" | "verify" | "release";
@@ -466,7 +594,25 @@ export interface ModelSelectionRequest {
   readonly requiredCapabilities: readonly (keyof ProviderCapabilities)[];
 }
 
-export interface AgentExecutionRequest extends AgentRunRequest {
+export interface ModelDescriptor {
+  readonly id: string;
+  readonly providerKind: ProviderKind;
+  readonly model: string;
+  readonly capabilities: ProviderCapabilities;
+}
+
+export interface ModelRouteCandidate {
+  readonly profileId: string;
+  readonly reason: string;
+  readonly rank: number;
+}
+
+export interface ModelResolutionSummary {
+  readonly providerId: string;
+  readonly reasons: readonly string[];
+}
+
+export interface AgentExecutionRequest extends Omit<AgentRunRequest, "systemPromptPlan" | "modelContextMessages"> {
   readonly providerId?: string;
   readonly history: readonly AgentMessage[];
   readonly environment: AgentEnvironment;

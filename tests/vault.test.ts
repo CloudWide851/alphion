@@ -147,7 +147,7 @@ test("vault auto-lock expires an unlocked key", async () => {
   });
 });
 
-test("SQLite schema v1 profiles migrate through schema v3 without losing environment auth", async () => {
+test("SQLite schema v1 profiles migrate through schema v4 without losing environment auth", async () => {
   await withTemporaryDirectory(async (directory) => {
     const path = join(directory, "v1.sqlite3");
     createV1Database(path);
@@ -160,7 +160,7 @@ test("SQLite schema v1 profiles migrate through schema v3 without losing environ
       assert.equal(profile?.capabilities.reasoning, false);
       const database = new DatabaseSync(path, { readOnly: true });
       try {
-        assert.equal((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 3);
+        assert.equal((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 4);
       } finally {
         database.close();
       }

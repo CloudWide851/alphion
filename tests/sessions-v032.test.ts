@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,8 +14,9 @@ import { DefaultSessionManager } from "../src/application/session-manager.js";
 import { Agent } from "../src/application/agent.js";
 import { ToolRegistry } from "../src/application/tool-registry.js";
 import { BoundedEventChannel } from "../src/application/event-channel.js";
+import { canonicalJson, sha256 } from "../src/application/canonical.js";
 import { compactSessionEntries, compactSessionEntriesWithProvider } from "../src/application/compaction.js";
-import type { AgentMessage, AgentRunResult, EvidenceRef, ProjectProfile, SessionEntry } from "../src/domain/contracts.js";
+import type { AgentMessage, AgentRunResult, AgentShape, EvidenceRef, ProjectProfile, SessionEntry } from "../src/domain/contracts.js";
 import type { AgentContract, AgentExecutionHooks, AgentProvider, AgentRunHandle, ApprovalPort, ModelResolver } from "../src/ports/index.js";
 import type { ProviderEvent, ProviderRequest } from "../src/domain/contracts.js";
 import type { AgentEvent, AgentStreamEvent } from "../src/protocol/events.js";
@@ -31,10 +32,11 @@ test("session branches enforce revision, idempotency, FIFO queues and leases", a
     assert.equal(replay.replayed, true);
     assert.equal(replay.entryId, receipt.entryId);
     await assert.rejects(store.appendSessionEntry(session.id, user("stale"), { expectedRevision: 0, idempotencyKey: "append:test:stale" }), /revision changed/iu);
-    const leased = await store.acquireRunLease(session.id, "run-one", receipt.revision);
+    const shaped = await store.reshapeSession(session.id, testShape(session.id), { expectedRevision: receipt.revision, idempotencyKey: "reshape:test:0001" });
+    const leased = await store.acquireRunLease(session.id, "run-one", shaped.revision);
     await assert.rejects(store.acquireRunLease(session.id, "run-two", leased.revision), /already active/iu);
     const beforeRejectedSend = (await store.getSessionView(session.id))?.entries.length;
-    await assert.rejects(store.beginSessionRun(session.id, "run-rejected", user("must not persist"), { expectedRevision: leased.revision, idempotencyKey: "send:test:reject" }), /already active/iu);
+    await assert.rejects(store.beginShapedSessionRun(session.id, "run-rejected", user("must not persist"), testShape(session.id), { expectedRevision: leased.revision, idempotencyKey: "send:test:reject" }), /already active/iu);
     assert.equal((await store.getSessionView(session.id))?.entries.length, beforeRejectedSend);
     const queued = await store.enqueuePending(session.id, "steer", user("redirect"), { expectedRevision: leased.revision, idempotencyKey: "steer:test:0001" });
     const drained = await store.drainPending(session.id, "steer", "run-one");
@@ -79,7 +81,7 @@ test("schema v2 migration creates backup and read-only legacy session", async ()
   let store = new SqliteStore({ path });
   store.close();
   const db = new DatabaseSync(path);
-  db.exec("DROP TABLE session_commands; DROP TABLE pending_messages; DROP TABLE session_entries; DROP TABLE sessions; DROP TABLE session_owners; DROP INDEX events_session_sequence; ALTER TABLE events DROP COLUMN session_sequence; ALTER TABLE events DROP COLUMN schema_version; CREATE TABLE backup_fixture (value TEXT NOT NULL); INSERT INTO backup_fixture VALUES ('wal-visible'); PRAGMA user_version = 2;");
+  db.exec("DROP TABLE session_shapes; DROP TABLE session_commands; DROP TABLE pending_messages; DROP TABLE session_entries; DROP TABLE sessions; DROP TABLE session_owners; DROP INDEX events_session_sequence; ALTER TABLE events DROP COLUMN session_sequence; ALTER TABLE events DROP COLUMN schema_version; ALTER TABLE runs DROP COLUMN shape_revision; ALTER TABLE runs DROP COLUMN shape_digest; CREATE TABLE backup_fixture (value TEXT NOT NULL); INSERT INTO backup_fixture VALUES ('wal-visible'); PRAGMA user_version = 2;");
   db.close();
   store = new SqliteStore({ path });
   try {
@@ -112,14 +114,16 @@ test("harness and resource loading are deterministic and bounded", async () => {
   assert.throws(() => planHarness("diagnose a failure", registry, { budgets: { operations: 5 } }), /cannot widen budget/iu);
   const directory = await mkdtemp(join(tmpdir(), "alphion-resource-"));
   try {
-    await writeFile(join(directory, "README.md"), "safe context");
+    await mkdir(join(directory, ".alphion-resources"));
+    await writeFile(join(directory, ".alphion-resources", "project.md"), "safe context");
     await writeFile(join(directory, ".env"), "SECRET=value");
-    const loaded = await new LocalResourceLoader().load({ projectRoot: directory, additionalSafePaths: [".env"] });
+    await writeFile(join(directory, ".alphion-resources", "manifest.json"), JSON.stringify({ schemaVersion: 1, packageId: "project.test", resources: [{ id: "project-context", kind: "context", path: "project.md" }] }));
+    const loaded = await new LocalResourceLoader().resolve({ projectRoot: directory });
     assert.equal(loaded.resources.some((item) => item.content.includes("SECRET")), false);
-    assert.equal(loaded.resources.find((item) => item.id === "readme")?.content, "safe context");
-    const missingDefaultOverride = await new LocalResourceLoader().load({ projectRoot: directory, overrides: { agents: "task context" } });
-    assert.equal(missingDefaultOverride.resources.find((item) => item.id === "agents")?.kind, "context");
-    assert.equal(missingDefaultOverride.resources.find((item) => item.id === "agents")?.source, "override");
+    assert.equal(loaded.resources.find((item) => item.id === "project-context")?.content, "safe context");
+    const overridden = await new LocalResourceLoader().resolve({ projectRoot: directory, sessionOverrides: [{ id: "project-context", kind: "prompt", inline: "task context" }] });
+    assert.equal(overridden.resources.find((item) => item.id === "project-context")?.kind, "prompt");
+    assert.equal(overridden.resources.find((item) => item.id === "project-context")?.provenance.scope, "session");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -161,7 +165,8 @@ test("opening a store recovers orphaned leases and pending claims", async () => 
   const path = join(directory, "state.sqlite3");
   let store = new SqliteStore({ path });
   const session = await store.createSession({ title: "recover", idempotencyKey: "create:recover:0001" });
-  const leased = await store.acquireRunLease(session.id, "orphan-run", session.revision);
+  const shaped = await store.reshapeSession(session.id, testShape(session.id), { expectedRevision: session.revision, idempotencyKey: "reshape:recover:0001" });
+  const leased = await store.acquireRunLease(session.id, "orphan-run", shaped.revision);
   await store.enqueuePending(session.id, "steer", user("recover me"), { expectedRevision: leased.revision, idempotencyKey: "steer:recover:0001" });
   await store.drainPending(session.id, "steer", "orphan-run");
   store.close();
@@ -227,12 +232,14 @@ test("Agent injects bounded recall, resources and complete HarnessPlan into prov
   const models: ModelResolver = { resolveModel: () => Promise.resolve(provider) };
   const events = { append: async (draft: Parameters<import("../src/ports/index.js").EventStore["append"]>[0]) => ({ ...draft, schemaVersion: 2 as const, eventId: `event-${provider.requests.length}`, sequence: 1, sessionSequence: 1, timestamp: new Date(0).toISOString(), previousDigest: "0".repeat(64), digest: "d".repeat(64) }), verifyRun: () => Promise.resolve(true), listSessionEvents: () => Promise.resolve([]) };
   const agent = new Agent({ models, tools: new ToolRegistry([]), eventStore: events });
-  const handle = await agent.execute({ prompt: "diagnose", projectRoot: process.cwd(), projectRevision: "revision", history: [], environment: { identity: { id: "test", name: "Test Agent", description: "identity" }, projectRoot: process.cwd(), projectRevision: "revision", capabilities: ["project.read"], policies: ["deny-write"], skills: [{ id: "skill-one", kind: "skill", source: "test", content: "skill content", digest: "skill-digest" }], resources: [{ id: "context-one", kind: "context", source: "test", content: "resource context", digest: "context-digest" }], systemPrompt: "RESOURCE_SYSTEM_PROMPT", digest: "environment-digest" }, harnessPlan: { schemaVersion: 1, task: "diagnose", taskLabels: ["diagnose"], risk: "medium", capabilities: ["project.read"], reasons: ["task:diagnose"], permissions: ["project:read"], budgets: { operations: 4 }, evaluator: "quality-gate", omissions: ["project.write"], digest: "plan-digest" }, recall: { items: [{ source: "lexical", path: "src/example.ts", excerpt: "RECALL_EXCERPT", confidence: 0.5, evidence: "recall-digest" }], degraded: true, diagnostics: ["fallback"] } }, allowApproval());
+  const promptPlan = { schemaVersion: 1 as const, sections: [], omissions: [], budgetTokens: 2048, estimatedTokens: 10, rendered: "RESOURCE_SYSTEM_PROMPT\npermissions=project:read\nomissions=project.write\nevaluator=quality-gate", digest: "prompt-plan" };
+  const handle = await agent.execute({ prompt: "diagnose", projectRoot: process.cwd(), projectRevision: "revision", history: [], environment: { identity: { id: "test", name: "Test Agent", description: "identity" }, projectRoot: process.cwd(), projectRevision: "revision", capabilities: ["project.read"], policies: ["deny-write"], skills: [], resources: [], systemPromptPlan: promptPlan, digest: "environment-digest" }, harnessPlan: { schemaVersion: 1, task: "diagnose", taskLabels: ["diagnose"], risk: "medium", capabilities: ["project.read"], reasons: ["task:diagnose"], permissions: ["project:read"], budgets: { operations: 4 }, evaluator: "quality-gate", omissions: ["project.write"], digest: "plan-digest" }, recall: { items: [{ source: "lexical", path: "src/example.ts", excerpt: "RECALL_EXCERPT", confidence: 0.5, evidence: "recall-digest" }], degraded: true, diagnostics: ["fallback"] } }, allowApproval());
   const consume = (async () => { for await (const _event of handle.events) { /* drain */ } })();
   await handle.result; await consume;
-  const system = provider.requests[0]?.messages.find((message) => message.role === "system")?.content ?? "";
+  const system = provider.requests[0]?.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n") ?? "";
   assert.match(system, /RESOURCE_SYSTEM_PROMPT/u);
-  assert.match(system, /RECALL_EXCERPT/u);
+  assert.doesNotMatch(system, /RECALL_EXCERPT/u);
+  assert.match(provider.requests[0]?.messages.find((message) => message.role === "user" && message.content.includes("RECALL_EXCERPT"))?.content ?? "", /Retrieved evidence context/u);
   assert.match(system, /permissions=project:read/u);
   assert.match(system, /omissions=project.write/u);
   assert.match(system, /evaluator=quality-gate/u);
@@ -317,7 +324,15 @@ class StructuredCompactionProvider implements AgentProvider {
 }
 
 function testSession(sessionId: string, store: SqliteStore, agent: AgentContract): AgentSession {
-  return new AgentSession({ sessionId, store, agent, projectRoot: process.cwd(), projectProfile: () => Promise.resolve(TEST_PROFILE), environment: () => Promise.resolve({ identity: { id: "test", name: "test", description: "test" }, projectRoot: process.cwd(), projectRevision: "revision", capabilities: [], policies: [], skills: [], resources: [], systemPrompt: "test", digest: "digest" }), plan: () => ({ schemaVersion: 1, task: "implement", taskLabels: ["implement"], risk: "low", capabilities: [], reasons: [], permissions: [], budgets: {}, evaluator: "test", omissions: [], digest: "plan" }) });
+  const plan = () => ({ schemaVersion: 1 as const, task: "implement" as const, taskLabels: ["implement" as const], risk: "low" as const, capabilities: [], reasons: [], permissions: [], budgets: {}, evaluator: "test", omissions: [], digest: "plan" });
+  return new AgentSession({ sessionId, store, agent, projectRoot: process.cwd(), projectProfile: () => Promise.resolve(TEST_PROFILE), environment: (_profile, shape) => Promise.resolve({ identity: shape.identity, projectRoot: process.cwd(), projectRevision: "revision", capabilities: shape.capabilities, policies: shape.policies, skills: [], resources: shape.resources, systemPromptPlan: shape.systemPromptPlan, digest: "digest" }), shape: (request, revision) => Promise.resolve(testShape(sessionId, revision, request.goal)), plan });
+}
+
+function testShape(sessionId: string, revision = 1, goal = "test"): AgentShape {
+  const plan = { schemaVersion: 1 as const, sections: [], omissions: [], budgetTokens: 2048, estimatedTokens: 1, rendered: "test", digest: "prompt" };
+  const harnessPlan = { schemaVersion: 1 as const, task: "implement" as const, taskLabels: ["implement" as const], risk: "low" as const, capabilities: [], reasons: [], permissions: [], budgets: {}, evaluator: "test", omissions: [], digest: "plan" };
+  const base = { schemaVersion: 1 as const, sessionId, revision, goal, identity: { id: "test", name: "test", description: "test" }, systemPromptPlan: plan, resources: [], resourceIds: [], resourceDigest: "resources", toolIds: [], capabilities: [], policies: [], behavior: { compaction: "hybrid" as const, steering: true, followUps: true }, requiredProviderCapabilities: [], harnessPlan, omissions: [], diagnostics: [] };
+  return { ...base, digest: sha256(canonicalJson(base)) };
 }
 
 const TEST_PROFILE: ProjectProfile = { schemaVersion: 1, projectRevision: "revision", profilerVersion: "test", rulesVersion: "test", projectType: "unknown", facts: [], qualityCommands: [], diagnostics: [], scannedPaths: 0, truncated: false, digest: "profile" };

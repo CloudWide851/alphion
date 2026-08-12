@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentRunResult, AgentSessionRecord, HarnessPlan, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
+import type { AgentMessage, AgentRunResult, AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, HarnessPlan, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
 import type { AgentContract, AgentRunHandle, AgentSessionContract, ApprovalPort, CodeRecall, ModelResolver, SessionStore } from "../ports/index.js";
 import type { AgentStreamEvent } from "../protocol/events.js";
 import { BoundedEventChannel } from "./event-channel.js";
@@ -16,7 +16,8 @@ export interface AgentSessionOptions {
   readonly agent: AgentContract;
   readonly projectRoot: string;
   readonly projectProfile: () => Promise<ProjectProfile>;
-  readonly environment: (profile: ProjectProfile) => Promise<AgentEnvironment>;
+  readonly environment: (profile: ProjectProfile, shape: AgentShape) => Promise<AgentEnvironment>;
+  readonly shape: (request: AgentShapeRequest, revision: number, profile: ProjectProfile, harness: HarnessPlan) => Promise<AgentShape>;
   readonly plan: (prompt: string) => HarnessPlan;
   readonly models?: ModelResolver;
   readonly recall?: CodeRecall;
@@ -48,6 +49,21 @@ export class AgentSession implements AgentSessionContract {
     return this.#own(this.#view());
   }
 
+  getShape(): Promise<AgentShape | undefined> { this.#assertOpen(); return this.#own(this.options.store.getSessionShape(this.id)); }
+
+  reshape(request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt> {
+    this.#assertOpen(); return this.#own(this.#reshape(request, options));
+  }
+
+  async #reshape(request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt> {
+    const session = await this.#get();
+    if (session.status !== "idle" || session.activeRunId) throw new AlphionError("conflict", "A Session can be reshaped only while idle.", { stage: "shape" });
+    const profile = await this.options.projectProfile();
+    const harness = this.options.plan(request.goal);
+    const shape = await this.options.shape(request, (session.shapeRevision ?? 0) + 1, profile, harness);
+    return this.options.store.reshapeSession(this.id, shape, options);
+  }
+
   async #view(): Promise<SessionView> {
     const value = await this.options.store.getSessionView(this.id);
     if (!value) throw new AlphionError("validation", `Unknown session: ${this.id}`, { stage: "session" });
@@ -67,13 +83,21 @@ export class AgentSession implements AgentSessionContract {
   async #send(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> {
     const prompt = content.trim();
     if (!prompt) throw new AlphionError("validation", "Session message cannot be empty.", { stage: "session" });
+    const session = await this.#get();
     const user = userMessage(prompt);
     const runId = createId("run");
-    const started = await this.options.store.beginSessionRun(this.id, runId, user, options);
+    let initialShape: AgentShape | undefined;
+    if (session.shapeStatus === "legacy-unshaped") throw new AlphionError("conflict", "This migrated Session must be explicitly reshaped before send.", { stage: "shape" });
+    if (session.shapeStatus === "unshaped") {
+      const profile = await this.options.projectProfile();
+      const harness = this.options.plan(prompt);
+      initialShape = await this.options.shape({ goal: prompt, ...(session.providerId ? { providerId: session.providerId } : {}) }, 1, profile, harness);
+    }
+    const started = await this.options.store.beginShapedSessionRun(this.id, runId, user, initialShape, options);
     if (started.receipt.replayed) throw new AlphionError("conflict", "This send command was already applied; subscribe to the session instead of starting it again.", { stage: "session" });
     let handle: AgentRunHandle;
     try {
-      handle = await this.#executeLeased(prompt, runId, started.session.providerId, approval);
+      handle = await this.#executeLeased(prompt, runId, started.session.providerId, started.shape, approval);
     } catch (error) {
       await this.options.store.releaseRunLease(this.id, runId);
       throw error;
@@ -104,17 +128,17 @@ export class AgentSession implements AgentSessionContract {
     return receipt;
   }
 
-  subscribe(): AsyncIterable<AgentStreamEvent> {
+  subscribe(afterSessionSequence = 0): AsyncIterable<AgentStreamEvent> {
     this.#assertOpen();
     const channel = new BoundedEventChannel<AgentStreamEvent>(256);
     this.#events.add(channel);
     const store = this.options.store;
     const subscribers = this.#events;
     const sessionId = this.id;
-    const history = this.#own(store.listSessionEvents(sessionId));
+    const history = this.#own(store.listSessionEvents(sessionId, afterSessionSequence));
     return {
       async *[Symbol.asyncIterator]() {
-        let cursor = 0;
+        let cursor = afterSessionSequence;
         try {
           for (const event of await history) {
             cursor = Math.max(cursor, event.sessionSequence ?? cursor);
@@ -163,19 +187,20 @@ export class AgentSession implements AgentSessionContract {
     }
   }
 
-  async #executeLeased(prompt: string, runId: string, providerId: string | undefined, approval: ApprovalPort): Promise<AgentRunHandle> {
+  async #executeLeased(prompt: string, runId: string, providerId: string | undefined, shape: AgentShape, approval: ApprovalPort): Promise<AgentRunHandle> {
     const branch = await this.#view();
     const profile = await this.options.projectProfile();
-    const environment = await this.options.environment(profile);
+    const environment = await this.options.environment(profile, shape);
     const recall = await this.options.recall?.recall({ projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, query: prompt, limit: 20 }, new AbortController().signal);
+    const selectedProviderId = shape.providerId ?? providerId;
     const compactionProvider = this.options.models
-      ? await this.options.models.resolveModel({ sessionId: this.id, ...(providerId ? { providerId } : {}), requiredCapabilities: [] })
+      ? await this.options.models.resolveModel({ sessionId: this.id, ...(selectedProviderId ? { providerId: selectedProviderId } : {}), requiredCapabilities: shape.requiredProviderCapabilities })
       : undefined;
     const history = compactionProvider
       ? await compactSessionEntriesWithProvider(branch.entries, compactionProvider, AbortSignal.timeout(15_000))
       : compactSessionEntries(branch.entries);
-    const effectiveProviderId = providerId ?? compactionProvider?.profile.id;
-    return this.options.agent.execute({ prompt, runId, sessionId: this.id, projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}), projectProfile: profile, history, environment, harnessPlan: this.options.plan(prompt), ...(recall ? { recall } : {}) }, approval, {
+    const effectiveProviderId = selectedProviderId ?? compactionProvider?.profile.id;
+    return this.options.agent.execute({ prompt, runId, sessionId: this.id, projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}), projectProfile: profile, history, environment, harnessPlan: shape.harnessPlan, shape, ...(recall ? { recall } : {}) }, approval, {
       drainSteering: async (activeRunId, signal) => {
         if (signal.aborted) throw signal.reason ?? new DOMException("Steering drain cancelled.", "AbortError");
         const drained = await this.options.store.drainPending(this.id, "steer", activeRunId);
@@ -207,7 +232,7 @@ export class AgentSession implements AgentSessionContract {
       if (error instanceof AlphionError && error.code === "conflict") return;
       throw error;
     }
-    const pending = await this.options.store.drainPending(this.id, "follow-up", runId);
+      const pending = await this.options.store.drainPending(this.id, "follow-up", runId);
     if (pending.length === 0) { await this.options.store.releaseRunLease(this.id, runId); return; }
     try {
       for (const item of pending) {
@@ -216,7 +241,9 @@ export class AgentSession implements AgentSessionContract {
       }
       await this.options.store.acknowledgePending(this.id, "follow-up", runId, pending.map((item) => item.id));
       const prompt = pending.map((item) => item.message.content).join("\n\n");
-      const handle = await this.#executeLeased(prompt, runId, leased.providerId, approval);
+      const shape = await this.options.store.getSessionShape(this.id);
+      if (!shape) throw new AlphionError("conflict", "Queued follow-up requires a shaped Session.", { stage: "shape" });
+      const handle = await this.#executeLeased(prompt, runId, leased.providerId, shape, approval);
       this.#activeRuns.add(handle);
       if (this.#closed) handle.cancel("Session is closing.");
       await this.#observe(handle, undefined, approval);

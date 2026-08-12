@@ -1,4 +1,4 @@
-import type { AgentSessionRecord, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
+import type { AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
 import type { AgentRunHandle, AgentSessionContract, ApprovalPort, SessionManager, SessionStore } from "../ports/index.js";
 import type { AgentStreamEvent } from "../protocol/events.js";
 import { createId } from "./canonical.js";
@@ -40,13 +40,15 @@ export class DefaultSessionManager implements SessionManager {
   }
 
   view(sessionId: string): Promise<SessionView> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.view())); }
+  getShape(sessionId: string): Promise<AgentShape | undefined> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.getShape())); }
+  reshape(sessionId: string, request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.reshape(request, options))); }
   checkout(sessionId: string, entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.checkout(entryId, options))); }
   send(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.send(content, options, approval))); }
   steer(sessionId: string, content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.steer(content, options))); }
   followUp(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.followUp(content, options, approval))); }
-  subscribe(sessionId: string): AsyncIterable<AgentStreamEvent> {
+  subscribe(sessionId: string, afterSessionSequence = 0): AsyncIterable<AgentStreamEvent> {
     this.options.assertOpen();
-    const subscription = this.#own(this.#get(sessionId).then((session) => session.subscribe()));
+    const subscription = this.#own(this.#get(sessionId).then((session) => session.subscribe(afterSessionSequence)));
     return { async *[Symbol.asyncIterator]() { yield* await subscription; } };
   }
 

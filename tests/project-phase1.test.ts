@@ -9,6 +9,7 @@ import { diagnoseLocalProject } from "../adapters/local/local-application.js";
 import { NodeProjectProfiler } from "../adapters/project/project-profiler.js";
 import { projectRevision } from "../adapters/project/project-revision.js";
 import { AgentLoop } from "../src/application/agent-runtime.js";
+import { sha256 } from "../src/application/canonical.js";
 import { TieredCache } from "../src/application/cache.js";
 import { assembleContextPack } from "../src/application/context-pack.js";
 import { ToolRegistry } from "../src/application/tool-registry.js";
@@ -140,6 +141,7 @@ test("ContextPack keeps mandatory items, records omissions and runtime injects i
       prompt: "Inspect",
       projectRoot: directory,
       projectRevision: profile.projectRevision,
+      systemPromptPlan: { schemaVersion: 1, sections: [], omissions: [], budgetTokens: 256, estimatedTokens: 1, rendered: "Do not change files.", digest: sha256("Do not change files.") },
       projectProfile: profile,
       contextPack,
       workingMemory: EMPTY_WORKING_MEMORY,
@@ -217,7 +219,7 @@ test("doctor fails closed on corrupt and future SQLite state without migration",
   }
 });
 
-test("doctor reports schema v2 as a pending read-only upgrade", async () => {
+test("doctor reports schema v2 as a pending read-only upgrade to v4", async () => {
   const directory = await mkdtemp(join(tmpdir(), "alphion-doctor-v2-"));
   try {
     const statePath = join(directory, "v2.sqlite3");
@@ -231,7 +233,7 @@ test("doctor reports schema v2 as a pending read-only upgrade", async () => {
     const report = await diagnoseLocalProject({ projectRoot: directory, statePath });
     const check = report.checks.find((item) => item.id === "sqlite");
     assert.equal(check?.status, "warning");
-    assert.match(check?.summary ?? "", /schema 2.*3/u);
+    assert.match(check?.summary ?? "", /schema 2.*4/u);
     const verify = new DatabaseSync(statePath, { readOnly: true });
     const version = verify.prepare("PRAGMA user_version").get() as Readonly<Record<string, number>>;
     verify.close();

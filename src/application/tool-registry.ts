@@ -20,6 +20,15 @@ export class ToolRegistry {
     return this.#tools.get(name);
   }
 
+  names(): readonly string[] { return Object.freeze([...this.#tools.keys()].sort()); }
+
+  select(names: readonly string[]): ToolRegistry {
+    const requested = new Set(names);
+    const missing = [...requested].filter((name) => !this.#tools.has(name));
+    if (missing.length > 0) throw new AlphionError("validation", `Unknown tools: ${missing.join(", ")}.`, { stage: "tools" });
+    return new ToolRegistry([...this.#tools.values()].filter((tool) => requested.has(tool.contract.name)));
+  }
+
   definitions(): readonly ProviderToolDefinition[] {
     return [...this.#tools.values()].map(({ contract }) => ({
       name: contract.name,
