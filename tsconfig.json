@@ -36,6 +36,7 @@
     "benchmarks/**/*.ts",
     "tui/**/*.ts",
     "tui/**/*.tsx",
+    "ui/**/*.ts",
     "desktop/**/*.ts"
   ]
 }

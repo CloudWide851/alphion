@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } 
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
 import { openLocalAlphionApplication } from "../adapters/local/local-application.js";
 import type {
-  CacheStats,
   AgentApplication,
   AgentSessionContract,
   AgentSessionRecord,
@@ -14,18 +13,18 @@ import type {
   ProviderProfile,
   ProviderProfileInput,
   ApprovalPort,
-  VaultStatus,
 } from "../src/index.js";
 import { TuiApprovalPort, type PendingApproval } from "./approval-port.js";
 import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "./run-projection.js";
+import { parseMarkdown, renderMarkdownText } from "../ui/markdown.js";
 
 export interface RunTuiOptions {
   readonly projectRoot: string;
   readonly statePath?: string;
 }
 
-type Screen = "loading" | "vault-setup" | "vault-unlock" | "workbench" | "provider-form" | "credential" | "prompt" | "run";
-export type WorkbenchSection = "home" | "profile" | "providers" | "sessions" | "resources" | "harness" | "tasks" | "doctor";
+type Screen = "loading" | "vault-setup" | "vault-unlock" | "workbench" | "provider-form" | "credential" | "run";
+export type WorkbenchSection = "home" | "settings" | "projects" | "profile" | "providers" | "sessions" | "resources" | "harness" | "doctor" | "help";
 export type WorkbenchLayout = "wide" | "narrow" | "compact";
 
 interface ProviderDraft {
@@ -41,21 +40,31 @@ interface ProviderDraft {
 interface WorkbenchSnapshot {
   readonly profile?: ProjectProfile;
   readonly diagnostics?: DiagnosticReport;
-  readonly vault?: VaultStatus;
-  readonly cache?: CacheStats;
 }
 
+interface ChatMessage { readonly id: string; readonly role: "user" | "assistant"; readonly content: string; }
+
 const SECTIONS: readonly Readonly<{ id: WorkbenchSection; label: string; short: string }>[] = Object.freeze([
-  { id: "home", label: "首页概览", short: "首页" },
+  { id: "home", label: "对话", short: "对话" },
+  { id: "settings", label: "设置", short: "设置" },
+  { id: "projects", label: "项目", short: "项目" },
   { id: "profile", label: "项目画像", short: "画像" },
   { id: "providers", label: "Provider / Vault", short: "Provider" },
   { id: "sessions", label: "共享会话", short: "会话" },
   { id: "resources", label: "Agent 资源", short: "资源" },
   { id: "harness", label: "HarnessPlan", short: "Harness" },
-  { id: "tasks", label: "任务运行", short: "运行" },
   { id: "doctor", label: "只读诊断", short: "诊断" },
+  { id: "help", label: "快捷命令", short: "帮助" },
 ]);
 const BRAND_PURPLE = "#A377F6";
+const ALPHION_LOGO = Object.freeze([
+  " █████╗ ██╗     ██████╗ ██╗  ██╗██╗ ██████╗ ███╗   ██╗",
+  "██╔══██╗██║     ██╔══██╗██║  ██║██║██╔═══██╗████╗  ██║",
+  "███████║██║     ██████╔╝███████║██║██║   ██║██╔██╗ ██║",
+  "██╔══██║██║     ██╔═══╝ ██╔══██║██║██║   ██║██║╚██╗██║",
+  "██║  ██║███████╗██║     ██║  ██║██║╚██████╔╝██║ ╚████║",
+  "╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝",
+]);
 
 export async function runTui(options: RunTuiOptions): Promise<number> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return 1;
@@ -86,6 +95,7 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
   const [runPrompt, setRunPrompt] = useState("");
   const [runProviderId, setRunProviderId] = useState<string | undefined>();
   const [runSession, setRunSession] = useState<AgentSessionContract | undefined>();
+  const [chatMessages, setChatMessages] = useState<readonly ChatMessage[]>([]);
   const approval = useMemo(() => new TuiApprovalPort(), []);
 
   const refreshProfiles = useCallback(async () => {
@@ -95,20 +105,17 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
     return next;
   }, [application]);
   const refreshSnapshot = useCallback(async (refresh = false) => {
-    const [profile, diagnostics, vault, cache] = await Promise.all([
+    const [profile, diagnostics] = await Promise.all([
       application.inspectProject({ ...(refresh ? { refresh: true } : {}) }),
       application.diagnose(),
-      application.configuration.vaultStatus(),
-      application.cacheStats(),
     ]);
-    setSnapshot({ profile, diagnostics, vault, cache });
+    setSnapshot({ profile, diagnostics });
   }, [application]);
 
   useEffect(() => {
     void (async () => {
       try {
         const [vault] = await Promise.all([application.configuration.vaultStatus(), refreshProfiles()]);
-        setSnapshot((value) => ({ ...value, vault }));
         if (!vault.initialized) setScreen("vault-setup");
         else if (vault.locked) setScreen("vault-unlock");
         else {
@@ -125,24 +132,31 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
   useInput((input, key) => {
     if (key.ctrl && input === "c" && screen !== "run") { exit(); return; }
     if (screen !== "workbench") return;
-    if (input === "?") { setHelp((value) => !value); return; }
-    if (input === "q") { exit(); return; }
+    if (section !== "home" && input === "?") { setHelp((value) => !value); return; }
+    if (section !== "home" && input === "q") { exit(); return; }
     if (key.escape) { setHelp(false); setSection("home"); return; }
-    const numeric = Number.parseInt(input, 10);
-    if (numeric >= 1 && numeric <= SECTIONS.length) setSection(SECTIONS[numeric - 1]?.id ?? "home");
-    if (key.tab) {
-      const index = SECTIONS.findIndex((entry) => entry.id === section);
-      setSection(SECTIONS[(index + 1) % SECTIONS.length]?.id ?? "home");
-    }
   });
 
   const current = profiles[selected];
   const activeProfile = profiles.find((profile) => profile.active);
   const beginRun = (prompt: string, session?: AgentSessionContract) => {
+    setChatMessages((messages) => [...messages, { id: `user:${Date.now()}`, role: "user", content: prompt }]);
     setRunPrompt(prompt);
     setRunSession(session);
-    setRunProviderId(current?.id);
+    setRunProviderId(activeProfile?.id);
     setScreen("run");
+  };
+  const submitChat = (value: string) => {
+    const input = value.trim();
+    if (!input.startsWith("/")) { beginRun(input); return; }
+    const alias: Readonly<Record<string, WorkbenchSection>> = {
+      "/settings": "settings", "/projects": "projects", "/sessions": "sessions", "/providers": "providers",
+      "/resources": "resources", "/doctor": "doctor", "/help": "help", "/profile": "profile", "/harness": "harness",
+    };
+    const next = alias[input.toLowerCase()];
+    if (!next) { setError(`未知快捷命令：${input}`); return; }
+    setError("");
+    setSection(next);
   };
   const completeVault = async (password: string) => {
     await application.configuration.initializeVault(password);
@@ -193,13 +207,8 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
       />
     </EntryShell>;
   }
-  if (screen === "prompt") {
-    return <EntryShell title="创建一次 Agent 任务" colorEnabled={colorEnabled} error={error}>
-      <TextEntry label="任务目标" onSubmit={beginRun} onCancel={() => setScreen("workbench")} />
-    </EntryShell>;
-  }
   if (screen === "run") {
-    return <EntryShell title="任务运行" colorEnabled={colorEnabled} error={error}>
+    return <EntryShell title="对话" colorEnabled={colorEnabled} error={error}>
       <RunView
         application={application}
         approval={approval}
@@ -207,14 +216,19 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
         prompt={runPrompt}
         {...(runSession ? { session: runSession } : {})}
         {...(runProviderId ? { providerId: runProviderId } : {})}
-        onDone={() => { setRunPrompt(""); setRunSession(undefined); setScreen("workbench"); setSection(runSession ? "sessions" : "tasks"); void refreshSnapshot(); }}
+        onDone={(answer) => {
+          if (answer.trim()) setChatMessages((messages) => [...messages, { id: `assistant:${Date.now()}`, role: "assistant", content: answer }]);
+          setRunPrompt(""); setRunSession(undefined); setScreen("workbench"); setSection("home"); void refreshSnapshot();
+        }}
         onExit={() => exit()}
       />
     </EntryShell>;
   }
 
   return <AppShell section={section} layout={layout} colorEnabled={colorEnabled} projectRoot={projectRoot} error={error} help={help}>
-    {section === "home" ? <HomeView snapshot={snapshot} profiles={profiles} compact={layout === "compact"} /> : null}
+    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} compact={layout === "compact"} onSubmit={submitChat} /> : null}
+    {section === "settings" ? <SettingsCard onSelect={setSection} /> : null}
+    {section === "projects" ? <ProjectCard projectRoot={projectRoot} /> : null}
     {section === "profile" ? <ProjectProfileView {...(snapshot.profile ? { profile: snapshot.profile } : {})} onRefresh={() => void refreshSnapshot(true).catch((cause: unknown) => setError(safeError(cause)))} /> : null}
     {section === "providers" ? <ProviderList
       profiles={profiles}
@@ -225,15 +239,15 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
       onActivate={() => current && void application.configuration.activateProfile(current.id).then(async () => { await refreshProfiles(); await refreshSnapshot(); }).catch((cause: unknown) => setError(safeError(cause)))}
       onCredential={() => current && setScreen("credential")}
       onRemoveCredential={() => current && void application.configuration.removeCredential(current.id).then(async () => { await refreshProfiles(); await refreshSnapshot(); }).catch((cause: unknown) => setError(safeError(cause)))}
-      onRun={() => current && setScreen("prompt")}
+      onRun={() => current && setSection("home")}
       onLock={() => { application.configuration.lockVault(); setScreen("vault-unlock"); }}
       onExit={() => exit()}
     /> : null}
-    {section === "tasks" ? <TaskLauncher {...(activeProfile ? { activeProfile } : {})} onStart={() => setScreen("prompt")} /> : null}
     {section === "sessions" ? <SessionWorkbenchView application={application} approval={approval} onSend={(session, prompt) => beginRun(prompt, session)} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "resources" ? <ResourceResolutionView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "harness" ? <HarnessPlanView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "doctor" ? <DoctorView {...(snapshot.diagnostics ? { report: snapshot.diagnostics } : {})} onRefresh={() => void refreshSnapshot().catch((cause: unknown) => setError(safeError(cause)))} /> : null}
+    {section === "help" ? <HelpCard /> : null}
   </AppShell>;
 }
 
@@ -251,59 +265,64 @@ export function AppShell(props: Readonly<{
   help?: boolean;
   children: React.ReactNode;
 }>): React.JSX.Element {
-  const navigation = props.layout === "wide"
-    ? <Box width={24} flexDirection="column" borderStyle="round" {...(props.colorEnabled ? { borderColor: BRAND_PURPLE } : {})} paddingX={1}>
-        <Text bold {...accent(props.colorEnabled)}>ALPHION</Text>
-        <Text dimColor>工程工作台 · 0.4.0</Text>
-        <Box flexDirection="column" marginTop={1}>
-          {SECTIONS.map((entry, index) => <Text key={entry.id} {...(entry.id === props.section ? accent(props.colorEnabled) : {})}>{entry.id === props.section ? "◆" : "◇"} {index + 1}  {entry.label}</Text>)}
-        </Box>
-      </Box>
-    : <Box flexDirection="column">
-        <Text bold {...accent(props.colorEnabled)}>ALPHION <Text dimColor>工程工作台 · 0.4.0</Text></Text>
-        <Box gap={2}>{SECTIONS.map((entry, index) => <Text key={entry.id} {...(entry.id === props.section ? accent(props.colorEnabled) : {})}>{entry.id === props.section ? "◆" : "◇"}{index + 1} {entry.short}</Text>)}</Box>
-      </Box>;
   return <Box flexDirection="column" paddingX={1}>
-    {props.layout === "wide" ? <Box gap={1}>{navigation}<Box flexDirection="column" flexGrow={1} paddingX={1}>{contentHeader(props)}{props.children}</Box></Box> : <>{navigation}{contentHeader(props)}{props.children}</>}
+    {props.section === "home" ? null : contentHeader(props)}
+    {props.children}
     {props.error ? <Box borderStyle="round" {...borderColor("red")} paddingX={1}><Text {...textColor("red")}>✗ {sanitizeTerminalText(props.error)}</Text></Box> : null}
-    {props.help ? <Box borderStyle="round" paddingX={1}><Text>数字键 / Tab 切换区域 · Enter 确认 · Esc 返回首页 · ? 帮助 · q 退出 · Ctrl+C 取消/退出</Text></Box> : null}
-    <Text dimColor>数字键/Tab 导航  ·  ? 帮助  ·  q 退出</Text>
+    {props.help ? <Box borderStyle="round" paddingX={1}><Text>↑/↓ 选择 · Enter 确认 · Esc 返回对话 · ? 帮助 · q 退出 · Ctrl+C 取消/退出</Text></Box> : null}
+    {props.section === "home" ? null : <Text dimColor>Esc 返回对话 · ↑/↓ 选择 · Enter 确认 · ? 帮助 · q 退出</Text>}
   </Box>;
 }
 
 function contentHeader(props: Readonly<{ section: WorkbenchSection; layout: WorkbenchLayout; projectRoot: string }>): React.JSX.Element {
   const current = SECTIONS.find((entry) => entry.id === props.section);
   return <Box flexDirection="column" marginTop={props.layout === "compact" ? 0 : 1} marginBottom={props.layout === "compact" ? 0 : 1}>
-    <Text bold>{current?.label ?? "工程工作台"}</Text>
+    <Text bold {...accent(props.colorEnabled)}>ALPHION · {current?.label ?? "对话"}</Text>
     {props.layout === "compact" ? null : <Text dimColor>{sanitizeTerminalText(props.projectRoot)}</Text>}
   </Box>;
 }
 
 function LoadingView({ colorEnabled }: Readonly<{ colorEnabled: boolean }>): React.JSX.Element {
-  return <Box flexDirection="column" paddingX={1}><Text bold {...accent(colorEnabled)}>ALPHION</Text><Text>◌ 正在加载本地工程状态…</Text></Box>;
+  return <Box flexDirection="column" paddingX={1}><Text bold {...accent(colorEnabled)}>ALPHION</Text><Text>◌ 正在准备对话…</Text></Box>;
 }
 
 function EntryShell(props: Readonly<{ title: string; colorEnabled: boolean; error?: string; children: React.ReactNode }>): React.JSX.Element {
   return <Box flexDirection="column" paddingX={1}><Text bold {...accent(props.colorEnabled)}>ALPHION · {props.title}</Text>{props.error ? <Text {...textColor("red")}>✗ {sanitizeTerminalText(props.error)}</Text> : null}{props.children}</Box>;
 }
 
-function HomeView(props: Readonly<{ snapshot: WorkbenchSnapshot; profiles: readonly ProviderProfile[]; compact: boolean }>): React.JSX.Element {
-  const active = props.profiles.find((profile) => profile.active);
-  const sqlite = props.snapshot.diagnostics?.checks.find((check) => check.id === "sqlite");
-  return <Box flexDirection="column">
-    <StatusLine label="项目" value={props.snapshot.profile ? `${props.snapshot.profile.projectType} · ${shortRevision(props.snapshot.profile.projectRevision)}` : "画像加载中"} status={props.snapshot.profile ? "pass" : "wait"} />
-    <StatusLine label="Provider" value={active ? `${active.name} · ${active.model}` : "尚未激活"} status={active ? "pass" : "warning"} />
-    <StatusLine label="Vault" value={props.snapshot.vault ? vaultLabel(props.snapshot.vault) : "状态加载中"} status={props.snapshot.vault?.initialized && !props.snapshot.vault.locked ? "pass" : "warning"} />
-    <StatusLine label="缓存" value={props.snapshot.cache ? `${props.snapshot.cache.entries} 项 · ${formatBytes(props.snapshot.cache.bytes)} · 命中 ${props.snapshot.cache.hits}` : "统计加载中"} status="neutral" />
-    <StatusLine label="最近诊断" value={sqlite?.summary ?? props.snapshot.diagnostics?.overall ?? "尚无结果"} status={props.snapshot.diagnostics?.overall === "healthy" ? "pass" : "warning"} />
-    {props.compact ? null : <Box marginTop={1}><Text dimColor>Phase 1 已启用：确定性画像 → ContextPack → 运行期工作记忆</Text></Box>}
+export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; messages?: readonly ChatMessage[]; compact: boolean; onSubmit: (value: string) => void }>): React.JSX.Element {
+  const messages = props.messages ?? [];
+  return <Box flexDirection="column" minHeight={props.compact ? 10 : 18} justifyContent="space-between">
+    {messages.length === 0 ? <Box flexDirection="column" alignItems="center" marginTop={props.compact ? 0 : 2}>
+      {props.compact ? <Text bold {...accent(process.env.NO_COLOR === undefined)}>ALPHION</Text> : ALPHION_LOGO.map((line) => <Text key={line} bold {...accent(process.env.NO_COLOR === undefined)}>{line}</Text>)}
+      <Text dimColor>{props.activeProfile ? `${props.activeProfile.name} · ${props.activeProfile.model}` : "请先使用 /providers 配置 Provider"}</Text>
+    </Box> : <Box flexDirection="column">{messages.slice(props.compact ? -4 : -10).map((message) => <Box key={message.id} flexDirection="column" marginBottom={1}>
+      <Text bold {...(message.role === "assistant" ? accent(process.env.NO_COLOR === undefined) : {})}>{message.role === "assistant" ? "Alphion" : "你"}</Text>
+      <Text>{renderMarkdownText(parseMarkdown(message.content), 88)}</Text>
+    </Box>)}</Box>}
+    <ChatEntry disabled={!props.activeProfile} onSubmit={props.onSubmit} />
   </Box>;
 }
 
-function StatusLine(props: Readonly<{ label: string; value: string; status: "pass" | "warning" | "wait" | "neutral" }>): React.JSX.Element {
-  const symbol = props.status === "pass" ? "✓" : props.status === "warning" ? "!" : props.status === "wait" ? "◌" : "·";
-  const color = props.status === "pass" ? "green" : props.status === "warning" ? "yellow" : undefined;
-  return <Text {...(color ? textColor(color) : {})}>{symbol} {props.label.padEnd(10, "　")} {sanitizeTerminalText(props.value)}</Text>;
+export function SettingsCard(props: Readonly<{ onSelect: (section: WorkbenchSection) => void }>): React.JSX.Element {
+  const items = SECTIONS.filter((entry) => !["home", "settings"].includes(entry.id));
+  const [selected, setSelected] = useState(0);
+  useInput((_input, key) => {
+    if (key.upArrow) setSelected((value) => Math.max(0, value - 1));
+    else if (key.downArrow) setSelected((value) => Math.min(items.length - 1, value + 1));
+    else if (key.return) { const item = items[selected]; if (item) props.onSelect(item.id); }
+  });
+  return <Box flexDirection="column" borderStyle="round" paddingX={1} {...borderColor(BRAND_PURPLE)}>
+    {items.map((item, index) => <Text key={item.id} {...(index === selected ? accent(process.env.NO_COLOR === undefined) : {})}>{index === selected ? "◆" : "◇"} /{item.id} · {item.label}</Text>)}
+  </Box>;
+}
+
+function ProjectCard({ projectRoot }: Readonly<{ projectRoot: string }>): React.JSX.Element {
+  return <Box flexDirection="column"><Text>当前项目</Text><Text dimColor>{sanitizeTerminalText(projectRoot)}</Text><Text>项目注册与切换可使用 CLI / 后续 WebUI 项目选择器。</Text></Box>;
+}
+
+function HelpCard(): React.JSX.Element {
+  return <Box flexDirection="column"><Text>/settings · /projects · /sessions · /providers · /resources · /doctor · /profile · /harness · /help</Text><Text>Enter 发送 · Alt+Enter / Ctrl+J 换行 · Esc 返回 · Ctrl+C 取消/退出</Text></Box>;
 }
 
 function ProjectProfileView(props: Readonly<{ profile?: ProjectProfile; onRefresh: () => void }>): React.JSX.Element {
@@ -330,14 +349,6 @@ function DoctorView(props: Readonly<{ report?: DiagnosticReport; onRefresh: () =
 function RefreshKey({ onRefresh }: Readonly<{ onRefresh: () => void }>): null {
   useInput((input) => { if (input === "r") onRefresh(); });
   return null;
-}
-
-function TaskLauncher(props: Readonly<{ activeProfile?: ProviderProfile; onStart: () => void }>): React.JSX.Element {
-  useInput((_input, key) => { if (key.return && props.activeProfile) props.onStart(); });
-  return <Box flexDirection="column">
-    {props.activeProfile ? <><Text>✓ 活动 Provider：{props.activeProfile.name} · {props.activeProfile.model}</Text><Text>按 Enter 创建一次受控 Agent 任务。</Text></> : <Text {...textColor("yellow")}>! 请先配置并激活 Provider。</Text>}
-    <Text dimColor>运行前将自动生成画像和最多 2,048 estimated tokens 的 ContextPack。</Text>
-  </Box>;
 }
 
 export function SessionWorkbenchView(props: Readonly<{ application: AgentApplication; approval: ApprovalPort; onSend: (session: AgentSessionContract, prompt: string) => void; onError: (cause: unknown) => void }>): React.JSX.Element {
@@ -498,7 +509,26 @@ export function TextEntry(props: Readonly<{ label: string; initialValue?: string
   return <Box flexDirection="column" marginTop={1}><Text>{props.label}</Text><Text {...accent(process.env.NO_COLOR === undefined)}>› {props.masked ? "•".repeat(value.length) : sanitizeTerminalText(value)}</Text><Text dimColor>Enter 确认 · Esc 返回</Text></Box>;
 }
 
-function RunView(props: Readonly<{ application: AgentApplication; approval: TuiApprovalPort; projectRoot: string; prompt: string; providerId?: string; session?: AgentSessionContract; onDone: () => void; onExit: () => void }>): React.JSX.Element {
+export function ChatEntry(props: Readonly<{ disabled?: boolean; onSubmit: (value: string) => void }>): React.JSX.Element {
+  const [value, setValue] = useState("");
+  useEffect(() => () => setValue(""), []);
+  useInput((input, key) => {
+    if (props.disabled) return;
+    if ((key.meta && key.return) || (key.ctrl && input === "j")) { setValue((current) => `${current}\n`); return; }
+    if (key.return) {
+      if (value.trim()) { const submitted = value; setValue(""); props.onSubmit(submitted); }
+      return;
+    }
+    if (key.backspace || key.delete) { setValue((current) => current.slice(0, -1)); return; }
+    if (!key.ctrl && !key.meta && input) setValue((current) => current + input);
+  });
+  return <Box flexDirection="column" marginTop={1} borderStyle="round" paddingX={1} {...borderColor(BRAND_PURPLE)}>
+    <Text {...accent(process.env.NO_COLOR === undefined)}>› {props.disabled ? "先使用 /providers 配置并激活 Provider" : sanitizeTerminalText(value) || "输入消息，或使用 /settings"}</Text>
+    <Text dimColor>Enter 发送 · Alt+Enter / Ctrl+J 换行</Text>
+  </Box>;
+}
+
+function RunView(props: Readonly<{ application: AgentApplication; approval: TuiApprovalPort; projectRoot: string; prompt: string; providerId?: string; session?: AgentSessionContract; onDone: (answer: string) => void; onExit: () => void }>): React.JSX.Element {
   const [projection, dispatch] = useReducer(reduceRunProjection, EMPTY_RUN_PROJECTION);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | undefined>();
   const handle = useRef<AgentRunHandle | undefined>(undefined);
@@ -548,7 +578,7 @@ function RunView(props: Readonly<{ application: AgentApplication; approval: TuiA
     else if (input === "s" && projection.status === "running") setQueueMode("steer");
     else if (input === "f") setQueueMode("follow-up");
     else if (key.ctrl && input === "c") { if (projection.status === "running") handle.current?.cancel("Cancelled from TUI."); else props.onExit(); }
-    else if (key.return && projection.status !== "running") props.onDone();
+    else if (key.return && projection.status !== "running") props.onDone(projection.answer);
   });
 
   if (queueMode) return <TextEntry label={queueMode === "steer" ? "注入下一模型边界（steer）" : "排队终态后续（follow-up）"} onCancel={() => setQueueMode(undefined)} onSubmit={(content) => {
@@ -563,11 +593,11 @@ function RunView(props: Readonly<{ application: AgentApplication; approval: TuiA
 
   return <Box flexDirection="column" marginTop={1}>
     <Text bold>状态 · {projection.status}</Text>
-    <Text>{projection.answer || "◌ 等待模型输出…"}</Text>
+    <Text>{projection.answer ? renderMarkdownText(parseMarkdown(projection.answer), 88) : "◌ 等待模型输出…"}</Text>
     <Text dimColor>tokens 输入={projection.inputTokens} 输出={projection.outputTokens} 缓存={projection.cachedInputTokens}</Text>
     {projection.message ? <Text {...(projection.status === "failed" ? textColor("red") : {})}>{projection.message}</Text> : null}
     {pendingApproval ? <Box flexDirection="column" borderStyle="round" {...borderColor("yellow")} paddingX={1}><Text bold>! 需要逐次审批：{sanitizeTerminalText(pendingApproval.request.toolName)}</Text><Text>{sanitizeTerminalText(pendingApproval.request.summary)}</Text><Text>y 批准此精确动作 · n 拒绝</Text></Box> : null}
-    <Text dimColor>{projection.status === "running" ? "s steer · f follow-up · Ctrl+C 取消" : "f follow-up · Enter 返回工作台"}</Text>
+    <Text dimColor>{projection.status === "running" ? "s steer · f follow-up · Ctrl+C 取消" : "f follow-up · Enter 返回对话"}</Text>
   </Box>;
 }
 
@@ -613,17 +643,8 @@ function authLabel(profile: ProviderProfile): string {
   return "! 未配置凭据";
 }
 
-function vaultLabel(status: VaultStatus): string {
-  if (!status.initialized) return "未初始化";
-  return status.locked ? `已锁定 · ${status.secretCount} 个凭据` : `已解锁 · ${status.secretCount} 个凭据`;
-}
-
 function shortRevision(value: string): string {
   return value.length > 12 ? value.slice(0, 12) : value;
-}
-
-function formatBytes(value: number): string {
-  return value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KiB` : `${(value / 1024 / 1024).toFixed(1)} MiB`;
 }
 
 function accent(enabled: boolean): Readonly<{ color?: string }> {

@@ -4,7 +4,7 @@ import React from "react";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { TuiApprovalPort } from "../tui/approval-port.js";
-import { AppShell, HarnessPlanView, ProviderForm, ProviderList, SessionWorkbenchView, TextEntry, selectWorkbenchLayout } from "../tui/index.js";
+import { AppShell, ChatEntry, ChatHome, HarnessPlanView, ProviderForm, ProviderList, SessionWorkbenchView, SettingsCard, TextEntry, selectWorkbenchLayout } from "../tui/index.js";
 import type { AgentApplication, AgentSessionContract } from "../src/index.js";
 import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "../tui/run-projection.js";
 
@@ -128,30 +128,49 @@ test("built-in Provider form saves without asking for a Base URL", async () => {
   view.unmount();
 });
 
-test("TUI workbench selects wide, narrow and compact layouts and renders Chinese navigation without color", () => {
+test("TUI chat shell selects wide, narrow and compact layouts without the workbench sidebar", () => {
   assert.equal(selectWorkbenchLayout(120, 30), "wide");
   assert.equal(selectWorkbenchLayout(99, 30), "narrow");
   assert.equal(selectWorkbenchLayout(120, 17), "compact");
   const view = render(React.createElement(AppShell, {
-    section: "profile",
+    section: "home",
     layout: "wide",
     colorEnabled: false,
     projectRoot: "C:\\项目\\alphion",
-    children: React.createElement(Text, null, "画像内容"),
+    children: React.createElement(ChatHome, { compact: false, onSubmit: () => undefined }),
   }));
   const frame = view.lastFrame() ?? "";
-  assert.match(frame, /工程工作台/);
-  assert.match(frame, /项目画像/);
-  assert.match(frame, /只读诊断/);
-  assert.match(frame, /共享会话/);
-  assert.match(frame, /HarnessPlan/);
-  assert.match(frame, /画像内容/);
+  assert.match(frame, /ALPHION/u);
+  assert.match(frame, /输入消息|配置并激活 Provider/u);
+  assert.doesNotMatch(frame, /工程工作台|首页概览|HarnessPlan/u);
+  view.unmount();
+});
+
+test("TUI chat input clears after every successful send", async () => {
+  const submitted: string[] = [];
+  const view = render(React.createElement(ChatEntry, { onSubmit: (value: string) => submitted.push(value) }));
+  view.stdin.write("first message");
+  view.stdin.write("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(submitted, ["first message"]);
+  assert.doesNotMatch(view.lastFrame() ?? "", /first message/u);
+  view.unmount();
+});
+
+test("TUI settings card uses up and down selection with Enter", async () => {
+  let selected = "";
+  const view = render(React.createElement(SettingsCard, { onSelect: (value: string) => { selected = value; } }));
+  view.stdin.write("\u001b[B");
+  view.stdin.write("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(selected, "profile");
+  assert.match(view.lastFrame() ?? "", /◆ \/profile/u);
   view.unmount();
 });
 
 test("TUI exposes session create/show/send/checkout and HarnessPlan workflows", async () => {
   const calls: string[] = [];
-  const record = { schemaVersion: 1 as const, id: "session-1", title: "共享工作", revision: 3, status: "idle" as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), auditOnly: false, shapeStatus: "unshaped" as const };
+  const record = { schemaVersion: 2 as const, id: "session-1", domainId: "domain-test", title: "共享工作", revision: 3, status: "idle" as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), auditOnly: false, shapeStatus: "unshaped" as const };
   const session = { id: record.id, get: () => Promise.resolve(record), view: () => Promise.resolve({ session: record, entries: [] }), getShape: () => Promise.resolve(undefined), reshape: async () => ({ sessionId: record.id, revision: 4, shapeRevision: 1, shapeDigest: "a".repeat(64), replayed: false }), checkout: () => { calls.push("checkout"); return Promise.resolve({ sessionId: record.id, revision: 4, replayed: false }); }, send: async () => { throw new Error("unused"); }, steer: async () => { throw new Error("unused"); }, followUp: async () => { throw new Error("unused"); }, subscribe: async function* () { /* empty */ }, close: () => Promise.resolve() } satisfies AgentSessionContract;
   const app = { sessions: { list: () => Promise.resolve([record]), get: () => Promise.resolve(session), create: () => { calls.push("create"); return Promise.resolve(session); } }, planHarness: () => Promise.resolve({ schemaVersion: 1 as const, task: "diagnose" as const, taskLabels: ["diagnose" as const], risk: "low" as const, capabilities: ["project.read"], reasons: [], permissions: ["project:read"], budgets: { operations: 1 }, evaluator: "quality-gate", omissions: [], digest: "digest" }) } as unknown as AgentApplication;
   const sessions = render(React.createElement(SessionWorkbenchView, { application: app, approval: { revision: "test", requestApproval: () => Promise.resolve({ approved: false, reason: "test" }) }, onSend: () => calls.push("send"), onError: (cause: unknown) => { throw cause; } }));
