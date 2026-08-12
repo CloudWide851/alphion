@@ -25,6 +25,11 @@ export class ShellTool implements ToolExecutor {
     },
     risk: "process",
     cachePolicy: "none",
+    executionMode: "serial",
+    sideEffect: "process",
+    idempotent: false,
+    approval: "policy",
+    timeoutMs: 120_000,
   } as const);
   readonly #policy: ShellPolicyStore;
 

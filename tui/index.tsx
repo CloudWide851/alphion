@@ -4,12 +4,16 @@ import { openLocalAlphionApplication } from "../adapters/local/local-application
 import type {
   CacheStats,
   AgentApplication,
+  AgentSessionContract,
+  AgentSessionRecord,
+  HarnessPlan,
   AgentRunHandle,
   DiagnosticReport,
   ProjectProfile,
   ProviderPreset,
   ProviderProfile,
   ProviderProfileInput,
+  ApprovalPort,
   VaultStatus,
 } from "../src/index.js";
 import { TuiApprovalPort, type PendingApproval } from "./approval-port.js";
@@ -21,7 +25,7 @@ export interface RunTuiOptions {
 }
 
 type Screen = "loading" | "vault-setup" | "vault-unlock" | "workbench" | "provider-form" | "credential" | "prompt" | "run";
-export type WorkbenchSection = "home" | "profile" | "providers" | "tasks" | "doctor";
+export type WorkbenchSection = "home" | "profile" | "providers" | "sessions" | "harness" | "tasks" | "doctor";
 export type WorkbenchLayout = "wide" | "narrow" | "compact";
 
 interface ProviderDraft {
@@ -45,6 +49,8 @@ const SECTIONS: readonly Readonly<{ id: WorkbenchSection; label: string; short: 
   { id: "home", label: "首页概览", short: "首页" },
   { id: "profile", label: "项目画像", short: "画像" },
   { id: "providers", label: "Provider / Vault", short: "Provider" },
+  { id: "sessions", label: "共享会话", short: "会话" },
+  { id: "harness", label: "HarnessPlan", short: "Harness" },
   { id: "tasks", label: "任务运行", short: "运行" },
   { id: "doctor", label: "只读诊断", short: "诊断" },
 ]);
@@ -58,7 +64,7 @@ export async function runTui(options: RunTuiOptions): Promise<number> {
     await instance.waitUntilExit();
     return 0;
   } finally {
-    application.close();
+    await application.close();
   }
 }
 
@@ -78,6 +84,7 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
   const [draft, setDraft] = useState<ProviderDraft>(() => presetDraft(presets[0]));
   const [runPrompt, setRunPrompt] = useState("");
   const [runProviderId, setRunProviderId] = useState<string | undefined>();
+  const [runSession, setRunSession] = useState<AgentSessionContract | undefined>();
   const approval = useMemo(() => new TuiApprovalPort(), []);
 
   const refreshProfiles = useCallback(async () => {
@@ -130,8 +137,9 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
 
   const current = profiles[selected];
   const activeProfile = profiles.find((profile) => profile.active);
-  const beginRun = (prompt: string) => {
+  const beginRun = (prompt: string, session?: AgentSessionContract) => {
     setRunPrompt(prompt);
+    setRunSession(session);
     setRunProviderId(current?.id);
     setScreen("run");
   };
@@ -196,8 +204,9 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
         approval={approval}
         projectRoot={projectRoot}
         prompt={runPrompt}
+        {...(runSession ? { session: runSession } : {})}
         {...(runProviderId ? { providerId: runProviderId } : {})}
-        onDone={() => { setRunPrompt(""); setScreen("workbench"); setSection("tasks"); void refreshSnapshot(); }}
+        onDone={() => { setRunPrompt(""); setRunSession(undefined); setScreen("workbench"); setSection(runSession ? "sessions" : "tasks"); void refreshSnapshot(); }}
         onExit={() => exit()}
       />
     </EntryShell>;
@@ -220,6 +229,8 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
       onExit={() => exit()}
     /> : null}
     {section === "tasks" ? <TaskLauncher {...(activeProfile ? { activeProfile } : {})} onStart={() => setScreen("prompt")} /> : null}
+    {section === "sessions" ? <SessionWorkbenchView application={application} approval={approval} onSend={(session, prompt) => beginRun(prompt, session)} onError={(cause) => setError(safeError(cause))} /> : null}
+    {section === "harness" ? <HarnessPlanView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "doctor" ? <DoctorView {...(snapshot.diagnostics ? { report: snapshot.diagnostics } : {})} onRefresh={() => void refreshSnapshot().catch((cause: unknown) => setError(safeError(cause)))} /> : null}
   </AppShell>;
 }
@@ -241,13 +252,13 @@ export function AppShell(props: Readonly<{
   const navigation = props.layout === "wide"
     ? <Box width={24} flexDirection="column" borderStyle="round" {...(props.colorEnabled ? { borderColor: BRAND_PURPLE } : {})} paddingX={1}>
         <Text bold {...accent(props.colorEnabled)}>ALPHION</Text>
-        <Text dimColor>工程工作台 · 0.3.1</Text>
+        <Text dimColor>工程工作台 · 0.3.2</Text>
         <Box flexDirection="column" marginTop={1}>
           {SECTIONS.map((entry, index) => <Text key={entry.id} {...(entry.id === props.section ? accent(props.colorEnabled) : {})}>{entry.id === props.section ? "◆" : "◇"} {index + 1}  {entry.label}</Text>)}
         </Box>
       </Box>
     : <Box flexDirection="column">
-        <Text bold {...accent(props.colorEnabled)}>ALPHION <Text dimColor>工程工作台 · 0.3.1</Text></Text>
+        <Text bold {...accent(props.colorEnabled)}>ALPHION <Text dimColor>工程工作台 · 0.3.2</Text></Text>
         <Box gap={2}>{SECTIONS.map((entry, index) => <Text key={entry.id} {...(entry.id === props.section ? accent(props.colorEnabled) : {})}>{entry.id === props.section ? "◆" : "◇"}{index + 1} {entry.short}</Text>)}</Box>
       </Box>;
   return <Box flexDirection="column" paddingX={1}>
@@ -324,6 +335,56 @@ function TaskLauncher(props: Readonly<{ activeProfile?: ProviderProfile; onStart
   return <Box flexDirection="column">
     {props.activeProfile ? <><Text>✓ 活动 Provider：{props.activeProfile.name} · {props.activeProfile.model}</Text><Text>按 Enter 创建一次受控 Agent 任务。</Text></> : <Text {...textColor("yellow")}>! 请先配置并激活 Provider。</Text>}
     <Text dimColor>运行前将自动生成画像和最多 2,048 estimated tokens 的 ContextPack。</Text>
+  </Box>;
+}
+
+export function SessionWorkbenchView(props: Readonly<{ application: AgentApplication; approval: ApprovalPort; onSend: (session: AgentSessionContract, prompt: string) => void; onError: (cause: unknown) => void }>): React.JSX.Element {
+  const [sessions, setSessions] = useState<readonly AgentSessionRecord[]>([]);
+  const [selected, setSelected] = useState(0);
+  const [session, setSession] = useState<AgentSessionContract | undefined>();
+  const [detail, setDetail] = useState<string[]>([]);
+  const [entry, setEntry] = useState<"create" | "send" | "steer" | "follow-up" | "checkout" | undefined>();
+  const refresh = useCallback(async () => {
+    const values = await props.application.sessions.list();
+    setSessions(values);
+    setSelected((value) => Math.min(value, Math.max(0, values.length - 1)));
+  }, [props.application]);
+  useEffect(() => { void refresh().catch(props.onError); }, [refresh]);
+  const current = sessions[selected];
+  useInput((input, key) => {
+    if (entry) return;
+    if (key.upArrow) setSelected((value) => Math.max(0, value - 1));
+    else if (key.downArrow) setSelected((value) => Math.min(sessions.length - 1, value + 1));
+    else if (input === "n") setEntry("create");
+    else if (input === "s" && current) setEntry("send");
+    else if (input === "o" && current) void props.application.sessions.get(current.id).then(async (value) => { setSession(value); const view = await value.view(); setDetail(view.entries.map((item) => `${item.id.slice(0, 12)} · ${item.message.kind}${"content" in item.message ? ` · ${sanitizeTerminalText(item.message.content).slice(0, 80)}` : ""}`)); }).catch(props.onError);
+    else if (input === "c" && current) setEntry("checkout");
+    else if (input === "t" && current) setEntry("steer");
+    else if (input === "f" && current) setEntry("follow-up");
+    else if (input === "r") void refresh().catch(props.onError);
+  });
+  if (entry === "create") return <TextEntry label="新会话标题" onCancel={() => setEntry(undefined)} onSubmit={(title) => void props.application.sessions.create({ title }).then(async () => { setEntry(undefined); await refresh(); }).catch(props.onError)} />;
+  if (entry === "send" && current) return <TextEntry label={`发送到 ${current.title}`} onCancel={() => setEntry(undefined)} onSubmit={(prompt) => void props.application.sessions.get(current.id).then((value) => props.onSend(value, prompt)).catch(props.onError)} />;
+  if (entry === "steer" && current) return <TextEntry label={`转向 ${current.title}`} onCancel={() => setEntry(undefined)} onSubmit={(message) => void props.application.sessions.get(current.id).then(async (value) => { const record = await value.get(); await value.steer(message, { expectedRevision: record.revision, idempotencyKey: `tui:steer:${Date.now()}` }); setEntry(undefined); await refresh(); }).catch(props.onError)} />;
+  if (entry === "follow-up" && current) return <TextEntry label={`后续消息 ${current.title}`} onCancel={() => setEntry(undefined)} onSubmit={(message) => void props.application.sessions.get(current.id).then(async (value) => { const record = await value.get(); await value.followUp(message, { expectedRevision: record.revision, idempotencyKey: `tui:follow-up:${Date.now()}` }, props.approval); setEntry(undefined); await refresh(); }).catch(props.onError)} />;
+  if (entry === "checkout" && current) return <TextEntry label="checkout entry id（输入 root 回到根）" onCancel={() => setEntry(undefined)} onSubmit={(entryId) => void props.application.sessions.get(current.id).then(async (value) => { const record = await value.get(); await value.checkout(entryId === "root" ? undefined : entryId, { expectedRevision: record.revision, idempotencyKey: `tui:checkout:${Date.now()}` }); setEntry(undefined); await refresh(); }).catch(props.onError)} />;
+  return <Box flexDirection="column">
+    {sessions.length === 0 ? <Text dimColor>暂无会话。按 n 创建。</Text> : sessions.map((value, index) => <Text key={value.id} {...(index === selected ? accent(process.env.NO_COLOR === undefined) : {})}>{index === selected ? "◆" : "◇"} {value.status === "running" ? "◌ 运行中" : value.auditOnly ? "! 只读审计" : "✓ 空闲"} · {sanitizeTerminalText(value.title)} · rev {value.revision}</Text>)}
+    {session && detail.length > 0 ? <Box flexDirection="column" marginTop={1}><Text bold>当前分支</Text>{detail.slice(-10).map((line) => <Text key={line}>{line}</Text>)}</Box> : null}
+    <Text dimColor>↑↓ 选择 · n 创建 · o 查看 · c checkout · s 发送 · t 转向 · f 后续 · r 刷新</Text>
+  </Box>;
+}
+
+export function HarnessPlanView(props: Readonly<{ application: AgentApplication; onError: (cause: unknown) => void }>): React.JSX.Element {
+  const [prompt, setPrompt] = useState<string | undefined>();
+  const [plan, setPlan] = useState<HarnessPlan | undefined>();
+  if (prompt === undefined) return <TextEntry label="输入任务以生成只读 HarnessPlan" onSubmit={(value) => { setPrompt(value); void props.application.planHarness(value).then(setPlan).catch(props.onError); }} />;
+  if (!plan) return <Text>◌ 正在规划任务能力与预算…</Text>;
+  return <Box flexDirection="column">
+    <Text>任务 {plan.task} · 风险 {plan.risk} · evaluator {plan.evaluator}</Text>
+    <Text>能力：{plan.capabilities.join(", ") || "无"}</Text><Text>权限：{plan.permissions.join(", ") || "无"}</Text>
+    <Text>预算：{JSON.stringify(plan.budgets)}</Text><Text>省略：{plan.omissions.join(", ") || "无"}</Text>
+    <Text dimColor>digest {plan.digest}</Text>
   </Box>;
 }
 
@@ -405,12 +466,14 @@ export function TextEntry(props: Readonly<{ label: string; initialValue?: string
   return <Box flexDirection="column" marginTop={1}><Text>{props.label}</Text><Text {...accent(process.env.NO_COLOR === undefined)}>› {props.masked ? "•".repeat(value.length) : sanitizeTerminalText(value)}</Text><Text dimColor>Enter 确认 · Esc 返回</Text></Box>;
 }
 
-function RunView(props: Readonly<{ application: AgentApplication; approval: TuiApprovalPort; projectRoot: string; prompt: string; providerId?: string; onDone: () => void; onExit: () => void }>): React.JSX.Element {
+function RunView(props: Readonly<{ application: AgentApplication; approval: TuiApprovalPort; projectRoot: string; prompt: string; providerId?: string; session?: AgentSessionContract; onDone: () => void; onExit: () => void }>): React.JSX.Element {
   const [projection, dispatch] = useReducer(reduceRunProjection, EMPTY_RUN_PROJECTION);
   const [showReasoning, setShowReasoning] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | undefined>();
   const handle = useRef<AgentRunHandle | undefined>(undefined);
   const started = useRef(false);
+  const activeSession = useRef<AgentSessionContract | undefined>(props.session);
+  const [queueMode, setQueueMode] = useState<"steer" | "follow-up" | undefined>();
 
   useEffect(() => props.approval.subscribe(setPendingApproval), [props.approval]);
   useEffect(() => {
@@ -434,13 +497,15 @@ function RunView(props: Readonly<{ application: AgentApplication; approval: TuiA
       if (!active || flushTimer) return;
       flushTimer = setTimeout(flush, Math.max(0, 33 - (Date.now() - lastFlush)));
     };
-    void props.application.startRun({ prompt: props.prompt, projectRoot: props.projectRoot, ...(props.providerId ? { providerId: props.providerId } : {}) }, props.approval)
+    const resolveSession = props.session ? Promise.resolve(props.session) : props.application.sessions.create({ title: props.prompt.slice(0, 80), ...(props.providerId ? { providerId: props.providerId } : {}) });
+    void resolveSession
+      .then(async (session) => { activeSession.current = session; return session.send(props.prompt, { expectedRevision: (await session.get()).revision, idempotencyKey: `tui:send:${Date.now()}` }, props.approval); })
       .then(async (runHandle) => {
         handle.current = runHandle;
         for await (const event of runHandle.events) {
           if (event.kind === "model.delta" && typeof event.payload.delta === "string") { answerBuffer += event.payload.delta; scheduleFlush(); }
           else if (event.kind === "model.reasoning.delta" && typeof event.payload.delta === "string") { reasoningBuffer += event.payload.delta; scheduleFlush(); }
-          else { flush(); dispatch({ type: "event", event }); }
+          else if (!("delivery" in event)) { flush(); dispatch({ type: "event", event }); }
         }
         flush();
         await runHandle.result;
@@ -450,11 +515,24 @@ function RunView(props: Readonly<{ application: AgentApplication; approval: TuiA
   }, [props.application, props.approval, props.projectRoot, props.prompt, props.providerId]);
 
   useInput((input, key) => {
+    if (queueMode) return;
     if (pendingApproval && (input === "y" || input === "n")) pendingApproval.decide(input === "y");
     else if (input === "t") setShowReasoning((value) => !value);
+    else if (input === "s" && projection.status === "running") setQueueMode("steer");
+    else if (input === "f") setQueueMode("follow-up");
     else if (key.ctrl && input === "c") { if (projection.status === "running") handle.current?.cancel("Cancelled from TUI."); else props.onExit(); }
     else if (key.return && projection.status !== "running") props.onDone();
   });
+
+  if (queueMode) return <TextEntry label={queueMode === "steer" ? "注入下一模型边界（steer）" : "排队终态后续（follow-up）"} onCancel={() => setQueueMode(undefined)} onSubmit={(content) => {
+    const value = activeSession.current;
+    if (!value) { dispatch({ type: "run-error", message: "会话尚未准备好。" }); setQueueMode(undefined); return; }
+    void value.get().then((record) => queueMode === "steer"
+      ? value.steer(content, { expectedRevision: record.revision, idempotencyKey: `tui:steer:${Date.now()}` })
+      : value.followUp(content, { expectedRevision: record.revision, idempotencyKey: `tui:follow-up:${Date.now()}` }, props.approval))
+      .then(() => { setQueueMode(undefined); })
+      .catch((cause: unknown) => { dispatch({ type: "run-error", message: safeError(cause) }); setQueueMode(undefined); });
+  }} />;
 
   return <Box flexDirection="column" marginTop={1}>
     <Text bold>状态 · {projection.status}</Text>
@@ -463,7 +541,7 @@ function RunView(props: Readonly<{ application: AgentApplication; approval: TuiA
     <Text dimColor>tokens 输入={projection.inputTokens} 输出={projection.outputTokens} 缓存={projection.cachedInputTokens}</Text>
     {projection.message ? <Text {...(projection.status === "failed" ? textColor("red") : {})}>{projection.message}</Text> : null}
     {pendingApproval ? <Box flexDirection="column" borderStyle="round" {...borderColor("yellow")} paddingX={1}><Text bold>! 需要逐次审批：{sanitizeTerminalText(pendingApproval.request.toolName)}</Text><Text>{sanitizeTerminalText(pendingApproval.request.summary)}</Text><Text>y 批准此精确动作 · n 拒绝</Text></Box> : null}
-    <Text dimColor>{projection.status === "running" ? "Ctrl+C 取消 · t 查看推理" : "Enter 返回工作台"}</Text>
+    <Text dimColor>{projection.status === "running" ? "s steer · f follow-up · Ctrl+C 取消 · t 查看推理" : "f follow-up · Enter 返回工作台"}</Text>
   </Box>;
 }
 

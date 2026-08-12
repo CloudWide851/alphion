@@ -1,6 +1,6 @@
 import type {
   AgentBudgets,
-  AgentMessage,
+  ProviderMessage,
   AgentRunRequest,
   AgentRunResult,
   AgentToolCall,
@@ -19,7 +19,7 @@ import type {
   CapabilityPolicy,
   EventStore,
 } from "../ports/index.js";
-import type { AgentEvent, AgentEventDraft, AgentEventKind } from "../protocol/events.js";
+import type { AgentEvent, AgentEventDraft, AgentEventKind, AgentStreamEvent } from "../protocol/events.js";
 import { emptyProviderUsage, isCriticalAgentEvent } from "../protocol/events.js";
 import { canonicalJson, createId, sha256 } from "./canonical.js";
 import { SingleFlight, TieredCache } from "./cache.js";
@@ -29,6 +29,7 @@ import { DefaultCapabilityPolicy } from "./policy.js";
 import { containsPotentialSecret, sanitizeRecord } from "./sensitive-data.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { summarizeContextPack } from "./context-pack.js";
+import { validateJsonSchema } from "./json-schema.js";
 import { EMPTY_WORKING_MEMORY, reduceWorkingMemory } from "./working-memory.js";
 
 const DEFAULT_BUDGETS: AgentBudgets = Object.freeze({
@@ -46,7 +47,7 @@ Label important conclusions as observed, inferred, proposed, or unknown. Cite to
 Never claim an edit, write, command, test, or verification happened unless the corresponding tool observation exists.
 When a tool is denied, adapt without claiming it ran.`;
 
-export interface AgentRuntimeOptions {
+export interface AgentLoopOptions {
   readonly provider: AgentProvider;
   readonly tools: ToolRegistry;
   readonly eventStore: EventStore;
@@ -54,6 +55,7 @@ export interface AgentRuntimeOptions {
   readonly cache?: TieredCache;
   readonly policy?: CapabilityPolicy;
   readonly eventBufferCapacity?: number;
+  readonly beforeModelBoundary?: (runId: string, signal: AbortSignal) => Promise<readonly ProviderMessage[]>;
 }
 
 interface RuntimeContext {
@@ -62,7 +64,7 @@ interface RuntimeContext {
   readonly sessionId: string;
   readonly correlationId: string;
   readonly signal: AbortSignal;
-  readonly channel: BoundedEventChannel<AgentEvent>;
+  readonly channel: BoundedEventChannel<AgentStreamEvent>;
   readonly budgets: AgentBudgets;
   mutationRevision: number;
   workingMemory: WorkingMemorySnapshot;
@@ -75,7 +77,14 @@ interface TurnOutcome {
   readonly usage: ProviderUsage;
 }
 
-export class AgentRuntime {
+interface ToolPipelineResult {
+  readonly call: AgentToolCall;
+  readonly result: ToolResult;
+  readonly terminate: boolean;
+}
+
+/** Internal provider/tool loop. Public callers enter through Agent.execute(). */
+export class AgentLoop {
   readonly #provider: AgentProvider;
   readonly #tools: ToolRegistry;
   readonly #eventStore: EventStore;
@@ -83,10 +92,11 @@ export class AgentRuntime {
   readonly #cache: TieredCache | undefined;
   readonly #policy: CapabilityPolicy;
   readonly #eventBufferCapacity: number;
+  readonly #beforeModelBoundary: ((runId: string, signal: AbortSignal) => Promise<readonly ProviderMessage[]>) | undefined;
   readonly #providerFlights = new SingleFlight<readonly ProviderEvent[]>();
   readonly #toolFlights = new SingleFlight<ToolResult>();
 
-  constructor(options: AgentRuntimeOptions) {
+  constructor(options: AgentLoopOptions) {
     this.#provider = options.provider;
     this.#tools = options.tools;
     this.#eventStore = options.eventStore;
@@ -94,15 +104,16 @@ export class AgentRuntime {
     this.#cache = options.cache;
     this.#policy = options.policy ?? new DefaultCapabilityPolicy();
     this.#eventBufferCapacity = options.eventBufferCapacity ?? 256;
+    this.#beforeModelBoundary = options.beforeModelBoundary;
   }
 
-  start(request: AgentRunRequest): AgentRunHandle {
+  execute(request: AgentRunRequest): AgentRunHandle {
     validateRunRequest(request);
-    const runId = createId("run");
+    const runId = request.runId ?? createId("run");
     const sessionId = request.sessionId ?? createId("session");
     const correlationId = createId("correlation");
     const controller = new AbortController();
-    const channel = new BoundedEventChannel<AgentEvent>(this.#eventBufferCapacity);
+    const channel = new BoundedEventChannel<AgentStreamEvent>(this.#eventBufferCapacity);
     const budgets = mergeBudgets(request.budgets);
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -125,6 +136,8 @@ export class AgentRuntime {
       channel.close();
     });
     return {
+      runId,
+      sessionId,
       events: channel,
       result,
       cancel: (reason = "Cancelled by caller.") => controller.abort(new DOMException(reason, "AbortError")),
@@ -165,7 +178,7 @@ export class AgentRuntime {
       const systemInstructions = [DEFAULT_SYSTEM_INSTRUCTIONS, context.request.systemInstructions]
         .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
         .join("\n\n");
-      const messages: AgentMessage[] = [
+      const messages: ProviderMessage[] = [
         { role: "system", content: systemInstructions },
         ...(context.request.contextPack
           ? [{ role: "system" as const, content: context.request.contextPack.rendered }]
@@ -175,6 +188,8 @@ export class AgentRuntime {
 
       while (turns < context.budgets.maxTurns) {
         assertNotAborted(context.signal);
+        const steering = await this.#beforeModelBoundary?.(context.runId, context.signal) ?? [];
+        messages.push(...steering);
         turns += 1;
         const providerRequest = this.#createProviderRequest(messages, context);
         const outcome = await this.#runProviderTurn(providerRequest, context);
@@ -208,14 +223,18 @@ export class AgentRuntime {
           ...(outcome.reasoningContent ? { reasoningContent: outcome.reasoningContent } : {}),
           toolCalls: outcome.toolCalls,
         });
-        for (const call of outcome.toolCalls) {
-          toolCalls += 1;
-          if (toolCalls > context.budgets.maxToolCalls) {
-            throw new AlphionError("budget-exceeded", "Tool-call budget exceeded.", { stage: "tools" });
-          }
-          const result = await this.#executeTool(call, context);
-          if (result.evidence) evidence.set(result.evidence.id, result.evidence);
-          messages.push({ role: "tool", toolCallId: call.id, name: call.name, content: formatToolObservation(result) });
+        toolCalls += outcome.toolCalls.length;
+        if (toolCalls > context.budgets.maxToolCalls) throw new AlphionError("budget-exceeded", "Tool-call budget exceeded.", { stage: "tools" });
+        const batch = await this.#executeToolBatch(outcome.toolCalls, context);
+        for (const item of batch.results) {
+          if (item.result.evidence) evidence.set(item.result.evidence.id, item.result.evidence);
+          messages.push({ role: "tool", toolCallId: item.call.id, name: item.call.name, content: formatToolObservation(item.result) });
+        }
+        if (batch.terminate) {
+          finalText = outcome.text || batch.results.map((item) => item.result.content).join("\n");
+          const grounding = buildGroundingReport(finalText, [...evidence.keys()]);
+          await this.#emit(context, "run.completed", { turns, toolCalls, usage, grounding, terminatedByToolBatch: true });
+          return { runId: context.runId, sessionId: context.sessionId, status: "completed", finalText, turns, toolCalls, usage, grounding, ...(context.request.contextPack ? { context: summarizeContextPack(context.request.contextPack) } : {}), workingMemory: context.workingMemory };
         }
       }
       throw new AlphionError("budget-exceeded", "Agent turn budget exceeded.", { stage: "runtime" });
@@ -250,7 +269,7 @@ export class AgentRuntime {
     }
   }
 
-  #createProviderRequest(messages: readonly AgentMessage[], context: RuntimeContext): ProviderRequest {
+  #createProviderRequest(messages: readonly ProviderMessage[], context: RuntimeContext): ProviderRequest {
     const tools = this.#provider.profile.capabilities.tools ? this.#tools.definitions() : [];
     const stablePrefixDigest = sha256(
       canonicalJson({
@@ -273,7 +292,8 @@ export class AgentRuntime {
 
   async #runProviderTurn(request: ProviderRequest, context: RuntimeContext): Promise<TurnOutcome> {
     const cacheSafe = !containsPotentialSecret(request);
-    const cacheEnabled = context.request.cacheResponses !== false && cacheSafe && this.#cache !== undefined;
+    // Reasoning is in-run continuation state only and must never reach a durable cache.
+    const cacheEnabled = context.request.cacheResponses !== false && cacheSafe && this.#cache !== undefined && !this.#provider.profile.capabilities.reasoning;
     const key = sha256(
       canonicalJson({
         adapter: `${this.#provider.profile.kind}-v2`,
@@ -296,7 +316,7 @@ export class AgentRuntime {
       const lookup = await this.#cache?.get("model-response", key);
       if (lookup?.entry) {
         const decoded = decodeProviderEvents(lookup.entry.value);
-        if (decoded && !containsPotentialSecret(decoded) && areReusableProviderEvents(decoded, context.budgets.maxOutputBytes)) {
+        if (decoded && !decoded.some((event) => event.type === "reasoning-delta") && !containsPotentialSecret(decoded) && areReusableProviderEvents(decoded, context.budgets.maxOutputBytes)) {
           await this.#emit(context, "cache.hit", { namespace: "model-response", tier: lookup.tier, key });
           return this.#consumeProviderEvents(decoded, context);
         }
@@ -338,7 +358,7 @@ export class AgentRuntime {
         throw new AlphionError("dependency-unavailable", "Provider returned no terminal event.", { stage: "provider" });
       }
       flight.complete(events);
-      if (cacheEnabled && !containsPotentialSecret(events)) {
+      if (cacheEnabled && !events.some((event) => event.type === "reasoning-delta") && !containsPotentialSecret(events)) {
         const now = Date.now();
         await this.#cache?.set({
           namespace: "model-response",
@@ -376,7 +396,7 @@ export class AgentRuntime {
         await this.#emit(context, "model.delta", { delta: event.delta });
         return;
       case "reasoning-delta":
-        await this.#emit(context, "model.reasoning.delta", { delta: event.delta });
+        await this.#emitTransientReasoning(context, event.delta);
         return;
       case "usage":
         await this.#emit(context, "model.usage", { usage: event.usage });
@@ -390,24 +410,112 @@ export class AgentRuntime {
     }
   }
 
-  async #executeTool(call: AgentToolCall, context: RuntimeContext): Promise<ToolResult> {
-    await this.#emit(context, "tool.requested", { toolCallId: call.id, toolName: call.name });
+  async #executeToolBatch(calls: readonly AgentToolCall[], context: RuntimeContext): Promise<Readonly<{ results: readonly ToolPipelineResult[]; terminate: boolean }>> {
+    const results: ToolPipelineResult[] = [];
+    for (let index = 0; index < calls.length;) {
+      const first = calls[index];
+      if (!first) break;
+      const group: AgentToolCall[] = [first];
+      if (this.#isParallelSafe(first)) {
+        while (index + group.length < calls.length) {
+          const candidate = calls[index + group.length];
+          if (!candidate || !this.#isParallelSafe(candidate)) break;
+          group.push(candidate);
+        }
+      }
+      const settled = group.length === 1
+        ? [await this.#executeTool(group[0] as AgentToolCall, context)]
+        : await Promise.all(group.map((call) => {
+            const updates: string[] = [];
+            const completions: Readonly<Record<string, unknown>>[] = [];
+            return this.#executeTool(call, context, updates, completions).then((result) => ({ result, updates, completions }));
+          })).then(async (items) => {
+            for (const item of items) {
+              for (const content of item.updates) await this.#emit(context, "tool.updated", { toolCallId: item.result.call.id, toolName: item.result.call.name, content });
+            }
+            for (const item of items) {
+              for (const payload of item.completions) await this.#emit(context, "tool.completed", payload);
+            }
+            return items.map((item) => item.result);
+          });
+      results.push(...settled);
+      index += group.length;
+    }
+    return Object.freeze({ results: Object.freeze(results), terminate: results.some((item) => item.terminate) });
+  }
+
+  #isParallelSafe(call: AgentToolCall): boolean {
+    const contract = this.#tools.get(call.name)?.contract;
+    return contract?.executionMode === "parallel-safe"
+      && contract.idempotent === true
+      && contract.sideEffect === "none"
+      && contract.risk === "read"
+      && contract.approval === "never";
+  }
+
+  async #executeTool(
+    call: AgentToolCall,
+    context: RuntimeContext,
+    bufferedUpdates?: string[],
+    bufferedCompletions?: Readonly<Record<string, unknown>>[],
+  ): Promise<ToolPipelineResult> {
+    const complete = async (payload: Readonly<Record<string, unknown>>): Promise<void> => {
+      if (bufferedCompletions) bufferedCompletions.push(payload);
+      else await this.#emit(context, "tool.completed", payload);
+    };
     const executor = this.#tools.get(call.name);
     if (!executor) {
-      return { content: `Unknown tool: ${call.name}`, isError: true };
+      await this.#emit(context, "tool.requested", { toolCallId: call.id, toolName: call.name, arguments: call.arguments, final: true });
+      const result = { content: `Unknown tool: ${call.name}`, isError: true } as const;
+      await complete({ toolCallId: call.id, toolName: call.name, isError: true, code: "unknown-tool" });
+      return { call, result, terminate: false };
     }
-    const policy = this.#policy.evaluate(executor.contract, call.arguments);
-    if (policy.outcome === "deny") {
-      return { content: `Tool denied by policy: ${policy.reason}`, isError: true };
-    }
-    if (policy.outcome === "approval") {
-      const actionDigest = sha256(canonicalJson({ tool: call.name, input: call.arguments }));
+    let requestedPersisted = false;
+    const persistRequested = async (argumentsValue: Readonly<Record<string, unknown>>) => {
+      if (requestedPersisted) return;
+      await this.#emit(context, "tool.requested", { toolCallId: call.id, toolName: call.name, arguments: argumentsValue, final: true });
+      requestedPersisted = true;
+    };
+    try {
+      validateJsonSchema(executor.contract.inputSchema, call.arguments);
+      let finalArguments = call.arguments;
+      let terminate = false;
+      const toolContext = {
+        projectRoot: context.request.projectRoot,
+        signal: context.signal,
+        reportUpdate: async (content: string) => {
+          const safeContent = content.slice(0, 4096);
+          if (bufferedUpdates) bufferedUpdates.push(safeContent);
+          else await this.#emit(context, "tool.updated", { toolCallId: call.id, toolName: call.name, content: safeContent });
+        },
+      };
+      for (const hook of executor.before ?? []) {
+        const outcome = await hook(finalArguments, toolContext);
+        if (outcome.action === "block" || outcome.action === "terminate") {
+          await persistRequested(finalArguments);
+          const result = { content: outcome.content, isError: outcome.action === "block" };
+          await complete({ toolCallId: call.id, toolName: call.name, isError: result.isError, hookAction: outcome.action });
+          return { call, result, terminate: outcome.action === "terminate" };
+        }
+        if (outcome.input) finalArguments = outcome.input;
+      }
+      validateJsonSchema(executor.contract.inputSchema, finalArguments);
+      await persistRequested(finalArguments);
+      const policy = this.#policy.evaluate(executor.contract, finalArguments);
+      if (policy.outcome === "deny") {
+        const result = { content: `Tool denied by policy: ${policy.reason}`, isError: true } as const;
+        await complete({ toolCallId: call.id, toolName: call.name, isError: true, code: "policy-denied" });
+        return { call, result, terminate: false };
+      }
+      const approvalRequired = executor.contract.approval === "always" || (executor.contract.approval !== "never" && policy.outcome === "approval");
+      if (approvalRequired) {
+      const actionDigest = sha256(canonicalJson({ tool: call.name, input: finalArguments }));
       const requestId = createId("approval");
       await this.#emit(context, "approval.requested", {
         requestId,
         toolName: call.name,
         actionDigest,
-        reason: policy.reason,
+        reason: policy.outcome === "approval" ? policy.reason : "Tool requires approval.",
       });
       const decision = await this.#approval.requestApproval(
         {
@@ -416,8 +524,8 @@ export class AgentRuntime {
           toolName: call.name,
           risk: executor.contract.risk === "process" ? "process" : "write",
           actionDigest,
-          summary: `${call.name}: ${canonicalJson(call.arguments)}`,
-          input: call.arguments,
+          summary: `${call.name}: ${canonicalJson(finalArguments)}`,
+          input: finalArguments,
         },
         context.signal,
       );
@@ -426,14 +534,17 @@ export class AgentRuntime {
         approved: decision.approved,
         reason: decision.reason,
       });
-      if (!decision.approved) return { content: `Tool approval denied: ${decision.reason}`, isError: true };
-    }
-    try {
+      if (!decision.approved) {
+        const result = { content: `Tool approval denied: ${decision.reason}`, isError: true } as const;
+        await complete({ toolCallId: call.id, toolName: call.name, isError: true, code: "approval-denied" });
+        return { call, result, terminate: false };
+      }
+      }
       const toolCacheKey = executor.contract.cachePolicy === "content"
         ? sha256(canonicalJson({
             tool: executor.contract.name,
             schema: executor.contract.inputSchema,
-            input: call.arguments,
+            input: finalArguments,
             projectRevision: context.request.projectRevision,
             mutationRevision: context.mutationRevision,
           }))
@@ -450,10 +561,7 @@ export class AgentRuntime {
           const flight = this.#toolFlights.acquire(toolCacheKey);
           if (flight.owner) {
             try {
-              result = await executor.execute(call.arguments, {
-                projectRoot: context.request.projectRoot,
-                signal: context.signal,
-              });
+              result = await this.#executeWithTimeout(executor, finalArguments, toolContext);
               flight.complete(result);
             } catch (error) {
               flight.fail(error);
@@ -480,29 +588,56 @@ export class AgentRuntime {
           }
         }
       } else {
-        result = await executor.execute(call.arguments, {
-          projectRoot: context.request.projectRoot,
-          signal: context.signal,
-        });
+        result = await this.#executeWithTimeout(executor, finalArguments, toolContext);
+      }
+      const evidenceIdentity = result.evidence ? { id: result.evidence.id, digest: result.evidence.digest, kind: result.evidence.kind } : undefined;
+      for (const hook of executor.after ?? []) {
+        const outcome = await hook(result, toolContext);
+        if (outcome.result) {
+          if (evidenceIdentity && (!outcome.result.evidence || outcome.result.evidence.id !== evidenceIdentity.id || outcome.result.evidence.digest !== evidenceIdentity.digest || outcome.result.evidence.kind !== evidenceIdentity.kind)) {
+            throw new AlphionError("integrity-failed", "After hook cannot replace Evidence identity or digest.", { stage: `tool:${call.name}` });
+          }
+          result = outcome.result;
+        }
+        terminate ||= outcome.terminate === true;
       }
       if (!result.isError && executor.contract.risk !== "read") context.mutationRevision += 1;
-      await this.#emit(context, "tool.completed", {
+      await complete({
         toolCallId: call.id,
         toolName: call.name,
         isError: result.isError,
+        content: result.content.slice(0, 16_384),
         ...(result.evidence ? { evidence: result.evidence } : {}),
       });
-      return result;
+      return { call, result, terminate };
     } catch (error) {
+      await persistRequested(call.arguments);
       const normalized = normalizeError(error, `tool:${call.name}`);
-      await this.#emit(context, "tool.completed", {
+      await complete({
         toolCallId: call.id,
         toolName: call.name,
         isError: true,
         code: normalized.code,
       });
-      return { content: `${normalized.code}: ${normalized.message}`, isError: true };
+      return { call, result: { content: `${normalized.code}: ${normalized.message}`, isError: true }, terminate: false };
     }
+  }
+
+  async #executeWithTimeout(
+    executor: NonNullable<ReturnType<ToolRegistry["get"]>>,
+    input: Readonly<Record<string, unknown>>,
+    context: Readonly<{ projectRoot: string; signal: AbortSignal; reportUpdate: (content: string) => Promise<void> }>,
+  ): Promise<ToolResult> {
+    const timeoutMs = executor.contract.timeoutMs ?? 30_000;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw new AlphionError("validation", "Tool timeout must be 1-300000 ms.", { stage: "tools" });
+    const timeoutController = new AbortController();
+    const timer = setTimeout(() => timeoutController.abort(new DOMException("Tool execution deadline exceeded.", "TimeoutError")), timeoutMs);
+    try {
+      return await executor.execute(input, { ...context, signal: AbortSignal.any([context.signal, timeoutController.signal]) });
+    } catch (error) {
+      if (timeoutController.signal.aborted && !context.signal.aborted) throw new AlphionError("timeout", "Tool execution timed out.", { stage: `tool:${executor.contract.name}`, cause: error });
+      throw error;
+    } finally { clearTimeout(timer); }
   }
 
   async #emit(
@@ -523,6 +658,19 @@ export class AgentRuntime {
     context.workingMemory = reduceWorkingMemory(context.workingMemory, event);
     await context.channel.push(event, isCriticalAgentEvent(kind));
     return event;
+  }
+
+  async #emitTransientReasoning(context: RuntimeContext, delta: string): Promise<void> {
+    const event: AgentStreamEvent = Object.freeze({
+      delivery: "transient",
+      runId: context.runId,
+      sessionId: context.sessionId,
+      correlationId: context.correlationId,
+      timestamp: new Date().toISOString(),
+      kind: "model.reasoning.delta",
+      payload: sanitizeRecord({ delta }),
+    });
+    await context.channel.push(event, false);
   }
 }
 

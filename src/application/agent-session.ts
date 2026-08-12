@@ -1,0 +1,336 @@
+import type { AgentMessage, AgentRunResult, AgentSessionRecord, HarnessPlan, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
+import type { AgentContract, AgentRunHandle, AgentSessionContract, ApprovalPort, CodeRecall, ModelResolver, SessionStore } from "../ports/index.js";
+import type { AgentStreamEvent } from "../protocol/events.js";
+import { BoundedEventChannel } from "./event-channel.js";
+import { AlphionError } from "./errors.js";
+import { compactSessionEntries, compactSessionEntriesWithProvider } from "./compaction.js";
+import { createId } from "./canonical.js";
+import { canonicalJson } from "./canonical.js";
+import { sanitizeRecord } from "./sensitive-data.js";
+import type { ProjectProfile } from "../domain/contracts.js";
+import type { AgentEnvironment } from "../domain/contracts.js";
+
+export interface AgentSessionOptions {
+  readonly sessionId: string;
+  readonly store: SessionStore;
+  readonly agent: AgentContract;
+  readonly projectRoot: string;
+  readonly projectProfile: () => Promise<ProjectProfile>;
+  readonly environment: (profile: ProjectProfile) => Promise<AgentEnvironment>;
+  readonly plan: (prompt: string) => HarnessPlan;
+  readonly models?: ModelResolver;
+  readonly recall?: CodeRecall;
+}
+
+export class AgentSession implements AgentSessionContract {
+  readonly id: string;
+  readonly #events = new Set<BoundedEventChannel<AgentStreamEvent>>();
+  readonly #publicEvents = new Set<BoundedEventChannel<AgentStreamEvent>>();
+  readonly #activeRuns = new Set<AgentRunHandle>();
+  readonly #ownedTasks = new Set<Promise<unknown>>();
+  #closed = false;
+  #closePromise: Promise<void> | undefined;
+  constructor(private readonly options: AgentSessionOptions) { this.id = options.sessionId; }
+
+  get(): Promise<AgentSessionRecord> {
+    this.#assertOpen();
+    return this.#own(this.#get());
+  }
+
+  async #get(): Promise<AgentSessionRecord> {
+    const value = await this.options.store.getSession(this.id);
+    if (!value) throw new AlphionError("validation", `Unknown session: ${this.id}`, { stage: "session" });
+    return value;
+  }
+
+  view(): Promise<SessionView> {
+    this.#assertOpen();
+    return this.#own(this.#view());
+  }
+
+  async #view(): Promise<SessionView> {
+    const value = await this.options.store.getSessionView(this.id);
+    if (!value) throw new AlphionError("validation", `Unknown session: ${this.id}`, { stage: "session" });
+    return value;
+  }
+
+  checkout(entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt> {
+    this.#assertOpen();
+    return this.#own(this.options.store.checkoutSession(this.id, entryId, options));
+  }
+
+  send(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> {
+    this.#assertOpen();
+    return this.#own(this.#send(content, options, approval));
+  }
+
+  async #send(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> {
+    const prompt = content.trim();
+    if (!prompt) throw new AlphionError("validation", "Session message cannot be empty.", { stage: "session" });
+    const user = userMessage(prompt);
+    const runId = createId("run");
+    const started = await this.options.store.beginSessionRun(this.id, runId, user, options);
+    if (started.receipt.replayed) throw new AlphionError("conflict", "This send command was already applied; subscribe to the session instead of starting it again.", { stage: "session" });
+    let handle: AgentRunHandle;
+    try {
+      handle = await this.#executeLeased(prompt, runId, started.session.providerId, approval);
+    } catch (error) {
+      await this.options.store.releaseRunLease(this.id, runId);
+      throw error;
+    }
+    const publicEvents = new BoundedEventChannel<AgentStreamEvent>(256);
+    this.#publicEvents.add(publicEvents);
+    this.#activeRuns.add(handle);
+    if (this.#closed) handle.cancel("Session is closing.");
+    const result = this.#own(this.#observe(handle, publicEvents, approval));
+    return { runId: handle.runId, sessionId: handle.sessionId, events: publicEvents, result, cancel: (reason?: string) => handle.cancel(reason) };
+  }
+
+  steer(content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt> {
+    this.#assertOpen();
+    return this.#own(this.options.store.enqueuePending(this.id, "steer", userMessage(content), options));
+  }
+  followUp(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt> {
+    this.#assertOpen();
+    return this.#own(this.#followUp(content, options, approval));
+  }
+
+  async #followUp(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt> {
+    const receipt = await this.options.store.enqueuePending(this.id, "follow-up", userMessage(content), options);
+    const session = await this.#get();
+    if (!this.#closed && session.status === "idle") {
+      this.#launchQueuedFollowUps(approval);
+    }
+    return receipt;
+  }
+
+  subscribe(): AsyncIterable<AgentStreamEvent> {
+    this.#assertOpen();
+    const channel = new BoundedEventChannel<AgentStreamEvent>(256);
+    this.#events.add(channel);
+    const store = this.options.store;
+    const subscribers = this.#events;
+    const sessionId = this.id;
+    const history = this.#own(store.listSessionEvents(sessionId));
+    return {
+      async *[Symbol.asyncIterator]() {
+        let cursor = 0;
+        try {
+          for (const event of await history) {
+            cursor = Math.max(cursor, event.sessionSequence ?? cursor);
+            yield event;
+          }
+          for await (const event of channel) {
+            if ("delivery" in event) { yield event; continue; }
+            if ((event.sessionSequence ?? 0) <= cursor) continue;
+            cursor = event.sessionSequence ?? cursor;
+            yield event;
+          }
+        } finally { subscribers.delete(channel); channel.close(); }
+      },
+    };
+  }
+
+  async #observe(handle: AgentRunHandle, publicEvents: BoundedEventChannel<AgentStreamEvent> | undefined, approval: ApprovalPort): Promise<AgentRunResult> {
+    try {
+      for await (const event of handle.events) {
+        if ("delivery" in event) {
+          await publicEvents?.push(event, false);
+          for (const channel of this.#events) await channel.push(event, false);
+          continue;
+        }
+        const projected = projectEvent(event);
+        if (projected) {
+          const session = await this.#get();
+          await this.options.store.appendSessionEntry(this.id, projected, { expectedRevision: session.revision, idempotencyKey: `event:${event.eventId}` }, event.runId);
+        }
+        await publicEvents?.push(event, event.kind !== "model.delta");
+        for (const channel of this.#events) await channel.push(event, event.kind !== "model.delta");
+      }
+      const result = await handle.result;
+      if (result.finalText) {
+        const session = await this.#get();
+        const assistant: AgentMessage = Object.freeze({ schemaVersion: 1, kind: "assistant", id: createId("message"), createdAt: new Date().toISOString(), content: result.finalText, evidenceIds: Object.freeze(result.grounding.referencedEvidenceIds) });
+        await this.options.store.appendSessionEntry(this.id, assistant, { expectedRevision: session.revision, idempotencyKey: `run:${handle.runId}:assistant` }, handle.runId);
+      }
+      return result;
+    } finally {
+      await this.options.store.releaseRunLease(this.id, handle.runId).catch(() => undefined);
+      this.#activeRuns.delete(handle);
+      if (publicEvents) this.#publicEvents.delete(publicEvents);
+      publicEvents?.close();
+      if (!this.#closed) this.#launchQueuedFollowUps(approval);
+    }
+  }
+
+  async #executeLeased(prompt: string, runId: string, providerId: string | undefined, approval: ApprovalPort): Promise<AgentRunHandle> {
+    const branch = await this.#view();
+    const profile = await this.options.projectProfile();
+    const environment = await this.options.environment(profile);
+    const recall = await this.options.recall?.recall({ projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, query: prompt, limit: 20 }, new AbortController().signal);
+    const compactionProvider = this.options.models
+      ? await this.options.models.resolveModel({ sessionId: this.id, ...(providerId ? { providerId } : {}), requiredCapabilities: [] })
+      : undefined;
+    const history = compactionProvider
+      ? await compactSessionEntriesWithProvider(branch.entries, compactionProvider, AbortSignal.timeout(15_000))
+      : compactSessionEntries(branch.entries);
+    const effectiveProviderId = providerId ?? compactionProvider?.profile.id;
+    return this.options.agent.execute({ prompt, runId, sessionId: this.id, projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}), projectProfile: profile, history, environment, harnessPlan: this.options.plan(prompt), ...(recall ? { recall } : {}) }, approval, {
+      drainSteering: async (activeRunId, signal) => {
+        if (signal.aborted) throw signal.reason ?? new DOMException("Steering drain cancelled.", "AbortError");
+        const drained = await this.options.store.drainPending(this.id, "steer", activeRunId);
+        const messages: AgentMessage[] = [];
+        try {
+          for (const pending of drained) {
+            const current = await this.#get();
+            await this.options.store.appendSessionEntry(this.id, pending.message, { expectedRevision: current.revision, idempotencyKey: `drain:${activeRunId}:${pending.id}` }, activeRunId);
+            messages.push(pending.message);
+          }
+          await this.options.store.acknowledgePending(this.id, "steer", activeRunId, drained.map((item) => item.id));
+        } catch (error) {
+          await this.options.store.releasePendingClaims(this.id, "steer", activeRunId).catch(() => undefined);
+          throw error;
+        }
+        return Object.freeze(messages);
+      },
+    });
+  }
+
+  async #startQueuedFollowUps(approval: ApprovalPort): Promise<void> {
+    if (this.#closed) return;
+    const session = await this.#get();
+    if (this.#closed || session.status !== "idle") return;
+    const runId = createId("run");
+    let leased: AgentSessionRecord;
+    try { leased = await this.options.store.acquireRunLease(this.id, runId, session.revision); }
+    catch (error) {
+      if (error instanceof AlphionError && error.code === "conflict") return;
+      throw error;
+    }
+    const pending = await this.options.store.drainPending(this.id, "follow-up", runId);
+    if (pending.length === 0) { await this.options.store.releaseRunLease(this.id, runId); return; }
+    try {
+      for (const item of pending) {
+        const current = await this.#get();
+        await this.options.store.appendSessionEntry(this.id, item.message, { expectedRevision: current.revision, idempotencyKey: `drain:${runId}:${item.id}` }, runId);
+      }
+      await this.options.store.acknowledgePending(this.id, "follow-up", runId, pending.map((item) => item.id));
+      const prompt = pending.map((item) => item.message.content).join("\n\n");
+      const handle = await this.#executeLeased(prompt, runId, leased.providerId, approval);
+      this.#activeRuns.add(handle);
+      if (this.#closed) handle.cancel("Session is closing.");
+      await this.#observe(handle, undefined, approval);
+    } catch (error) {
+      await this.options.store.releasePendingClaims(this.id, "follow-up", runId).catch(() => undefined);
+      await this.options.store.releaseRunLease(this.id, runId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  #launchQueuedFollowUps(approval: ApprovalPort): void {
+    if (this.#closed) return;
+    void this.#own(this.#startQueuedFollowUps(approval).catch((error: unknown) => this.#recordAutomationFailure(error)));
+  }
+
+  async #recordAutomationFailure(error: unknown): Promise<void> {
+    if (this.#closed) return;
+    const session = await this.#get();
+    const message: AgentMessage = Object.freeze({ schemaVersion: 1, kind: "system-event", id: createId("message"), createdAt: new Date().toISOString(), eventKind: "follow-up.failed", content: error instanceof AlphionError ? `${error.code}: ${error.message}` : "internal: Automatic follow-up failed." });
+    await this.options.store.appendSessionEntry(this.id, message, { expectedRevision: session.revision, idempotencyKey: `follow-up-failed:${message.id}` }).catch(() => undefined);
+  }
+
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
+    this.#closed = true;
+    for (const channel of this.#events) channel.close();
+    for (const channel of this.#publicEvents) channel.close();
+    for (const handle of this.#activeRuns) handle.cancel("Session is closing.");
+    this.#closePromise = (async () => {
+      while (this.#ownedTasks.size > 0) {
+        await Promise.allSettled([...this.#ownedTasks]);
+      }
+    })();
+    return this.#closePromise;
+  }
+
+  #own<T>(task: Promise<T>): Promise<T> {
+    this.#ownedTasks.add(task);
+    void task.finally(() => this.#ownedTasks.delete(task)).catch(() => undefined);
+    return task;
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) throw new AlphionError("conflict", "Agent session is closed.", { stage: "session" });
+  }
+}
+
+function projectEvent(event: AgentStreamEvent): AgentMessage | undefined {
+  if ("delivery" in event) return undefined;
+  const base = { schemaVersion: 1 as const, id: `message_${event.eventId}`, createdAt: event.timestamp };
+  const payload = sanitizeRecord(event.payload);
+  switch (event.kind) {
+    case "tool.requested": {
+      const callId = payloadString(event, "toolCallId");
+      const name = payloadString(event, "toolName");
+      const args = payload.arguments;
+      if (!callId || !name || !args || typeof args !== "object" || Array.isArray(args)) return undefined;
+      return Object.freeze({ ...base, kind: "tool-call", call: Object.freeze({ id: callId, name, arguments: args as Readonly<Record<string, unknown>> }) });
+    }
+    case "tool.updated": {
+      const callId = payloadString(event, "toolCallId");
+      const name = payloadString(event, "toolName");
+      if (!callId || !name) return undefined;
+      return Object.freeze({ ...base, kind: "observation", toolCallId: callId, toolName: name, content: payloadString(event, "content") ?? "Tool progress update.", isError: false });
+    }
+    case "tool.completed": {
+      const callId = payloadString(event, "toolCallId");
+      const name = payloadString(event, "toolName");
+      if (!callId || !name) return undefined;
+      const evidence = payload.evidence;
+      const safeEvidence = isEvidence(evidence) ? evidence : undefined;
+      const content = recordString(payload, "content") ?? recordString(payload, "code") ?? (payload.isError === true ? "Tool failed without durable output." : "Tool completed without durable output.");
+      return Object.freeze({ ...base, kind: "observation", toolCallId: callId, toolName: name, content, ...(safeEvidence ? { evidence: safeEvidence } : {}), isError: payload.isError === true });
+    }
+    case "approval.requested": {
+      const requestId = payloadString(event, "requestId");
+      if (!requestId) return undefined;
+      return Object.freeze({ ...base, kind: "human-approval", requestId, approved: false, content: `requested:${payloadString(event, "toolName") ?? "tool"}:${payloadString(event, "actionDigest") ?? "unknown"}` });
+    }
+    case "approval.resolved": {
+      const requestId = payloadString(event, "requestId");
+      if (!requestId) return undefined;
+      return Object.freeze({ ...base, kind: "human-approval", requestId, approved: payload.approved === true, content: recordString(payload, "reason") ?? (payload.approved === true ? "approved" : "denied") });
+    }
+    case "run.failed":
+    case "run.cancelled":
+    case "run.started":
+    case "project.profiled":
+    case "context.assembled":
+    case "provider.started":
+    case "provider.degraded":
+    case "run.completed":
+      return Object.freeze({ ...base, kind: "system-event", eventKind: event.kind, content: canonicalJson(payload).slice(0, 16_384) });
+    default:
+      return undefined;
+  }
+}
+
+function payloadString(event: AgentStreamEvent, key: string): string | undefined {
+  return recordString(sanitizeRecord(event.payload), key);
+}
+
+function recordString(value: Readonly<Record<string, unknown>>, key: string): string | undefined {
+  return typeof value[key] === "string" ? value[key] : undefined;
+}
+
+function isEvidence(value: unknown): value is NonNullable<Extract<AgentMessage, { readonly kind: "observation" }>["evidence"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Readonly<Record<string, unknown>>;
+  return typeof item.id === "string" && typeof item.digest === "string" && typeof item.summary === "string" && ["file", "search", "change", "process"].includes(String(item.kind));
+}
+
+function userMessage(content: string): Extract<AgentMessage, { readonly kind: "user" }> {
+  const value = content.trim();
+  if (!value) throw new AlphionError("validation", "Session message cannot be empty.", { stage: "session" });
+  return Object.freeze({ schemaVersion: 1, kind: "user", id: createId("message"), createdAt: new Date().toISOString(), content: value });
+}

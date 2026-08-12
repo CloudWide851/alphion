@@ -9,7 +9,7 @@ import type {
 } from "openai/resources/chat/completions/completions";
 import { AlphionError } from "../../src/application/errors.js";
 import type {
-  AgentMessage,
+  ProviderMessage,
   AgentToolCall,
   ProviderEvent,
   ProviderProfile,
@@ -163,7 +163,7 @@ function validateProfile(profile: ProviderProfile): void {
   }
 }
 
-function toMessages(messages: readonly AgentMessage[]): ChatCompletionMessageParam[] {
+function toMessages(messages: readonly ProviderMessage[]): ChatCompletionMessageParam[] {
   return messages.map((message): ChatCompletionMessageParam => {
     switch (message.role) {
       case "system":

@@ -46,6 +46,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     if (command !== "inspect") throw new AlphionError("validation", "project command must be inspect.", { stage: "cli" });
     return projectInspectCommand(projectRoot, statePath, parsed);
   }
+  if (group === "session") return sessionCommand(command, parsed, projectRoot, statePath);
+  if (group === "harness" && command === "plan") return harnessPlanCommand(parsed, projectRoot, statePath);
   if (group === "run") return runCommand(parsed, projectRoot, statePath);
   const store = new SqliteStore({ path: statePath });
   try {
@@ -152,12 +154,9 @@ async function runCommand(parsed: ParsedArguments, projectRoot: string, statePat
   const selected = flagValue(parsed, "provider");
   const application = await openLocalAlphionApplication({ projectRoot, statePath });
   try {
-    const handle = await application.startRun({
-      prompt,
-      projectRoot,
-      ...(selected ? { providerId: selected } : {}),
-      cacheResponses: !hasFlag(parsed, "no-cache"),
-    }, new CliApprovalPort());
+    const session = await application.sessions.create({ title: prompt.slice(0, 80), ...(selected ? { providerId: selected } : {}) });
+    const record = await session.get();
+    const handle = await session.send(prompt, { expectedRevision: record.revision, idempotencyKey: createCliKey("send") }, new CliApprovalPort());
     const render = (async () => {
       for await (const event of handle.events) {
         if (event.kind === "model.delta") {
@@ -174,9 +173,44 @@ async function runCommand(parsed: ParsedArguments, projectRoot: string, statePat
     process.stdout.write(`evidence referenced=${result.grounding.referencedEvidenceIds.length} missing=${result.grounding.missingEvidenceIds.length}\n`);
     return result.status === "completed" ? 0 : 1;
   } finally {
-    application.close();
+    await application.close();
   }
 }
+
+async function sessionCommand(command: string | undefined, parsed: ParsedArguments, projectRoot: string, statePath: string): Promise<number> {
+  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  try {
+    if (command === "create") {
+      const providerId = flagValue(parsed, "provider");
+      const session = await application.sessions.create({ title: flagValue(parsed, "title") ?? "新会话", ...(providerId ? { providerId } : {}) });
+      process.stdout.write(`${JSON.stringify(await session.get(), null, 2)}\n`); return 0;
+    }
+    if (command === "list") { process.stdout.write(`${JSON.stringify(await application.sessions.list(), null, 2)}\n`); return 0; }
+    const id = parsed.positionals[2];
+    if (!id) throw new AlphionError("validation", `session ${command ?? "command"} requires SESSION_ID.`, { stage: "cli" });
+    const session = await application.sessions.get(id);
+    if (command === "show") { process.stdout.write(`${JSON.stringify(await session.view(), null, 2)}\n`); return 0; }
+    const record = await session.get();
+    const options = { expectedRevision: Number(flagValue(parsed, "revision") ?? record.revision), idempotencyKey: flagValue(parsed, "idempotency-key") ?? createCliKey(command) };
+    if (command === "checkout") { process.stdout.write(`${JSON.stringify(await session.checkout(flagValue(parsed, "entry"), options), null, 2)}\n`); return 0; }
+    if (command === "steer") { process.stdout.write(`${JSON.stringify(await session.steer(requiredFlag(parsed, "message"), options), null, 2)}\n`); return 0; }
+    if (command === "follow-up") { process.stdout.write(`${JSON.stringify(await session.followUp(requiredFlag(parsed, "message"), options, new CliApprovalPort()), null, 2)}\n`); return 0; }
+    if (command === "send") {
+      const handle = await session.send(requiredFlag(parsed, "message"), options, new CliApprovalPort());
+      for await (const event of handle.events) if (event.kind === "model.delta" && typeof event.payload.delta === "string") process.stdout.write(event.payload.delta);
+      const result = await handle.result; process.stdout.write(`\n${JSON.stringify(result, null, 2)}\n`); return result.status === "completed" ? 0 : 1;
+    }
+    throw new AlphionError("validation", "session command must be create, list, show, checkout, send, steer, or follow-up.", { stage: "cli" });
+  } finally { await application.close(); }
+}
+
+async function harnessPlanCommand(parsed: ParsedArguments, projectRoot: string, statePath: string): Promise<number> {
+  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  try { process.stdout.write(`${JSON.stringify(await application.planHarness(requiredFlag(parsed, "prompt")), null, 2)}\n`); return 0; }
+  finally { await application.close(); }
+}
+
+function createCliKey(action: string | undefined): string { return `cli:${action ?? "command"}:${process.pid}:${Date.now()}`; }
 
 async function projectInspectCommand(projectRoot: string, statePath: string, parsed: ParsedArguments): Promise<number> {
   const application = await openLocalAlphionApplication({ projectRoot, statePath });
@@ -186,7 +220,7 @@ async function projectInspectCommand(projectRoot: string, statePath: string, par
     else renderProjectProfile(profile);
     return 0;
   } finally {
-    application.close();
+    await application.close();
   }
 }
 
@@ -263,7 +297,7 @@ function safeEventMessage(payload: Readonly<Record<string, unknown>>): string {
 }
 
 function printHelp(): void {
-  process.stdout.write(`Alphion v0.3.1\n\n`);
+  process.stdout.write(`Alphion v0.3.2\n\n`);
   process.stdout.write(`Commands:\n`);
   process.stdout.write(`  provider set --id ID --kind openai-compatible|deepseek --base-url URL --model MODEL [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
   process.stdout.write(`  provider list\n  provider activate ID\n`);
@@ -273,13 +307,14 @@ function printHelp(): void {
   process.stdout.write(`  doctor [--json] [--project-root PATH] [--state PATH]\n`);
   process.stdout.write(`  project inspect [--refresh] [--json] [--project-root PATH]\n`);
   process.stdout.write(`  run --prompt TEXT [--provider ID] [--project-root PATH] [--no-cache]\n\n`);
+  process.stdout.write(`  session create|list|show|checkout|send|steer|follow-up ...\n  harness plan --prompt TEXT\n`);
   process.stdout.write(`  tui [--project-root PATH] [--state PATH]\n\n`);
   process.stdout.write(`Global options: --state PATH --project-root PATH\n`);
 }
 
 function launcherCommand(command: string | undefined, parsed: ParsedArguments): number {
   if (command === "menu") {
-    process.stdout.write(`\n  ALPHION 0.3.1  工程工作台\n  ==========================\n\n`);
+    process.stdout.write(`\n  ALPHION 0.3.2  工程工作台\n  ==========================\n\n`);
     process.stdout.write(`  1. 启动 Alphion 工程工作台\n  2. 运行只读诊断\n  3. 查看命令帮助\n  4. 退出\n\n`);
     return 0;
   }

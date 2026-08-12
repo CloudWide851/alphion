@@ -37,7 +37,6 @@ export function reduceWorkingMemory(
     case "provider.started":
     case "provider.degraded":
     case "model.delta":
-    case "model.reasoning.delta":
       phase = "model";
       break;
     case "model.usage": {

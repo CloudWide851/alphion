@@ -147,26 +147,33 @@ test("vault auto-lock expires an unlocked key", async () => {
   });
 });
 
-test("SQLite schema v1 profiles migrate to schema v2 without losing environment auth", async () => {
+test("SQLite schema v1 profiles migrate through schema v3 without losing environment auth", async () => {
   await withTemporaryDirectory(async (directory) => {
     const path = join(directory, "v1.sqlite3");
     createV1Database(path);
     const store = new SqliteStore({ path });
-    const profile = await store.getActiveProfile();
-    assert.equal(profile?.schemaVersion, 2);
-    assert.equal(profile?.kind, "openai-compatible");
-    assert.equal(profile?.auth.mode, "bearer-env");
-    assert.equal(profile?.capabilities.reasoning, false);
-    const database = new DatabaseSync(path, { readOnly: true });
-    assert.equal((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 2);
-    database.close();
-    store.close();
+    try {
+      const profile = await store.getActiveProfile();
+      assert.equal(profile?.schemaVersion, 2);
+      assert.equal(profile?.kind, "openai-compatible");
+      assert.equal(profile?.auth.mode, "bearer-env");
+      assert.equal(profile?.capabilities.reasoning, false);
+      const database = new DatabaseSync(path, { readOnly: true });
+      try {
+        assert.equal((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 3);
+      } finally {
+        database.close();
+      }
+    } finally {
+      store.close();
+    }
   });
 });
 
 function createV1Database(path: string): void {
   const database = new DatabaseSync(path);
-  database.exec(`
+  try {
+    database.exec(`
     CREATE TABLE provider_profiles (
       id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, base_url TEXT NOT NULL, model TEXT NOT NULL,
       protocol TEXT NOT NULL, auth_mode TEXT NOT NULL, auth_environment_variable TEXT,
@@ -200,8 +207,10 @@ function createV1Database(path: string): void {
       '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
     );
     PRAGMA user_version = 1;
-  `);
-  database.close();
+    `);
+  } finally {
+    database.close();
+  }
 }
 
 function readVaultNonce(path: string, secretId: string): Buffer {

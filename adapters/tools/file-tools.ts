@@ -24,6 +24,11 @@ export class ReadTool implements ToolExecutor {
     },
     risk: "read",
     cachePolicy: "content",
+    executionMode: "parallel-safe",
+    sideEffect: "none",
+    idempotent: true,
+    approval: "never",
+    timeoutMs: 30_000,
   } as const);
 
   async execute(input: Readonly<Record<string, unknown>>, context: Parameters<ToolExecutor["execute"]>[1]) {
@@ -65,6 +70,11 @@ export class GrepTool implements ToolExecutor {
     },
     risk: "read",
     cachePolicy: "content",
+    executionMode: "parallel-safe",
+    sideEffect: "none",
+    idempotent: true,
+    approval: "never",
+    timeoutMs: 30_000,
   } as const);
 
   async execute(input: Readonly<Record<string, unknown>>, context: Parameters<ToolExecutor["execute"]>[1]) {
@@ -134,6 +144,11 @@ export class EditTool implements ToolExecutor {
     },
     risk: "write",
     cachePolicy: "none",
+    executionMode: "serial",
+    sideEffect: "write",
+    idempotent: false,
+    approval: "policy",
+    timeoutMs: 30_000,
   } as const);
 
   async execute(input: Readonly<Record<string, unknown>>, context: Parameters<ToolExecutor["execute"]>[1]) {
@@ -176,6 +191,11 @@ export class WriteTool implements ToolExecutor {
     },
     risk: "write",
     cachePolicy: "none",
+    executionMode: "serial",
+    sideEffect: "write",
+    idempotent: false,
+    approval: "policy",
+    timeoutMs: 30_000,
   } as const);
 
   async execute(input: Readonly<Record<string, unknown>>, context: Parameters<ToolExecutor["execute"]>[1]) {

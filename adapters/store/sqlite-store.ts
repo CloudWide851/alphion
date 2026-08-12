@@ -1,9 +1,9 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { ProviderProfile, ProviderProfileInput, ShellRule, VaultStatus } from "../../src/domain/contracts.js";
+import type { AgentMessage, AgentSessionRecord, PendingMessageKind, PendingSessionMessage, ProviderProfile, ProviderProfileInput, SessionEntry, SessionView, SessionWriteOptions, SessionWriteReceipt, ShellRule, VaultStatus } from "../../src/domain/contracts.js";
 import type {
   CacheEntry,
   CacheStats,
@@ -11,6 +11,7 @@ import type {
   EventStore,
   ProviderProfileStore,
   SecretVault,
+  SessionStore,
   ShellPolicyStore,
 } from "../../src/ports/index.js";
 import type { AgentEvent, AgentEventDraft } from "../../src/protocol/events.js";
@@ -18,23 +19,29 @@ import { canonicalJson, createId, sha256 } from "../../src/application/canonical
 import { AlphionError } from "../../src/application/errors.js";
 import { containsPotentialSecret, sanitizeRecord } from "../../src/application/sensitive-data.js";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const VAULT_SCHEMA_VERSION = 1;
 const VAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
 const VAULT_VERIFIER = "alphion-vault-verifier-v1";
 const SCRYPT_OPTIONS = Object.freeze({ N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
 const OPEN_DATABASES = new Set<string>();
+const DEFAULT_RUN_LEASE_MS = 2 * 60 * 1000;
 
 export interface SqliteStoreOptions {
   readonly path: string;
   readonly vaultAutoLockMs?: number;
+  readonly runLeaseMs?: number;
 }
 
 export class SqliteStore
-  implements EventStore, CacheStore, ProviderProfileStore, SecretVault, ShellPolicyStore
+  implements EventStore, CacheStore, ProviderProfileStore, SecretVault, ShellPolicyStore, SessionStore
 {
   readonly #database: DatabaseSync;
   readonly #databaseKey: string;
+  readonly #databasePath: string;
+  readonly #ownerId = createId("store");
+  readonly #runLeaseMs: number;
+  #leaseHeartbeat: NodeJS.Timeout | undefined;
   #closed = false;
   #vaultKey: Buffer | undefined;
   #vaultLastActivity = 0;
@@ -43,10 +50,15 @@ export class SqliteStore
 
   constructor(options: SqliteStoreOptions) {
     const databasePath = resolve(options.path);
+    this.#databasePath = databasePath;
     this.#databaseKey = pathKey(databasePath);
     this.#vaultAutoLockMs = options.vaultAutoLockMs ?? VAULT_AUTO_LOCK_MS;
+    this.#runLeaseMs = options.runLeaseMs ?? DEFAULT_RUN_LEASE_MS;
     if (!Number.isSafeInteger(this.#vaultAutoLockMs) || this.#vaultAutoLockMs <= 0) {
       throw new AlphionError("validation", "Vault auto-lock duration must be a positive safe integer.", { stage: "vault" });
+    }
+    if (!Number.isSafeInteger(this.#runLeaseMs) || this.#runLeaseMs < 1_000 || this.#runLeaseMs > 24 * 60 * 60 * 1000) {
+      throw new AlphionError("validation", "Run lease duration must be between one second and 24 hours.", { stage: "session" });
     }
     if (OPEN_DATABASES.has(this.#databaseKey)) {
       throw new AlphionError("conflict", "This process already has a writer open for the SQLite state file.", {
@@ -62,6 +74,10 @@ export class SqliteStore
       this.#database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;");
       this.#assertIntegrity();
       this.#migrate();
+      this.#reconcileSessionSchemaV3();
+      this.#registerOwnerAndRecover();
+      this.#leaseHeartbeat = setInterval(() => this.#heartbeatOwner(), Math.max(500, Math.floor(this.#runLeaseMs / 3)));
+      this.#leaseHeartbeat.unref();
     } catch (error) {
       database?.close();
       OPEN_DATABASES.delete(this.#databaseKey);
@@ -76,6 +92,9 @@ export class SqliteStore
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    if (this.#leaseHeartbeat) clearInterval(this.#leaseHeartbeat);
+    this.#leaseHeartbeat = undefined;
+    try { this.#retireOwner(); } catch { /* Closing still releases the local handle. Expiry remains the crash fallback. */ }
     this.lock();
     this.#database.close();
     OPEN_DATABASES.delete(this.#databaseKey);
@@ -89,14 +108,17 @@ export class SqliteStore
         .get(draft.runId);
       const previous = optionalRow(previousRow);
       const sequence = previous ? readNumber(previous, "sequence") + 1 : 1;
+      const sessionRow = requiredRow(this.#database.prepare("SELECT COALESCE(MAX(session_sequence), 0) AS sequence FROM events WHERE session_id = ?").get(draft.sessionId));
+      const sessionSequence = readNumber(sessionRow, "sequence") + 1;
       const previousDigest = previous ? readString(previous, "digest") : "0".repeat(64);
       const eventId = createId("event");
       const timestamp = new Date().toISOString();
       const digest = sha256(
         canonicalJson({
-          schemaVersion: 1,
+          schemaVersion: 2,
           eventId,
           sequence,
+          sessionSequence,
           runId: draft.runId,
           sessionId: draft.sessionId,
           correlationId: draft.correlationId,
@@ -108,9 +130,10 @@ export class SqliteStore
         }),
       );
       const event: AgentEvent = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         eventId,
         sequence,
+        sessionSequence,
         runId: draft.runId,
         sessionId: draft.sessionId,
         correlationId: draft.correlationId,
@@ -131,8 +154,8 @@ export class SqliteStore
       this.#database
         .prepare(
           `INSERT INTO events
-           (run_id, sequence, event_id, session_id, correlation_id, causation_id, timestamp, kind, payload_json, previous_digest, digest)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (run_id, sequence, event_id, session_id, correlation_id, causation_id, timestamp, kind, payload_json, previous_digest, digest, schema_version, session_sequence)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?)`,
         )
         .run(
           event.runId,
@@ -146,6 +169,7 @@ export class SqliteStore
           JSON.stringify(event.payload),
           event.previousDigest,
           event.digest,
+          event.sessionSequence ?? 0,
         );
       if (event.kind === "run.completed" || event.kind === "run.failed" || event.kind === "run.cancelled") {
         const status = event.kind.slice("run.".length);
@@ -159,7 +183,7 @@ export class SqliteStore
   async verifyRun(runId: string): Promise<boolean> {
     const rows = this.#database
       .prepare(
-        `SELECT sequence, event_id, session_id, correlation_id, causation_id, timestamp, kind, payload_json, previous_digest, digest
+        `SELECT sequence, event_id, session_id, correlation_id, causation_id, timestamp, kind, payload_json, previous_digest, digest, schema_version, session_sequence
          FROM events WHERE run_id = ? ORDER BY sequence`,
       )
       .all(runId);
@@ -170,10 +194,12 @@ export class SqliteStore
       const sequence = readNumber(row, "sequence");
       if (sequence !== expectedSequence || readString(row, "previous_digest") !== previousDigest) return false;
       const payload = parseRecord(readString(row, "payload_json"));
+      const schemaVersion = readNumber(row, "schema_version");
       const eventShape = {
-        schemaVersion: 1,
+        schemaVersion,
         eventId: readString(row, "event_id"),
         sequence,
+        ...(schemaVersion === 2 ? { sessionSequence: readNumber(row, "session_sequence") } : {}),
         runId,
         sessionId: readString(row, "session_id"),
         correlationId: readString(row, "correlation_id"),
@@ -189,6 +215,202 @@ export class SqliteStore
       expectedSequence += 1;
     }
     return rows.length > 0;
+  }
+
+  async listSessionEvents(sessionId: string, afterSessionSequence = 0): Promise<readonly AgentEvent[]> {
+    if (!Number.isSafeInteger(afterSessionSequence) || afterSessionSequence < 0) throw new AlphionError("validation", "Event replay cursor must be a non-negative safe integer.", { stage: "events" });
+    const rows = this.#database.prepare(
+      `SELECT run_id, sequence, event_id, session_id, correlation_id, causation_id, timestamp, kind, payload_json, previous_digest, digest, schema_version, session_sequence
+       FROM events WHERE session_id = ? AND (session_sequence IS NULL OR session_sequence > ?) ORDER BY COALESCE(session_sequence, 0), timestamp, run_id, sequence`,
+    ).all(sessionId, afterSessionSequence).map(requiredRow);
+    return Object.freeze(rows.map(decodeAgentEvent));
+  }
+
+  async createSession(input: Readonly<{ title: string; providerId?: string; idempotencyKey: string }>): Promise<AgentSessionRecord> {
+    return this.#transaction(() => {
+      validateIdempotencyKey(input.idempotencyKey);
+      const replay = optionalRow(this.#database.prepare("SELECT result_json FROM session_commands WHERE idempotency_key = ?").get(input.idempotencyKey));
+      if (replay) return decodeSession(requiredRow(JSON.parse(readString(replay, "result_json"))));
+      const id = createId("session");
+      const now = new Date().toISOString();
+      this.#database.prepare(
+        "INSERT INTO sessions (id, title, current_leaf_id, revision, status, active_run_id, provider_id, created_at, updated_at, audit_only) VALUES (?, ?, NULL, 0, 'idle', NULL, ?, ?, ?, 0)",
+      ).run(id, input.title.trim() || "新会话", input.providerId ?? null, now, now);
+      const session = this.#requireSession(id);
+      this.#recordSessionCommand(input.idempotencyKey, id, session);
+      return session;
+    });
+  }
+
+  async listSessions(): Promise<readonly AgentSessionRecord[]> {
+    return this.#database.prepare("SELECT * FROM sessions ORDER BY updated_at DESC, id").all().map((row) => decodeSession(requiredRow(row)));
+  }
+
+  async getSession(sessionId: string): Promise<AgentSessionRecord | undefined> {
+    const row = optionalRow(this.#database.prepare("SELECT * FROM sessions WHERE id = ?").get(sessionId));
+    return row ? decodeSession(row) : undefined;
+  }
+
+  async getSessionView(sessionId: string): Promise<SessionView | undefined> {
+    const session = await this.getSession(sessionId);
+    if (!session) return undefined;
+    const reversed: SessionEntry[] = [];
+    let entryId = session.currentLeafId;
+    const seen = new Set<string>();
+    while (entryId) {
+      if (seen.has(entryId)) throw new AlphionError("integrity-failed", "Session entry tree contains a cycle.", { stage: "database" });
+      seen.add(entryId);
+      const row = optionalRow(this.#database.prepare("SELECT * FROM session_entries WHERE id = ? AND session_id = ?").get(entryId, sessionId));
+      if (!row) throw new AlphionError("integrity-failed", "Session leaf references a missing entry.", { stage: "database" });
+      const entry = decodeSessionEntry(row);
+      reversed.push(entry);
+      entryId = entry.parentId;
+    }
+    return { session, entries: Object.freeze(reversed.reverse()) };
+  }
+
+  async appendSessionEntry(sessionId: string, message: AgentMessage, options: SessionWriteOptions, runId?: string): Promise<SessionWriteReceipt> {
+    return this.#transaction(() => {
+      const replay = this.#replayedReceipt(options.idempotencyKey, sessionId);
+      if (replay) return replay;
+      const session = this.#requireSession(sessionId);
+      this.#assertRevision(session, options.expectedRevision);
+      if (session.auditOnly) throw new AlphionError("forbidden", "Legacy audit sessions are read-only.", { stage: "session" });
+      validateAgentMessage(message);
+      const id = createId("entry");
+      const timestamp = new Date().toISOString();
+      this.#database.prepare(
+        "INSERT INTO session_entries (id, parent_id, session_id, run_id, timestamp, message_json) VALUES (?, ?, ?, ?, ?, ?)",
+      ).run(id, session.currentLeafId ?? null, sessionId, runId ?? null, timestamp, canonicalJson(message));
+      const revision = session.revision + 1;
+      this.#database.prepare("UPDATE sessions SET current_leaf_id = ?, revision = ?, updated_at = ? WHERE id = ?").run(id, revision, timestamp, sessionId);
+      const receipt: SessionWriteReceipt = { sessionId, revision, entryId: id, replayed: false };
+      this.#recordSessionCommand(options.idempotencyKey, sessionId, receipt);
+      return receipt;
+    });
+  }
+
+  async beginSessionRun(sessionId: string, runId: string, message: Extract<AgentMessage, { readonly kind: "user" }>, options: SessionWriteOptions): Promise<Readonly<{ receipt: SessionWriteReceipt; session: AgentSessionRecord }>> {
+    return this.#transaction(() => {
+      this.#recoverExpiredLeases();
+      const replay = this.#replayedReceipt(options.idempotencyKey, sessionId);
+      if (replay) return Object.freeze({ receipt: replay, session: this.#requireSession(sessionId) });
+      const session = this.#requireSession(sessionId);
+      this.#assertRevision(session, options.expectedRevision);
+      if (session.auditOnly) throw new AlphionError("forbidden", "Legacy audit sessions are read-only.", { stage: "session" });
+      if (session.status !== "idle" || session.activeRunId) throw new AlphionError("conflict", "A run is already active for this session.", { stage: "session" });
+      validateAgentMessage(message);
+      const entryId = createId("entry");
+      const now = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + this.#runLeaseMs).toISOString();
+      this.#database.prepare("INSERT INTO session_entries (id, parent_id, session_id, run_id, timestamp, message_json) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(entryId, session.currentLeafId ?? null, sessionId, runId, now, canonicalJson(message));
+      const revision = session.revision + 1;
+      this.#database.prepare("UPDATE sessions SET current_leaf_id = ?, status = 'running', active_run_id = ?, lease_owner = ?, lease_expires_at = ?, revision = ?, updated_at = ? WHERE id = ?")
+        .run(entryId, runId, this.#ownerId, expiresAt, revision, now, sessionId);
+      const receipt: SessionWriteReceipt = { sessionId, revision, entryId, replayed: false };
+      this.#recordSessionCommand(options.idempotencyKey, sessionId, receipt);
+      return Object.freeze({ receipt, session: this.#requireSession(sessionId) });
+    });
+  }
+
+  async checkoutSession(sessionId: string, entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt> {
+    return this.#transaction(() => {
+      const replay = this.#replayedReceipt(options.idempotencyKey, sessionId);
+      if (replay) return replay;
+      const session = this.#requireSession(sessionId);
+      this.#assertRevision(session, options.expectedRevision);
+      if (session.status === "running" || session.auditOnly) throw new AlphionError("conflict", "This session cannot be checked out now.", { stage: "session" });
+      if (entryId && !this.#database.prepare("SELECT 1 FROM session_entries WHERE id = ? AND session_id = ?").get(entryId, sessionId)) {
+        throw new AlphionError("validation", "Checkout entry does not belong to the session.", { stage: "session" });
+      }
+      const revision = session.revision + 1;
+      const now = new Date().toISOString();
+      this.#database.prepare("UPDATE sessions SET current_leaf_id = ?, revision = ?, updated_at = ? WHERE id = ?").run(entryId ?? null, revision, now, sessionId);
+      const receipt: SessionWriteReceipt = { sessionId, revision, ...(entryId ? { entryId } : {}), replayed: false };
+      this.#recordSessionCommand(options.idempotencyKey, sessionId, receipt);
+      return receipt;
+    });
+  }
+
+  async enqueuePending(sessionId: string, kind: PendingMessageKind, message: Extract<AgentMessage, { readonly kind: "user" }>, options: SessionWriteOptions): Promise<SessionWriteReceipt> {
+    return this.#transaction(() => {
+      const replay = this.#replayedReceipt(options.idempotencyKey, sessionId);
+      if (replay) return replay;
+      const session = this.#requireSession(sessionId);
+      this.#assertRevision(session, options.expectedRevision);
+      if (session.auditOnly) throw new AlphionError("forbidden", "Legacy audit sessions are read-only.", { stage: "session" });
+      if (kind === "steer" && session.status !== "running") throw new AlphionError("conflict", "Steering requires an active run.", { stage: "session" });
+      validateAgentMessage(message);
+      const countRow = requiredRow(this.#database.prepare("SELECT COUNT(*) AS count FROM pending_messages WHERE session_id = ? AND kind = ?").get(sessionId, kind));
+      if (readNumber(countRow, "count") >= 64) throw new AlphionError("budget-exceeded", `${kind} queue is full.`, { stage: "session" });
+      const id = createId("pending");
+      const now = new Date().toISOString();
+      this.#database.prepare("INSERT INTO pending_messages (id, session_id, kind, message_json, idempotency_key, created_at, claimed_run_id, claimed_at, claim_owner) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)")
+        .run(id, sessionId, kind, canonicalJson(message), options.idempotencyKey, now);
+      const revision = session.revision + 1;
+      this.#database.prepare("UPDATE sessions SET revision = ?, updated_at = ? WHERE id = ?").run(revision, now, sessionId);
+      const receipt: SessionWriteReceipt = { sessionId, revision, pendingMessageId: id, replayed: false };
+      this.#recordSessionCommand(options.idempotencyKey, sessionId, receipt);
+      return receipt;
+    });
+  }
+
+  async drainPending(sessionId: string, kind: PendingMessageKind, runId: string): Promise<readonly PendingSessionMessage[]> {
+    return this.#transaction(() => {
+      this.#recoverExpiredLeases();
+      this.#requireSession(sessionId);
+      const rows = this.#database.prepare("SELECT * FROM pending_messages WHERE session_id = ? AND kind = ? AND claimed_run_id IS NULL ORDER BY created_at, id").all(sessionId, kind).map(requiredRow);
+      if (rows.length === 0) return [];
+      const ids = rows.map((row) => readString(row, "id"));
+      const now = new Date().toISOString();
+      const update = this.#database.prepare("UPDATE pending_messages SET claimed_run_id = ?, claimed_at = ?, claim_owner = ? WHERE id = ? AND claimed_run_id IS NULL");
+      for (const id of ids) update.run(runId, now, this.#ownerId, id);
+      return Object.freeze(rows.map(decodePendingMessage));
+    });
+  }
+
+  async acknowledgePending(sessionId: string, kind: PendingMessageKind, runId: string, pendingIds: readonly string[]): Promise<void> {
+    this.#transaction(() => {
+      this.#requireSession(sessionId);
+      const remove = this.#database.prepare("DELETE FROM pending_messages WHERE id = ? AND session_id = ? AND kind = ? AND claimed_run_id = ?");
+      for (const id of pendingIds) {
+        const result = remove.run(id, sessionId, kind, runId);
+        if (Number(result.changes) !== 1) throw new AlphionError("conflict", "Pending-message claim is no longer owned by this run.", { stage: "session" });
+      }
+    });
+  }
+
+  async releasePendingClaims(sessionId: string, kind: PendingMessageKind, runId: string): Promise<void> {
+    this.#transaction(() => {
+      this.#requireSession(sessionId);
+      this.#database.prepare("UPDATE pending_messages SET claimed_run_id = NULL, claimed_at = NULL, claim_owner = NULL WHERE session_id = ? AND kind = ? AND claimed_run_id = ?").run(sessionId, kind, runId);
+    });
+  }
+
+  async acquireRunLease(sessionId: string, runId: string, expectedRevision: number): Promise<AgentSessionRecord> {
+    return this.#transaction(() => {
+      this.#recoverExpiredLeases();
+      const session = this.#requireSession(sessionId);
+      this.#assertRevision(session, expectedRevision);
+      if (session.status !== "idle" || session.activeRunId) throw new AlphionError("conflict", "A run is already active for this session.", { stage: "session" });
+      const now = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + this.#runLeaseMs).toISOString();
+      this.#database.prepare("UPDATE sessions SET status = 'running', active_run_id = ?, lease_owner = ?, lease_expires_at = ?, revision = ?, updated_at = ? WHERE id = ?")
+        .run(runId, this.#ownerId, expiresAt, session.revision + 1, now, sessionId);
+      return this.#requireSession(sessionId);
+    });
+  }
+
+  async releaseRunLease(sessionId: string, runId: string): Promise<AgentSessionRecord> {
+    return this.#transaction(() => {
+      const session = this.#requireSession(sessionId);
+      if (session.activeRunId !== runId) throw new AlphionError("conflict", "Run lease does not match the active run.", { stage: "session" });
+      const now = new Date().toISOString();
+      this.#database.prepare("UPDATE sessions SET status = 'idle', active_run_id = NULL, lease_owner = NULL, lease_expires_at = NULL, revision = ?, updated_at = ? WHERE id = ?")
+        .run(session.revision + 1, now, sessionId);
+      return this.#requireSession(sessionId);
+    });
   }
 
   async upsertProfile(
@@ -737,7 +959,15 @@ export class SqliteStore
     }
     if (current === SCHEMA_VERSION) return;
     if (current === 0) {
-      this.#transaction(() => this.#createSchemaV2());
+      this.#transaction(() => {
+        this.#createSchemaV2();
+        this.#createSessionSchemaV3();
+      });
+      return;
+    }
+    if (current === 2) {
+      this.#backupV2();
+      this.#transaction(() => this.#createSessionSchemaV3());
       return;
     }
     if (current !== 1) {
@@ -780,6 +1010,7 @@ export class SqliteStore
       this.#database.exec("DROP TABLE provider_profiles_v1");
       this.#createVaultTables();
       this.#database.exec("PRAGMA user_version = 2");
+      this.#createSessionSchemaV3();
     });
   }
 
@@ -837,6 +1068,150 @@ export class SqliteStore
     this.#database.exec("PRAGMA user_version = 2");
   }
 
+  #backupV2(): void {
+    if (this.#databasePath === ":memory:") return;
+    const backupPath = `${this.#databasePath}.v2-backup`;
+    const sourceDigest = logicalDatabaseDigest(this.#database);
+    if (existsSync(backupPath)) {
+      const existing = new DatabaseSync(backupPath, { readOnly: true });
+      try {
+        assertDatabaseHealthy(existing, "Existing v2 backup failed its integrity check.");
+        const row = requiredRow(existing.prepare("PRAGMA user_version").get());
+        if (readNumber(row, "user_version") !== 2) throw new AlphionError("conflict", "Existing v2 backup is not a schema-v2 database.", { stage: "database" });
+        if (logicalDatabaseDigest(existing) !== sourceDigest) throw new AlphionError("conflict", "Existing v2 backup does not match the database being migrated.", { stage: "database" });
+      } finally {
+        existing.close();
+      }
+      return;
+    }
+    this.#database.exec("PRAGMA wal_checkpoint(FULL)");
+    this.#database.exec(`VACUUM INTO '${backupPath.replaceAll("'", "''")}'`);
+    const backup = new DatabaseSync(backupPath, { readOnly: true });
+    try {
+      assertDatabaseHealthy(backup, "Created v2 backup failed its integrity check.");
+      const version = readNumber(requiredRow(backup.prepare("PRAGMA user_version").get()), "user_version");
+      if (version !== 2 || logicalDatabaseDigest(backup) !== sourceDigest) throw new AlphionError("integrity-failed", "Created v2 backup is not a recoverable logical snapshot.", { stage: "database" });
+    } finally { backup.close(); }
+  }
+
+  #createSessionSchemaV3(): void {
+    this.#database.exec(`
+      ALTER TABLE events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE events ADD COLUMN session_sequence INTEGER;
+      CREATE UNIQUE INDEX events_session_sequence ON events(session_id, session_sequence) WHERE session_sequence IS NOT NULL;
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        current_leaf_id TEXT,
+        revision INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('idle', 'running', 'legacy-audit')),
+        active_run_id TEXT,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        provider_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        audit_only INTEGER NOT NULL CHECK (audit_only IN (0, 1))
+      );
+      CREATE TABLE session_entries (
+        id TEXT PRIMARY KEY,
+        parent_id TEXT REFERENCES session_entries(id),
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        run_id TEXT,
+        timestamp TEXT NOT NULL,
+        message_json TEXT NOT NULL
+      );
+      CREATE INDEX session_entries_session ON session_entries(session_id, timestamp, id);
+      CREATE TABLE pending_messages (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('steer', 'follow-up')),
+        message_json TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        claimed_run_id TEXT
+        ,claimed_at TEXT
+        ,claim_owner TEXT
+      );
+      CREATE INDEX pending_messages_fifo ON pending_messages(session_id, kind, created_at, id);
+      CREATE TABLE session_commands (
+        idempotency_key TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE session_owners (
+        owner_id TEXT PRIMARY KEY,
+        expires_at TEXT NOT NULL
+      );
+      INSERT INTO sessions (id, title, current_leaf_id, revision, status, active_run_id, provider_id, created_at, updated_at, audit_only)
+      SELECT DISTINCT session_id, '旧版审计 ' || substr(session_id, 1, 12), NULL, 0, 'legacy-audit', NULL, NULL,
+        MIN(timestamp), MAX(timestamp), 1 FROM events GROUP BY session_id;
+      PRAGMA user_version = 3;
+    `);
+  }
+
+  #reconcileSessionSchemaV3(): void {
+    const sessionColumns = tableColumns(this.#database, "sessions");
+    const pendingColumns = tableColumns(this.#database, "pending_messages");
+    this.#transaction(() => {
+      if (!sessionColumns.has("lease_owner")) this.#database.exec("ALTER TABLE sessions ADD COLUMN lease_owner TEXT");
+      if (!sessionColumns.has("lease_expires_at")) this.#database.exec("ALTER TABLE sessions ADD COLUMN lease_expires_at TEXT");
+      if (!pendingColumns.has("claimed_at")) this.#database.exec("ALTER TABLE pending_messages ADD COLUMN claimed_at TEXT");
+      if (!pendingColumns.has("claim_owner")) this.#database.exec("ALTER TABLE pending_messages ADD COLUMN claim_owner TEXT");
+      this.#database.exec("CREATE TABLE IF NOT EXISTS session_owners (owner_id TEXT PRIMARY KEY, expires_at TEXT NOT NULL)");
+    });
+  }
+
+  #registerOwnerAndRecover(): void {
+    this.#transaction(() => {
+      const expiresAt = new Date(Date.now() + this.#runLeaseMs).toISOString();
+      this.#database.prepare("INSERT INTO session_owners (owner_id, expires_at) VALUES (?, ?) ON CONFLICT(owner_id) DO UPDATE SET expires_at = excluded.expires_at").run(this.#ownerId, expiresAt);
+      this.#recoverExpiredLeases();
+    });
+  }
+
+  #heartbeatOwner(): void {
+    if (this.#closed) return;
+    try {
+      this.#transaction(() => {
+        const expiresAt = new Date(Date.now() + this.#runLeaseMs).toISOString();
+        this.#database.prepare("UPDATE session_owners SET expires_at = ? WHERE owner_id = ?").run(expiresAt, this.#ownerId);
+        this.#database.prepare("UPDATE sessions SET lease_expires_at = ? WHERE lease_owner = ? AND status = 'running'").run(expiresAt, this.#ownerId);
+      });
+    } catch { /* A busy peer cannot make an existing bounded lease immortal. */ }
+  }
+
+  #retireOwner(): void {
+    this.#transaction(() => {
+      const now = new Date().toISOString();
+      this.#database.prepare("UPDATE pending_messages SET claimed_run_id = NULL, claimed_at = NULL, claim_owner = NULL WHERE claim_owner = ?").run(this.#ownerId);
+      this.#database.prepare("UPDATE sessions SET status = 'idle', active_run_id = NULL, lease_owner = NULL, lease_expires_at = NULL, revision = revision + 1, updated_at = ? WHERE lease_owner = ? AND status = 'running'").run(now, this.#ownerId);
+      this.#database.prepare("DELETE FROM session_owners WHERE owner_id = ?").run(this.#ownerId);
+    });
+  }
+
+  #recoverExpiredLeases(): void {
+    const now = new Date().toISOString();
+    this.#database.prepare("DELETE FROM session_owners WHERE expires_at <= ?").run(now);
+    this.#database.prepare(`
+      UPDATE sessions SET status = 'idle', active_run_id = NULL, lease_owner = NULL, lease_expires_at = NULL,
+        revision = revision + 1, updated_at = ?
+      WHERE status = 'running' AND (
+        active_run_id IS NULL OR lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ? OR
+        lease_owner NOT IN (SELECT owner_id FROM session_owners)
+      )
+    `).run(now, now);
+    this.#database.prepare(`
+      UPDATE pending_messages SET claimed_run_id = NULL, claimed_at = NULL, claim_owner = NULL
+      WHERE claimed_run_id IS NOT NULL AND (
+        claimed_at IS NULL OR claim_owner IS NULL OR
+        claim_owner NOT IN (SELECT owner_id FROM session_owners) OR
+        NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.id = pending_messages.session_id AND sessions.active_run_id = pending_messages.claimed_run_id AND sessions.status = 'running')
+      )
+    `).run();
+  }
+
   #createProviderProfilesV2(): void {
     this.#database.exec(`
         CREATE TABLE provider_profiles (
@@ -888,6 +1263,35 @@ export class SqliteStore
     `);
   }
 
+  #requireSession(sessionId: string): AgentSessionRecord {
+    const row = optionalRow(this.#database.prepare("SELECT * FROM sessions WHERE id = ?").get(sessionId));
+    if (!row) throw new AlphionError("validation", `Unknown session: ${sessionId}`, { stage: "session" });
+    return decodeSession(row);
+  }
+
+  #assertRevision(session: AgentSessionRecord, expectedRevision: number): void {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new AlphionError("validation", "Expected revision must be a non-negative safe integer.", { stage: "session" });
+    if (session.revision !== expectedRevision) throw new AlphionError("conflict", `Session revision changed; expected ${expectedRevision}, current ${session.revision}.`, { stage: "session" });
+  }
+
+  #recordSessionCommand(idempotencyKey: string, sessionId: string, result: unknown): void {
+    validateIdempotencyKey(idempotencyKey);
+    this.#database.prepare("INSERT INTO session_commands (idempotency_key, session_id, result_json, created_at) VALUES (?, ?, ?, ?)")
+      .run(idempotencyKey, sessionId, canonicalJson(result), new Date().toISOString());
+  }
+
+  #replayedReceipt(idempotencyKey: string, sessionId: string): SessionWriteReceipt | undefined {
+    validateIdempotencyKey(idempotencyKey);
+    const row = optionalRow(this.#database.prepare("SELECT session_id, result_json FROM session_commands WHERE idempotency_key = ?").get(idempotencyKey));
+    if (!row) return undefined;
+    if (readString(row, "session_id") !== sessionId) throw new AlphionError("conflict", "Idempotency key belongs to another session.", { stage: "session" });
+    const result = requiredRow(JSON.parse(readString(row, "result_json")));
+    const revision = readNumber(result, "revision");
+    const entryId = readNullableString(result, "entryId");
+    const pendingMessageId = readNullableString(result, "pendingMessageId");
+    return { sessionId, revision, ...(entryId ? { entryId } : {}), ...(pendingMessageId ? { pendingMessageId } : {}), replayed: true };
+  }
+
   #assertIntegrity(): void {
     const rows = this.#database.prepare("PRAGMA quick_check").all();
     const valid = rows.length === 1 && Object.values(requiredRow(rows[0]))[0] === "ok";
@@ -919,6 +1323,33 @@ export class SqliteStore
       this.#database.prepare("DELETE FROM cache_entries WHERE rowid IN (SELECT rowid FROM cache_entries ORDER BY last_accessed_at LIMIT 32)").run();
     }
   }
+}
+
+function tableColumns(database: DatabaseSync, table: string): Set<string> {
+  return new Set(database.prepare(`PRAGMA table_info('${table.replaceAll("'", "''")}')`).all().map((row) => readString(requiredRow(row), "name")));
+}
+
+function assertDatabaseHealthy(database: DatabaseSync, message: string): void {
+  const rows = database.prepare("PRAGMA quick_check").all();
+  if (rows.length !== 1 || Object.values(requiredRow(rows[0]))[0] !== "ok") throw new AlphionError("integrity-failed", message, { stage: "database" });
+}
+
+function logicalDatabaseDigest(database: DatabaseSync): string {
+  const schema = database.prepare("SELECT name, type, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all().map(requiredRow);
+  const tables = schema.filter((row) => readString(row, "type") === "table").map((row) => readString(row, "name"));
+  const content = tables.map((table) => {
+    const quoted = `"${table.replaceAll('"', '""')}"`;
+    const rows = database.prepare(`SELECT * FROM ${quoted} ORDER BY rowid`).all().map((row) => Object.fromEntries(Object.entries(requiredRow(row)).map(([key, value]) => [key, encodeSqlValue(value)])));
+    return { table, rows };
+  });
+  return sha256(canonicalJson({ schema: schema.map((row) => ({ name: row.name, type: row.type, sql: row.sql })), content }));
+}
+
+function encodeSqlValue(value: unknown): string | number | null {
+  if (value === null || typeof value === "string" || typeof value === "number") return value;
+  if (typeof value === "bigint") return `bigint:${value.toString()}`;
+  if (value instanceof Uint8Array) return `blob:${Buffer.from(value).toString("hex")}`;
+  throw new AlphionError("integrity-failed", "SQLite backup contains an unsupported value.", { stage: "database" });
 }
 
 function validateProviderProfile(
@@ -1047,6 +1478,74 @@ function decodeShellRule(row: Readonly<Record<string, unknown>>): ShellRule {
     argumentPrefix: argumentsValue,
     enabled: readNumber(row, "enabled") === 1,
   };
+}
+
+function decodeSession(row: Readonly<Record<string, unknown>>): AgentSessionRecord {
+  const status = readString(row, "status");
+  if (status !== "idle" && status !== "running" && status !== "legacy-audit") throw new AlphionError("integrity-failed", "Stored session status is invalid.", { stage: "database" });
+  const currentLeafId = readNullableString(row, "current_leaf_id");
+  const activeRunId = readNullableString(row, "active_run_id");
+  const providerId = readNullableString(row, "provider_id");
+  return {
+    schemaVersion: 1,
+    id: readString(row, "id"),
+    title: readString(row, "title"),
+    ...(currentLeafId ? { currentLeafId } : {}),
+    revision: readNumber(row, "revision"),
+    status,
+    ...(activeRunId ? { activeRunId } : {}),
+    ...(providerId ? { providerId } : {}),
+    createdAt: readString(row, "created_at"),
+    updatedAt: readString(row, "updated_at"),
+    auditOnly: readNumber(row, "audit_only") === 1,
+  };
+}
+
+function decodeSessionEntry(row: Readonly<Record<string, unknown>>): SessionEntry {
+  const parentId = readNullableString(row, "parent_id");
+  const runId = readNullableString(row, "run_id");
+  const message = parseAgentMessage(readString(row, "message_json"));
+  return { schemaVersion: 1, id: readString(row, "id"), ...(parentId ? { parentId } : {}), sessionId: readString(row, "session_id"), ...(runId ? { runId } : {}), timestamp: readString(row, "timestamp"), message };
+}
+
+function decodePendingMessage(row: Readonly<Record<string, unknown>>): PendingSessionMessage {
+  const kind = readString(row, "kind");
+  if (kind !== "steer" && kind !== "follow-up") throw new AlphionError("integrity-failed", "Stored pending-message kind is invalid.", { stage: "database" });
+  const message = parseAgentMessage(readString(row, "message_json"));
+  if (message.kind !== "user") throw new AlphionError("integrity-failed", "Pending session message must be a user message.", { stage: "database" });
+  return { id: readString(row, "id"), sessionId: readString(row, "session_id"), kind, message, idempotencyKey: readString(row, "idempotency_key"), createdAt: readString(row, "created_at") };
+}
+
+function decodeAgentEvent(row: Readonly<Record<string, unknown>>): AgentEvent {
+  const schemaVersion = readNumber(row, "schema_version");
+  if (schemaVersion !== 1 && schemaVersion !== 2) throw new AlphionError("integrity-failed", `Unsupported stored event schema ${schemaVersion}.`, { stage: "events" });
+  const kind = readString(row, "kind") as AgentEvent["kind"];
+  const causationId = readNullableString(row, "causation_id");
+  const sessionSequence = row.session_sequence === null || row.session_sequence === undefined ? undefined : readNumber(row, "session_sequence");
+  if (schemaVersion === 2 && (!sessionSequence || sessionSequence < 1)) throw new AlphionError("integrity-failed", "Schema-v2 event is missing its session sequence.", { stage: "events" });
+  return { schemaVersion, eventId: readString(row, "event_id"), sequence: readNumber(row, "sequence"), ...(sessionSequence ? { sessionSequence } : {}), runId: readString(row, "run_id"), sessionId: readString(row, "session_id"), correlationId: readString(row, "correlation_id"), ...(causationId ? { causationId } : {}), timestamp: readString(row, "timestamp"), kind, payload: parseRecord(readString(row, "payload_json")), previousDigest: readString(row, "previous_digest"), digest: readString(row, "digest") };
+}
+
+function parseAgentMessage(value: string): AgentMessage {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch (error) { throw new AlphionError("integrity-failed", "Stored Agent message JSON is invalid.", { stage: "database", cause: error }); }
+  validateAgentMessage(parsed);
+  return parsed;
+}
+
+function validateAgentMessage(message: unknown): asserts message is AgentMessage {
+  if (!message || typeof message !== "object" || Array.isArray(message)) throw new AlphionError("validation", "Agent message must be an object.", { stage: "session" });
+  const value = message as Readonly<Record<string, unknown>>;
+  const kinds = ["user", "assistant", "tool-call", "observation", "memory", "system-event", "human-approval", "agent", "workflow"];
+  if (value.schemaVersion !== 1 || typeof value.id !== "string" || value.id.length === 0 || typeof value.createdAt !== "string" || !kinds.includes(String(value.kind))) {
+    throw new AlphionError("validation", "Agent message envelope is invalid.", { stage: "session" });
+  }
+  if (typeof value.content !== "string" && value.kind !== "tool-call") throw new AlphionError("validation", "Agent message content is invalid.", { stage: "session" });
+  if (containsPotentialSecret(value)) throw new AlphionError("forbidden", "Agent messages cannot contain probable secrets.", { stage: "session" });
+}
+
+function validateIdempotencyKey(value: string): void {
+  if (!/^[A-Za-z0-9._:-]{8,200}$/.test(value)) throw new AlphionError("validation", "Idempotency key must be 8-200 safe characters.", { stage: "session" });
 }
 
 function pathKey(value: string): string {

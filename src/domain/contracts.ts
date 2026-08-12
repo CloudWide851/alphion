@@ -38,7 +38,8 @@ export interface AgentToolCall {
   readonly arguments: Readonly<Record<string, unknown>>;
 }
 
-export type AgentMessage =
+/** Provider-wire conversation shape. Domain session messages never cross this boundary directly. */
+export type ProviderMessage =
   | Readonly<{ readonly role: "system" | "user"; readonly content: string }>
   | Readonly<{
       readonly role: "assistant";
@@ -66,7 +67,7 @@ export interface ProviderToolDefinition {
 }
 
 export interface ProviderRequest {
-  readonly messages: readonly AgentMessage[];
+  readonly messages: readonly ProviderMessage[];
   readonly tools: readonly ProviderToolDefinition[];
   readonly maxOutputTokens: number;
   readonly temperature: number;
@@ -83,6 +84,8 @@ export type ProviderEvent =
 
 export type ToolRisk = "read" | "write" | "process";
 export type ToolCachePolicy = "none" | "content";
+export type ToolExecutionMode = "serial" | "parallel-safe";
+export type ToolSideEffect = "none" | "read" | "write" | "process";
 
 export interface ToolContract {
   readonly name: string;
@@ -90,6 +93,11 @@ export interface ToolContract {
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly risk: ToolRisk;
   readonly cachePolicy: ToolCachePolicy;
+  readonly executionMode?: ToolExecutionMode;
+  readonly sideEffect?: ToolSideEffect;
+  readonly idempotent?: boolean;
+  readonly approval?: "never" | "policy" | "always";
+  readonly timeoutMs?: number;
 }
 
 export interface EvidenceRef {
@@ -250,6 +258,7 @@ export interface ProviderPreset {
 }
 
 export interface AgentRunRequest {
+  readonly runId?: string;
   readonly prompt: string;
   readonly projectRoot: string;
   readonly projectRevision: string;
@@ -262,8 +271,207 @@ export interface AgentRunRequest {
   readonly workingMemory?: WorkingMemorySnapshot;
 }
 
-export interface AgentApplicationRunRequest extends Omit<AgentRunRequest, "projectRevision"> {
+/** Immutable, session-derived inputs used to assemble one model context. */
+export interface AgentContext {
+  readonly projectRoot: string;
+  readonly projectRevision: string;
+  readonly history: readonly AgentMessage[];
+  readonly environment: AgentEnvironment;
+  readonly harnessPlan: HarnessPlan;
+  readonly recall?: RecallResult;
+}
+
+/** Per-session execution configuration. It is never stored on the shared Agent. */
+export interface RuntimeConfig {
   readonly providerId?: string;
+  readonly budgets?: Partial<AgentBudgets>;
+  readonly cacheResponses?: boolean;
+}
+
+/** Mutable state owned by exactly one active run. */
+export interface RuntimeState {
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly phase: WorkingMemorySnapshot["phase"];
+  readonly turns: number;
+  readonly toolCalls: number;
+  readonly mutationRevision: number;
+}
+
+export interface AgentMessageBase {
+  readonly id: string;
+  readonly createdAt: string;
+}
+
+/** Versioned, provider-independent messages persisted in session branches. */
+export type AgentMessage =
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "user"; readonly content: string }>
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "assistant"; readonly content: string; readonly evidenceIds?: readonly string[] }>
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "tool-call"; readonly call: AgentToolCall }>
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "observation"; readonly toolCallId: string; readonly toolName: string; readonly content: string; readonly evidence?: EvidenceRef; readonly isError: boolean }>
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "memory"; readonly content: string; readonly sourceEntryIds: readonly string[]; readonly digest: string }>
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "system-event"; readonly eventKind: string; readonly content: string }>
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "human-approval"; readonly requestId: string; readonly approved: boolean; readonly content: string }>
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "agent"; readonly agentId: string; readonly content: string }>
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "workflow"; readonly state: string; readonly content: string }>;
+
+export type SessionStatus = "idle" | "running" | "legacy-audit";
+
+export interface AgentSessionRecord {
+  readonly schemaVersion: 1;
+  readonly id: string;
+  readonly title: string;
+  readonly currentLeafId?: string;
+  readonly revision: number;
+  readonly status: SessionStatus;
+  readonly activeRunId?: string;
+  readonly providerId?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly auditOnly: boolean;
+}
+
+export interface SessionEntry {
+  readonly schemaVersion: 1;
+  readonly id: string;
+  readonly parentId?: string;
+  readonly sessionId: string;
+  readonly runId?: string;
+  readonly timestamp: string;
+  readonly message: AgentMessage;
+}
+
+export interface SessionView {
+  readonly session: AgentSessionRecord;
+  readonly entries: readonly SessionEntry[];
+}
+
+export type PendingMessageKind = "steer" | "follow-up";
+
+export interface PendingSessionMessage {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly kind: PendingMessageKind;
+  readonly message: Extract<AgentMessage, { readonly kind: "user" }>;
+  readonly idempotencyKey: string;
+  readonly createdAt: string;
+}
+
+export interface SessionWriteOptions {
+  readonly expectedRevision: number;
+  readonly idempotencyKey: string;
+}
+
+export interface SessionWriteReceipt {
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly entryId?: string;
+  readonly pendingMessageId?: string;
+  readonly replayed: boolean;
+}
+
+export type ResourceKind = "extension" | "skill" | "prompt" | "theme" | "context";
+
+export interface AgentResource {
+  readonly id: string;
+  readonly kind: ResourceKind;
+  readonly source: string;
+  readonly content: string;
+  readonly digest: string;
+}
+
+export interface ResourceLoadRequest {
+  readonly projectRoot: string;
+  readonly disabledIds?: readonly string[];
+  readonly additionalSafePaths?: readonly string[];
+  readonly overrides?: Readonly<Record<string, string>>;
+  readonly maxResources?: number;
+  readonly maxBytes?: number;
+}
+
+export interface ResourceLoadResult {
+  readonly resources: readonly AgentResource[];
+  readonly diagnostics: readonly string[];
+  readonly digest: string;
+}
+
+export interface AgentIdentity {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+}
+
+export interface AgentEnvironment {
+  readonly identity: AgentIdentity;
+  readonly projectRoot: string;
+  readonly projectRevision: string;
+  readonly capabilities: readonly string[];
+  readonly policies: readonly string[];
+  readonly skills: readonly AgentResource[];
+  readonly resources: readonly AgentResource[];
+  readonly systemPrompt: string;
+  readonly digest: string;
+}
+
+export type TaskLabel = "explain" | "diagnose" | "implement" | "verify" | "release";
+
+export interface CapabilityDescriptor {
+  readonly id: string;
+  readonly description: string;
+  readonly taskLabels: readonly TaskLabel[];
+  readonly permissions: readonly string[];
+  readonly defaultBudget: number;
+}
+
+export interface HarnessPlan {
+  readonly schemaVersion: 1;
+  readonly task: TaskLabel;
+  readonly taskLabels: readonly TaskLabel[];
+  readonly risk: "low" | "medium" | "high";
+  readonly capabilities: readonly string[];
+  readonly reasons: readonly string[];
+  readonly permissions: readonly string[];
+  readonly budgets: Readonly<Record<string, number>>;
+  readonly evaluator: string;
+  /** Effective task-scoped restrictions after validation. Never contains widened values. */
+  readonly overlay?: HarnessTaskOverlay;
+  readonly omissions: readonly string[];
+  readonly digest: string;
+}
+
+export interface HarnessTaskOverlay {
+  readonly capabilities?: readonly string[];
+  readonly permissions?: readonly string[];
+  readonly budgets?: Readonly<Record<string, number>>;
+  readonly evaluator?: "acceptance-criteria" | "quality-gate";
+}
+
+export interface RecallItem {
+  readonly source: "codegraph" | "lexical";
+  readonly path: string;
+  readonly excerpt: string;
+  readonly confidence: number;
+  readonly evidence: string;
+}
+
+export interface RecallResult {
+  readonly items: readonly RecallItem[];
+  readonly degraded: boolean;
+  readonly diagnostics: readonly string[];
+}
+
+export interface ModelSelectionRequest {
+  readonly sessionId: string;
+  readonly providerId?: string;
+  readonly requiredCapabilities: readonly (keyof ProviderCapabilities)[];
+}
+
+export interface AgentExecutionRequest extends AgentRunRequest {
+  readonly providerId?: string;
+  readonly history: readonly AgentMessage[];
+  readonly environment: AgentEnvironment;
+  readonly harnessPlan: HarnessPlan;
+  readonly recall?: RecallResult;
 }
 
 export interface VaultStatus {

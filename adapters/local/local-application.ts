@@ -3,35 +3,40 @@ import { access, realpath, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
-import { AgentRuntime } from "../../src/application/agent-runtime.js";
+import { Agent } from "../../src/application/agent.js";
+import { AgentSession } from "../../src/application/agent-session.js";
+import { DefaultSessionManager } from "../../src/application/session-manager.js";
+import { createAgentEnvironment } from "../../src/application/agent-environment.js";
 import { TieredCache } from "../../src/application/cache.js";
-import { assembleContextPack } from "../../src/application/context-pack.js";
 import { AlphionError } from "../../src/application/errors.js";
+import { CapabilityRegistry, planHarness } from "../../src/application/harness.js";
 import { ProviderConfigurationManager } from "../../src/application/provider-configuration.js";
 import { ToolRegistry } from "../../src/application/tool-registry.js";
-import { EMPTY_WORKING_MEMORY } from "../../src/application/working-memory.js";
 import type {
-  AgentApplicationRunRequest,
+  AgentResource,
   DiagnosticCheck,
   DiagnosticReport,
+  HarnessPlan,
+  HarnessTaskOverlay,
   ProviderPreset,
   ProjectProfile,
 } from "../../src/domain/contracts.js";
 import type {
   AgentApplication,
-  AgentProvider,
-  AgentRunHandle,
-  ApprovalPort,
+  AgentContract,
   CacheStats,
   ProviderConfigurationService,
+  SessionManager,
 } from "../../src/ports/index.js";
 import { MemoryLruCache } from "../cache/memory-cache.js";
-import { DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_MODELS, DeepSeekProvider } from "../model/deepseek.js";
-import { OpenAICompatibleProvider } from "../model/openai-compatible.js";
+import { DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_MODELS } from "../model/deepseek.js";
+import { LocalModelResolver } from "../model/local-model-resolver.js";
 import { NodeProjectProfiler } from "../project/project-profiler.js";
 import { projectRevision } from "../project/project-revision.js";
 import { CompositeSecretResolver } from "../secrets/composite-secret.js";
 import { EnvironmentSecretResolver } from "../secrets/environment-secret.js";
+import { LocalResourceLoader } from "../resources/local-resource-loader.js";
+import { ProjectCodeRecall } from "../recall/project-code-recall.js";
 import { SqliteStore } from "../store/sqlite-store.js";
 import { EditTool, GrepTool, ReadTool, ShellTool, WriteTool } from "../tools/index.js";
 
@@ -62,6 +67,8 @@ const LOCAL_PROVIDER_PRESETS: readonly ProviderPreset[] = Object.freeze([
 
 export class LocalAlphionApplication implements AgentApplication {
   readonly configuration: ProviderConfigurationService;
+  readonly agent: AgentContract;
+  readonly sessions: SessionManager;
   readonly #projectRoot: string;
   readonly #store: SqliteStore;
   readonly #secrets: CompositeSecretResolver;
@@ -69,7 +76,16 @@ export class LocalAlphionApplication implements AgentApplication {
   readonly #tools: ToolRegistry;
   readonly #profiler: NodeProjectProfiler;
   readonly #statePath: string;
+  readonly #resources = new LocalResourceLoader();
+  readonly #recall = new ProjectCodeRecall();
+  readonly #models: LocalModelResolver;
+  readonly #capabilities = new CapabilityRegistry([
+    { id: "project.read", description: "Read bounded project context.", taskLabels: ["explain", "diagnose", "implement", "verify", "release"], permissions: ["project:read"], defaultBudget: 20 },
+    { id: "project.write", description: "Modify project files.", taskLabels: ["implement", "release"], permissions: ["project:write"], defaultBudget: 12 },
+    { id: "quality.verify", description: "Run project verification.", taskLabels: ["diagnose", "verify", "release"], permissions: ["process:approved"], defaultBudget: 8 },
+  ]);
   #closed = false;
+  #closePromise: Promise<void> | undefined;
 
   private constructor(projectRoot: string, statePath: string, store: SqliteStore) {
     this.#projectRoot = projectRoot;
@@ -86,6 +102,9 @@ export class LocalAlphionApplication implements AgentApplication {
     ]);
     this.#profiler = new NodeProjectProfiler({ cache: this.#cache });
     this.configuration = new ProviderConfigurationManager(store, store);
+    this.#models = new LocalModelResolver(store, this.#secrets);
+    this.agent = new Agent({ models: this.#models, tools: this.#tools, eventStore: store, cache: this.#cache });
+    this.sessions = new DefaultSessionManager({ store, session: (sessionId) => this.#session(sessionId), assertOpen: () => this.#assertOpen() });
   }
 
   static async open(options: LocalApplicationOptions): Promise<LocalAlphionApplication> {
@@ -94,48 +113,11 @@ export class LocalAlphionApplication implements AgentApplication {
     return new LocalAlphionApplication(projectRoot, statePath, new SqliteStore({ path: statePath }));
   }
 
-  async startRun(request: AgentApplicationRunRequest, approval: ApprovalPort): Promise<AgentRunHandle> {
+  planHarness(prompt: string, overlay?: HarnessTaskOverlay): Promise<HarnessPlan> { this.#assertOpen(); return Promise.resolve(planHarness(prompt, this.#capabilities, overlay)); }
+
+  async loadResources(request: Readonly<{ disabledIds?: readonly string[]; additionalSafePaths?: readonly string[]; overrides?: Readonly<Record<string, string>>; maxResources?: number; maxBytes?: number }> = {}): Promise<readonly AgentResource[]> {
     this.#assertOpen();
-    const profile = request.providerId
-      ? await this.#store.getProfile(request.providerId)
-      : await this.#store.getActiveProfile();
-    if (!profile) {
-      throw new AlphionError(
-        "validation",
-        request.providerId ? `Unknown provider profile: ${request.providerId}` : "No active provider profile is configured.",
-        { stage: "config" },
-      );
-    }
-    const provider: AgentProvider = profile.kind === "deepseek"
-      ? new DeepSeekProvider(profile, this.#secrets)
-      : new OpenAICompatibleProvider(profile, this.#secrets);
-    const projectProfile = request.projectProfile ?? await this.#profiler.inspect({ projectRoot: this.#projectRoot });
-    const workingMemory = request.workingMemory ?? EMPTY_WORKING_MEMORY;
-    const contextPack = request.contextPack ?? assembleContextPack({
-      prompt: request.prompt,
-      projectProfile,
-      workingMemory,
-      ...(request.systemInstructions ? { systemInstructions: request.systemInstructions } : {}),
-    });
-    const runtime = new AgentRuntime({
-      provider,
-      approval,
-      cache: this.#cache,
-      eventStore: this.#store,
-      tools: this.#tools,
-    });
-    return runtime.start({
-      prompt: request.prompt,
-      projectRoot: this.#projectRoot,
-      projectRevision: projectProfile.projectRevision,
-      projectProfile,
-      contextPack,
-      workingMemory,
-      ...(request.sessionId ? { sessionId: request.sessionId } : {}),
-      ...(request.systemInstructions ? { systemInstructions: request.systemInstructions } : {}),
-      ...(request.budgets ? { budgets: request.budgets } : {}),
-      ...(request.cacheResponses !== undefined ? { cacheResponses: request.cacheResponses } : {}),
-    });
+    return (await this.#resources.load({ projectRoot: this.#projectRoot, ...request })).resources;
   }
 
   inspectProject(options: Readonly<{ refresh?: boolean }> = {}): Promise<ProjectProfile> {
@@ -157,14 +139,27 @@ export class LocalAlphionApplication implements AgentApplication {
     return this.#store.stats();
   }
 
-  close(): void {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
-    this.#store.close();
+    this.#closePromise = (async () => {
+      await this.sessions.close();
+      this.#store.close();
+    })();
+    return this.#closePromise;
   }
 
   #assertOpen(): void {
     if (this.#closed) throw new AlphionError("conflict", "Local Alphion application is closed.", { stage: "application" });
+  }
+
+  #session(sessionId: string): AgentSession {
+    return new AgentSession({ sessionId, store: this.#store, agent: this.agent, projectRoot: this.#projectRoot,
+      projectProfile: () => this.#profiler.inspect({ projectRoot: this.#projectRoot }),
+      environment: async (profile) => createAgentEnvironment({ projectRoot: this.#projectRoot, projectRevision: profile.projectRevision, capabilities: this.#capabilities.list().map((item) => item.id), policies: ["default-deny", "approval-for-side-effects"], loaded: await this.#resources.load({ projectRoot: this.#projectRoot }) }),
+      plan: (prompt) => planHarness(prompt, this.#capabilities),
+      models: this.#models,
+      recall: this.#recall });
   }
 }
 
@@ -257,8 +252,8 @@ async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
     const schema = numericCell(database.prepare("PRAGMA user_version").get(), "user_version");
     const integrity = firstCell(database.prepare("PRAGMA quick_check").get()) === "ok";
     if (!integrity) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: "SQLite 完整性检查失败。", remediation: "请备份 .alphion 后按 Runbook 恢复。" })];
-    if (schema > 2) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: `SQLite schema ${schema} 高于当前支持的 2。`, remediation: "请使用兼容版本的 Alphion。" })];
-    if (schema < 2) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "warning", summary: `SQLite schema ${schema} 尚未迁移；doctor 未做修改。`, remediation: "备份后通过正常应用启动执行迁移。" })];
+    if (schema > 3) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: `SQLite schema ${schema} 高于当前支持的 3。`, remediation: "请使用兼容版本的 Alphion。" })];
+    if (schema < 3) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "warning", summary: `SQLite schema ${schema} 尚未迁移至 3；doctor 未做修改。`, remediation: "备份后通过正常应用启动执行迁移。" })];
     const providerCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles").get(), "count");
     const activeCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles WHERE active = 1").get(), "count");
     const vaultCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM vault_metadata").get(), "count");
@@ -266,7 +261,7 @@ async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
       id: "sqlite",
       label: "本地状态",
       status: activeCount > 0 ? "pass" : "warning",
-      summary: `schema 2 完整；Provider ${providerCount} 个，活动 ${activeCount} 个，Vault ${vaultCount > 0 ? "已初始化" : "未初始化"}。`,
+      summary: `schema ${schema} 完整；Provider ${providerCount} 个，活动 ${activeCount} 个，Vault ${vaultCount > 0 ? "已初始化" : "未初始化"}。`,
       ...(activeCount === 0 ? { remediation: "请在工程工作台中配置并激活 Provider。" } : {}),
     })];
   } catch {

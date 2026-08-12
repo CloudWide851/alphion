@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { AgentRuntime } from "../src/application/agent-runtime.js";
+import { AgentLoop } from "../src/application/agent-runtime.js";
 import { SingleFlight, TieredCache } from "../src/application/cache.js";
 import { sha256 } from "../src/application/canonical.js";
 import { BoundedEventChannel } from "../src/application/event-channel.js";
 import { ToolRegistry } from "../src/application/tool-registry.js";
-import type { AgentProvider, ApprovalPort } from "../src/ports/index.js";
-import type { ProviderEvent, ProviderProfile, ProviderRequest } from "../src/domain/contracts.js";
-import type { AgentEvent } from "../src/protocol/events.js";
+import type { AgentProvider, ApprovalPort, ToolExecutor } from "../src/ports/index.js";
+import type { EvidenceRef, ProviderEvent, ProviderProfile, ProviderRequest } from "../src/domain/contracts.js";
+import type { AgentStreamEvent } from "../src/protocol/events.js";
 import { MemoryLruCache } from "../adapters/cache/memory-cache.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
 import { EditTool, GrepTool, ReadTool, ShellTool, WriteTool } from "../adapters/tools/index.js";
@@ -230,7 +230,7 @@ test("Agent runtime grounds a read tool result, persists events, and reuses both
     const store = new SqliteStore({ path: join(directory, "agent.sqlite3") });
     const provider = new ReadThenAnswerProvider();
     const cache = new TieredCache(new MemoryLruCache(), store);
-    const runtime = new AgentRuntime({
+    const runtime = new AgentLoop({
       provider,
       tools: new ToolRegistry([new ReadTool()]),
       eventStore: store,
@@ -244,7 +244,7 @@ test("Agent runtime grounds a read tool result, persists events, and reuses both
     assert.equal(provider.calls, 2);
     assert.equal(await store.verifyRun(first.result.runId), true);
 
-    const coldMemoryRuntime = new AgentRuntime({
+    const coldMemoryRuntime = new AgentLoop({
       provider,
       tools: new ToolRegistry([new ReadTool()]),
       eventStore: store,
@@ -266,7 +266,7 @@ test("Agent runtime grounds a read tool result, persists events, and reuses both
 test("Agent runtime denies a write when approval is unavailable", async () => {
   await withTemporaryDirectory(async (directory) => {
     const store = new SqliteStore({ path: join(directory, "deny.sqlite3") });
-    const runtime = new AgentRuntime({
+    const runtime = new AgentLoop({
       provider: new WriteThenStopProvider(),
       tools: new ToolRegistry([new WriteTool()]),
       eventStore: store,
@@ -288,7 +288,7 @@ test("Agent runtime preserves reasoning for tool continuation but excludes it fr
     await writeFile(join(directory, "fact.txt"), "fact", "utf8");
     const store = new SqliteStore({ path: join(directory, "reasoning.sqlite3") });
     const provider = new ReasoningThenAnswerProvider();
-    const runtime = new AgentRuntime({
+    const runtime = new AgentLoop({
       provider,
       tools: new ToolRegistry([new ReadTool()]),
       eventStore: store,
@@ -298,6 +298,9 @@ test("Agent runtime preserves reasoning for tool continuation but excludes it fr
     assert.equal(collected.result.finalText, "observed answer");
     assert.equal(collected.result.finalText.includes("inspect first"), false);
     assert.ok(collected.events.some((event) => event.kind === "model.reasoning.delta"));
+    assert.equal(collected.events.some((event) => event.kind === "model.reasoning.delta" && !("delivery" in event)), false);
+    const replay = await store.listSessionEvents(collected.result.sessionId);
+    assert.equal(JSON.stringify(replay).includes("inspect first"), false);
     assert.equal(provider.sawReasoningContinuation, true);
     store.close();
   });
@@ -306,14 +309,14 @@ test("Agent runtime preserves reasoning for tool continuation but excludes it fr
 test("Agent runtime propagates caller cancellation to the provider", async () => {
   await withTemporaryDirectory(async (directory) => {
     const store = new SqliteStore({ path: join(directory, "cancel.sqlite3") });
-    const runtime = new AgentRuntime({
+    const runtime = new AgentLoop({
       provider: new WaitingProvider(),
       tools: new ToolRegistry([]),
       eventStore: store,
       approval: alwaysApprove(),
     });
-    const handle = runtime.start({ prompt: "wait", projectRoot: directory, projectRevision: "cancel-revision" });
-    const events: AgentEvent[] = [];
+    const handle = runtime.execute({ prompt: "wait", projectRoot: directory, projectRevision: "cancel-revision" });
+    const events: AgentStreamEvent[] = [];
     const consume = (async () => {
       for await (const event of handle.events) events.push(event);
     })();
@@ -332,7 +335,7 @@ test("Agent response cache identity includes policy, permission, tool, and provi
     const counter = { calls: 0 };
     const provider = new CountingAnswerProvider(PROFILE, counter);
     const makeRuntime = (approvalRevision: string, policyRevision: string, toolDescription: string, selectedProvider = provider) =>
-      new AgentRuntime({
+      new AgentLoop({
         provider: selectedProvider,
         tools: new ToolRegistry([dummyReadTool(toolDescription)]),
         eventStore: store,
@@ -360,7 +363,7 @@ test("Agent does not persist secret-like responses and redacts event payloads", 
     const store = new SqliteStore({ path: join(directory, "secret.sqlite3") });
     const token = `sk-${"a".repeat(20)}`;
     const provider = new EchoProvider(token);
-    const runtime = new AgentRuntime({
+    const runtime = new AgentLoop({
       provider,
       tools: new ToolRegistry([]),
       eventStore: store,
@@ -386,13 +389,13 @@ test("Agent fails closed on incomplete, oversized, and timed-out provider output
       ["timeout", new WaitingProvider(), { modelTimeoutMs: 10, runTimeoutMs: 1000 }, "timeout"],
     ] as const) {
       const store = new SqliteStore({ path: join(directory, `${name}.sqlite3`) });
-      const runtime = new AgentRuntime({
+      const runtime = new AgentLoop({
         provider,
         tools: new ToolRegistry([]),
         eventStore: store,
         approval: alwaysApprove(),
       });
-      const handle = runtime.start({
+      const handle = runtime.execute({
         prompt: name,
         projectRoot: directory,
         projectRevision: `revision-${name}`,
@@ -411,6 +414,63 @@ test("Agent fails closed on incomplete, oversized, and timed-out provider output
     }
   });
 });
+
+test("tool pipeline revalidates final hook args, approves final args, orders parallel updates/results, preserves barriers, times out, and terminates whole batch", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const store = new SqliteStore({ path: join(directory, "pipeline.sqlite3") });
+    const provider = new ToolBatchProvider();
+    const timeline: string[] = [];
+    const evidence: EvidenceRef = { id: "evidence-stable", kind: "search", digest: "a".repeat(64), summary: "stable" };
+    const parallel = (name: string, delay: number, terminate = false): ToolExecutor => ({
+      contract: { name, description: name, inputSchema: { type: "object", properties: { value: { type: "integer" } }, required: ["value"], additionalProperties: false }, risk: "read", cachePolicy: "none", executionMode: "parallel-safe", sideEffect: "none", idempotent: true, approval: "never", timeoutMs: 500 },
+      before: [async (input) => ({ action: "continue", input: { value: Number(input.value) + 1 } })],
+      execute: async (input, context) => { timeline.push(`start:${name}:${String(input.value)}`); await context.reportUpdate?.(`update:${name}`); await new Promise((resolve) => setTimeout(resolve, delay)); timeline.push(`end:${name}`); return { content: name, evidence, isError: false }; },
+      after: [async (result) => ({ result: { ...result, content: `${result.content}:after`, evidence: { ...evidence, summary: `${name}:changed` } }, terminate })],
+    });
+    const barrier: ToolExecutor = { contract: { name: "barrier", description: "barrier", inputSchema: { type: "object", additionalProperties: false }, risk: "write", cachePolicy: "none", executionMode: "serial", sideEffect: "write", idempotent: false, approval: "always", timeoutMs: 500 }, before: [async () => ({ action: "continue", input: {} })], execute: async (_input, context) => { timeline.push("barrier"); await context.reportUpdate?.("update:barrier"); return { content: "barrier", isError: false }; } };
+    const timeout: ToolExecutor = { contract: { name: "timeout-tool", description: "timeout", inputSchema: { type: "object", additionalProperties: false }, risk: "read", cachePolicy: "none", executionMode: "serial", sideEffect: "none", idempotent: true, approval: "never", timeoutMs: 5 }, execute: async (_input, context) => new Promise((_resolve, reject) => context.signal.addEventListener("abort", () => reject(context.signal.reason), { once: true })) };
+    const approvals: Readonly<Record<string, unknown>>[] = [];
+    const runtime = new AgentLoop({ provider, tools: new ToolRegistry([parallel("parallel-a", 20), parallel("parallel-b", 1, true), barrier, timeout]), eventStore: store, approval: { revision: "pipeline", requestApproval: (request) => { approvals.push(request.input); return Promise.resolve({ approved: true, reason: "test" }); } } });
+    const collected = await runAndCollect(runtime, directory, "pipeline-revision", "pipeline");
+    assert.equal(collected.result.status, "completed");
+    assert.equal(provider.calls, 1, "whole-batch terminate skips the automatic next model call");
+    assert.ok(timeline.indexOf("start:parallel-b:3") < timeline.indexOf("end:parallel-a"), "parallel-safe calls overlap");
+    assert.ok(timeline.indexOf("end:parallel-b") < timeline.indexOf("end:parallel-a"), "executors may finish out of model order");
+    assert.ok(timeline.indexOf("barrier") > timeline.indexOf("end:parallel-a"), "serialized call is a barrier");
+    assert.deepEqual(approvals, [{}], "approval sees final before-hook arguments");
+    const updates = collected.events.filter((event) => event.kind === "tool.updated").map((event) => event.payload.content);
+    assert.deepEqual(updates, ["update:parallel-a", "update:parallel-b", "update:barrier"]);
+    const completed = collected.events.filter((event) => event.kind === "tool.completed");
+    assert.deepEqual(completed.map((event) => event.payload.toolName), ["parallel-a", "parallel-b", "barrier", "timeout-tool"], "durable completions retain model order");
+    assert.equal(completed.at(-1)?.payload.code, "timeout");
+    store.close();
+  });
+});
+
+test("tool pipeline rejects invalid before-hook arguments and evidence identity replacement", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const store = new SqliteStore({ path: join(directory, "pipeline-invalid.sqlite3") });
+    const invalid: ToolExecutor = { contract: { name: "invalid", description: "invalid", inputSchema: { type: "object", properties: { value: { type: "integer" } }, required: ["value"], additionalProperties: false }, risk: "read", cachePolicy: "none" }, before: [async () => ({ action: "continue", input: { value: "bad" } })], execute: () => Promise.resolve({ content: "must not execute", isError: false }) };
+    const replace: ToolExecutor = { contract: { name: "replace", description: "replace", inputSchema: { type: "object", additionalProperties: false }, risk: "read", cachePolicy: "none" }, execute: () => Promise.resolve({ content: "ok", evidence: { id: "one", kind: "search", digest: "b".repeat(64), summary: "one" }, isError: false }), after: [async (result) => ({ result: { ...result, evidence: { id: "two", kind: "search", digest: "c".repeat(64), summary: "two" } } })] };
+    const runtime = new AgentLoop({ provider: new ToolBatchProvider(["invalid", "replace"]), tools: new ToolRegistry([invalid, replace]), eventStore: store, approval: alwaysApprove() });
+    const collected = await runAndCollect(runtime, directory, "pipeline-invalid", "pipeline");
+    assert.equal(collected.result.status, "completed");
+    assert.deepEqual(collected.events.filter((event) => event.kind === "tool.completed").map((event) => event.payload.code), ["validation", "integrity-failed"]);
+    store.close();
+  });
+});
+
+class ToolBatchProvider implements AgentProvider {
+  readonly profile = PROFILE;
+  calls = 0;
+  constructor(private readonly names: readonly string[] = ["parallel-a", "parallel-b", "barrier", "timeout-tool"]) {}
+  async *generate(): AsyncIterable<ProviderEvent> {
+    this.calls += 1;
+    if (this.calls > 1) { yield { type: "text-delta", delta: "replanned" }; yield { type: "done", finishReason: "stop" }; return; }
+    for (const [index, name] of this.names.entries()) yield { type: "tool-call", call: { id: `call-${index}`, name, arguments: name.startsWith("parallel") ? { value: index + 1 } : {} } };
+    yield { type: "done", finishReason: "tool_calls" };
+  }
+}
 
 class ReadThenAnswerProvider implements AgentProvider {
   readonly profile = PROFILE;
@@ -549,9 +609,9 @@ function alwaysApprove(): ApprovalPort {
   return { revision: "test-allow-v1", requestApproval: () => Promise.resolve({ approved: true, reason: "test" }) };
 }
 
-async function runAndCollect(runtime: AgentRuntime, projectRoot: string, projectRevision: string, prompt = "Read the fact.") {
-  const handle = runtime.start({ prompt, projectRoot, projectRevision });
-  const events: AgentEvent[] = [];
+async function runAndCollect(runtime: AgentLoop, projectRoot: string, projectRevision: string, prompt = "Read the fact.") {
+  const handle = runtime.execute({ prompt, projectRoot, projectRevision });
+  const events: AgentStreamEvent[] = [];
   const consume = (async () => {
     for await (const event of handle.events) events.push(event);
   })();

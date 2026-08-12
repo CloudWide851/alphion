@@ -8,7 +8,7 @@ import { MemoryLruCache } from "../adapters/cache/memory-cache.js";
 import { diagnoseLocalProject } from "../adapters/local/local-application.js";
 import { NodeProjectProfiler } from "../adapters/project/project-profiler.js";
 import { projectRevision } from "../adapters/project/project-revision.js";
-import { AgentRuntime } from "../src/application/agent-runtime.js";
+import { AgentLoop } from "../src/application/agent-runtime.js";
 import { TieredCache } from "../src/application/cache.js";
 import { assembleContextPack } from "../src/application/context-pack.js";
 import { ToolRegistry } from "../src/application/tool-registry.js";
@@ -135,8 +135,8 @@ test("ContextPack keeps mandatory items, records omissions and runtime injects i
         yield { type: "done", finishReason: "stop" };
       },
     };
-    const runtime = new AgentRuntime({ provider, tools: new ToolRegistry([]), eventStore: store, approval: allowApproval() });
-    const handle = runtime.start({
+    const runtime = new AgentLoop({ provider, tools: new ToolRegistry([]), eventStore: store, approval: allowApproval() });
+    const handle = runtime.execute({
       prompt: "Inspect",
       projectRoot: directory,
       projectRevision: profile.projectRevision,
@@ -144,7 +144,7 @@ test("ContextPack keeps mandatory items, records omissions and runtime injects i
       contextPack,
       workingMemory: EMPTY_WORKING_MEMORY,
     });
-    const consumed = (async () => { for await (const event of handle.events) events.push(event); })();
+    const consumed = (async () => { for await (const event of handle.events) if (!("delivery" in event)) events.push(event); })();
     const result = await handle.result;
     await consumed;
     assert.deepEqual(events.slice(0, 3).map((event) => event.kind), ["run.started", "project.profiled", "context.assembled"]);
@@ -217,6 +217,30 @@ test("doctor fails closed on corrupt and future SQLite state without migration",
   }
 });
 
+test("doctor reports schema v2 as a pending read-only upgrade", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "alphion-doctor-v2-"));
+  try {
+    const statePath = join(directory, "v2.sqlite3");
+    const database = new DatabaseSync(statePath);
+    database.exec(`
+      PRAGMA user_version = 2;
+      CREATE TABLE provider_profiles (id TEXT PRIMARY KEY, active INTEGER NOT NULL);
+      CREATE TABLE vault_metadata (id INTEGER PRIMARY KEY);
+    `);
+    database.close();
+    const report = await diagnoseLocalProject({ projectRoot: directory, statePath });
+    const check = report.checks.find((item) => item.id === "sqlite");
+    assert.equal(check?.status, "warning");
+    assert.match(check?.summary ?? "", /schema 2.*3/u);
+    const verify = new DatabaseSync(statePath, { readOnly: true });
+    const version = verify.prepare("PRAGMA user_version").get() as Readonly<Record<string, number>>;
+    verify.close();
+    assert.equal(version.user_version, 2);
+  } finally {
+    await cleanup(directory);
+  }
+});
+
 function memoryEventStore(): EventStore {
   let sequence = 0;
   let previousDigest = "0".repeat(64);
@@ -241,6 +265,7 @@ function memoryEventStore(): EventStore {
       return event;
     },
     verifyRun: async () => true,
+    listSessionEvents: async () => [],
   };
 }
 

@@ -4,7 +4,8 @@ import React from "react";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { TuiApprovalPort } from "../tui/approval-port.js";
-import { AppShell, ProviderList, TextEntry, selectWorkbenchLayout } from "../tui/index.js";
+import { AppShell, HarnessPlanView, ProviderList, SessionWorkbenchView, TextEntry, selectWorkbenchLayout } from "../tui/index.js";
+import type { AgentApplication, AgentSessionContract } from "../src/index.js";
 import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "../tui/run-projection.js";
 
 test("TUI strips terminal controls and keeps reasoning separate from the answer", () => {
@@ -108,6 +109,25 @@ test("TUI workbench selects wide, narrow and compact layouts and renders Chinese
   assert.match(frame, /工程工作台/);
   assert.match(frame, /项目画像/);
   assert.match(frame, /只读诊断/);
+  assert.match(frame, /共享会话/);
+  assert.match(frame, /HarnessPlan/);
   assert.match(frame, /画像内容/);
   view.unmount();
+});
+
+test("TUI exposes session create/show/send/checkout and HarnessPlan workflows", async () => {
+  const calls: string[] = [];
+  const record = { schemaVersion: 1 as const, id: "session-1", title: "共享工作", revision: 3, status: "idle" as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), auditOnly: false };
+  const session = { id: record.id, get: () => Promise.resolve(record), view: () => Promise.resolve({ session: record, entries: [] }), checkout: () => { calls.push("checkout"); return Promise.resolve({ sessionId: record.id, revision: 4, replayed: false }); }, send: async () => { throw new Error("unused"); }, steer: async () => { throw new Error("unused"); }, followUp: async () => { throw new Error("unused"); }, subscribe: async function* () { /* empty */ }, close: () => Promise.resolve() } satisfies AgentSessionContract;
+  const app = { sessions: { list: () => Promise.resolve([record]), get: () => Promise.resolve(session), create: () => { calls.push("create"); return Promise.resolve(session); } }, planHarness: () => Promise.resolve({ schemaVersion: 1 as const, task: "diagnose" as const, taskLabels: ["diagnose" as const], risk: "low" as const, capabilities: ["project.read"], reasons: [], permissions: ["project:read"], budgets: { operations: 1 }, evaluator: "quality-gate", omissions: [], digest: "digest" }) } as unknown as AgentApplication;
+  const sessions = render(React.createElement(SessionWorkbenchView, { application: app, approval: { revision: "test", requestApproval: () => Promise.resolve({ approved: false, reason: "test" }) }, onSend: () => calls.push("send"), onError: (cause: unknown) => { throw cause; } }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.match(sessions.lastFrame() ?? "", /共享工作/u);
+  assert.match(sessions.lastFrame() ?? "", /创建.*查看.*checkout.*发送/u);
+  sessions.unmount();
+  const harness = render(React.createElement(HarnessPlanView, { application: app, onError: (cause: unknown) => { throw cause; } }));
+  harness.stdin.write("diagnose\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.match(harness.lastFrame() ?? "", /HarnessPlan|任务 diagnose|project\.read/u);
+  harness.unmount();
 });

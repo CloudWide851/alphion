@@ -16,7 +16,7 @@ import type {
   Tool,
 } from "openai/resources/responses/responses";
 import type {
-  AgentMessage,
+  ProviderMessage,
   AgentToolCall,
   ProviderEvent,
   ProviderProfile,
@@ -224,7 +224,7 @@ function validateProviderProfile(profile: ProviderProfile): void {
   }
 }
 
-function toChatMessages(messages: readonly AgentMessage[]): ChatCompletionMessageParam[] {
+function toChatMessages(messages: readonly ProviderMessage[]): ChatCompletionMessageParam[] {
   return messages.map((message): ChatCompletionMessageParam => {
     switch (message.role) {
       case "system":
@@ -258,7 +258,7 @@ function toChatTools(request: ProviderRequest): ChatCompletionTool[] {
   }));
 }
 
-function toResponsesInput(messages: readonly AgentMessage[]): { readonly instructions: string; readonly items: ResponseInput } {
+function toResponsesInput(messages: readonly ProviderMessage[]): { readonly instructions: string; readonly items: ResponseInput } {
   const instructions = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
   const items: ResponseInput = [];
   for (const message of messages) {

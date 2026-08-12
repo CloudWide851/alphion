@@ -1,7 +1,20 @@
 import type {
-  AgentRunRequest,
   AgentRunResult,
-  AgentApplicationRunRequest,
+  AgentExecutionRequest,
+  AgentMessage,
+  AgentResource,
+  AgentSessionRecord,
+  HarnessPlan,
+  HarnessTaskOverlay,
+  ModelSelectionRequest,
+  PendingMessageKind,
+  PendingSessionMessage,
+  RecallResult,
+  ResourceLoadRequest,
+  ResourceLoadResult,
+  SessionView,
+  SessionWriteOptions,
+  SessionWriteReceipt,
   ProviderEvent,
   ProviderProfile,
   ProviderProfileInput,
@@ -14,21 +27,40 @@ import type {
   ToolResult,
   VaultStatus,
 } from "../domain/contracts.js";
-import type { AgentEvent, AgentEventDraft } from "../protocol/events.js";
+import type { AgentEvent, AgentEventDraft, AgentStreamEvent } from "../protocol/events.js";
 
 export interface AgentProvider {
   readonly profile: ProviderProfile;
   generate(request: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent>;
 }
 
+export interface ModelResolver {
+  resolveModel(request: ModelSelectionRequest): Promise<AgentProvider>;
+}
+
+export interface ResourceLoader {
+  load(request: ResourceLoadRequest, signal?: AbortSignal): Promise<ResourceLoadResult>;
+}
+
+export interface CodeRecall {
+  recall(request: Readonly<{ projectRoot: string; projectRevision: string; query: string; scope?: readonly string[]; limit?: number }>, signal: AbortSignal): Promise<RecallResult>;
+  clear(): void;
+}
+
 export interface ToolExecutionContext {
   readonly projectRoot: string;
   readonly signal: AbortSignal;
+  readonly reportUpdate?: (content: string) => Promise<void>;
 }
+
+export type ToolBeforeHook = (input: Readonly<Record<string, unknown>>, context: ToolExecutionContext) => Promise<Readonly<{ action: "continue"; input?: Readonly<Record<string, unknown>> } | { action: "block"; content: string } | { action: "terminate"; content: string }>>;
+export type ToolAfterHook = (result: ToolResult, context: ToolExecutionContext) => Promise<Readonly<{ result?: ToolResult; terminate?: boolean }>>;
 
 export interface ToolExecutor {
   readonly contract: ToolContract;
   execute(input: Readonly<Record<string, unknown>>, context: ToolExecutionContext): Promise<ToolResult>;
+  readonly before?: readonly ToolBeforeHook[];
+  readonly after?: readonly ToolAfterHook[];
 }
 
 export interface ApprovalRequest {
@@ -66,6 +98,26 @@ export interface CapabilityPolicy {
 export interface EventStore {
   append(event: AgentEventDraft): Promise<AgentEvent>;
   verifyRun(runId: string): Promise<boolean>;
+  listSessionEvents(sessionId: string, afterSessionSequence?: number): Promise<readonly AgentEvent[]>;
+}
+
+export interface SessionStore {
+  createSession(input: Readonly<{ title: string; providerId?: string; idempotencyKey: string }>): Promise<AgentSessionRecord>;
+  listSessions(): Promise<readonly AgentSessionRecord[]>;
+  getSession(sessionId: string): Promise<AgentSessionRecord | undefined>;
+  getSessionView(sessionId: string): Promise<SessionView | undefined>;
+  listSessionEvents(sessionId: string, afterSessionSequence?: number): Promise<readonly AgentEvent[]>;
+  appendSessionEntry(sessionId: string, message: AgentMessage, options: SessionWriteOptions, runId?: string): Promise<SessionWriteReceipt>;
+  /** Atomically appends the initiating user entry and acquires the session's sole run lease. */
+  beginSessionRun(sessionId: string, runId: string, message: Extract<AgentMessage, { readonly kind: "user" }>, options: SessionWriteOptions): Promise<Readonly<{ receipt: SessionWriteReceipt; session: AgentSessionRecord }>>;
+  checkoutSession(sessionId: string, entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
+  enqueuePending(sessionId: string, kind: PendingMessageKind, message: Extract<AgentMessage, { readonly kind: "user" }>, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
+  /** Claims the complete FIFO snapshot currently visible to a run. Claimed rows remain durable until acknowledged. */
+  drainPending(sessionId: string, kind: PendingMessageKind, runId: string): Promise<readonly PendingSessionMessage[]>;
+  acknowledgePending(sessionId: string, kind: PendingMessageKind, runId: string, pendingIds: readonly string[]): Promise<void>;
+  releasePendingClaims(sessionId: string, kind: PendingMessageKind, runId: string): Promise<void>;
+  acquireRunLease(sessionId: string, runId: string, expectedRevision: number): Promise<AgentSessionRecord>;
+  releaseRunLease(sessionId: string, runId: string): Promise<AgentSessionRecord>;
 }
 
 export interface CacheEntry {
@@ -140,21 +192,59 @@ export interface ShellPolicyStore {
 }
 
 export interface AgentRunHandle {
-  readonly events: AsyncIterable<AgentEvent>;
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly events: AsyncIterable<AgentStreamEvent>;
   readonly result: Promise<AgentRunResult>;
   cancel(reason?: string): void;
 }
 
-export interface AgentRuntimeContract {
-  start(request: AgentRunRequest): AgentRunHandle;
+export interface AgentContract {
+  execute(request: AgentExecutionRequest, approval: ApprovalPort, hooks?: AgentExecutionHooks): Promise<AgentRunHandle>;
+}
+
+export interface AgentExecutionHooks {
+  /** Atomically drains the steering snapshot visible at this model boundary. */
+  drainSteering(runId: string, signal: AbortSignal): Promise<readonly AgentMessage[]>;
+}
+
+export interface AgentSessionContract {
+  readonly id: string;
+  get(): Promise<AgentSessionRecord>;
+  view(): Promise<SessionView>;
+  checkout(entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
+  send(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle>;
+  steer(content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
+  followUp(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt>;
+  subscribe(): AsyncIterable<AgentStreamEvent>;
+  /** Stops new work, cancels active runs, and drains all store-owning tasks. */
+  close(): Promise<void>;
+}
+
+/** Project-scoped owner of all durable session workflows. */
+export interface SessionManager {
+  create(input?: Readonly<{ title?: string; providerId?: string; idempotencyKey?: string }>): Promise<AgentSessionContract>;
+  list(): Promise<readonly AgentSessionRecord[]>;
+  get(sessionId: string): Promise<AgentSessionContract>;
+  view(sessionId: string): Promise<SessionView>;
+  checkout(sessionId: string, entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
+  send(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle>;
+  steer(sessionId: string, content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
+  followUp(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt>;
+  subscribe(sessionId: string): AsyncIterable<AgentStreamEvent>;
+  /** Drains every materialized session before its backing store is closed. */
+  close(): Promise<void>;
 }
 
 export interface AgentApplication {
   readonly configuration: ProviderConfigurationService;
-  startRun(request: AgentApplicationRunRequest, approval: ApprovalPort): Promise<AgentRunHandle>;
+  readonly agent: AgentContract;
+  readonly sessions: SessionManager;
+  planHarness(prompt: string, overlay?: HarnessTaskOverlay): Promise<HarnessPlan>;
+  loadResources(request?: Omit<ResourceLoadRequest, "projectRoot">): Promise<readonly AgentResource[]>;
   inspectProject(options?: Readonly<{ refresh?: boolean }>): Promise<ProjectProfile>;
   diagnose(): Promise<DiagnosticReport>;
   providerPresets(): readonly ProviderPreset[];
   cacheStats(): Promise<CacheStats>;
-  close(): void;
+  close(): Promise<void>;
 }

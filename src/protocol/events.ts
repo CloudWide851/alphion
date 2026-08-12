@@ -7,12 +7,12 @@ export type AgentEventKind =
   | "provider.started"
   | "provider.degraded"
   | "model.delta"
-  | "model.reasoning.delta"
   | "model.usage"
   | "cache.hit"
   | "cache.miss"
   | "cache.stored"
   | "tool.requested"
+  | "tool.updated"
   | "approval.requested"
   | "approval.resolved"
   | "tool.completed"
@@ -20,10 +20,14 @@ export type AgentEventKind =
   | "run.failed"
   | "run.cancelled";
 
+export type AgentTransientEventKind = "model.reasoning.delta";
+export type AgentStreamEventKind = AgentEventKind | AgentTransientEventKind;
+
 export interface AgentEvent {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1 | 2;
   readonly eventId: string;
   readonly sequence: number;
+  readonly sessionSequence?: number;
   readonly runId: string;
   readonly sessionId: string;
   readonly correlationId: string;
@@ -35,13 +39,26 @@ export interface AgentEvent {
   readonly digest: string;
 }
 
+/** Live-only progress that is intentionally absent from Event History and replay. */
+export interface AgentTransientEvent {
+  readonly delivery: "transient";
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly correlationId: string;
+  readonly timestamp: string;
+  readonly kind: AgentTransientEventKind;
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
+export type AgentStreamEvent = AgentEvent | AgentTransientEvent;
+
 export type AgentEventDraft = Omit<
   AgentEvent,
-  "schemaVersion" | "eventId" | "sequence" | "timestamp" | "previousDigest" | "digest"
+  "schemaVersion" | "eventId" | "sequence" | "sessionSequence" | "timestamp" | "previousDigest" | "digest"
 >;
 
 export function isCriticalAgentEvent(kind: AgentEventKind): boolean {
-  return kind !== "model.delta" && kind !== "model.reasoning.delta";
+  return kind !== "model.delta";
 }
 
 export function emptyProviderUsage(): ProviderUsage {

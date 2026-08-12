@@ -14,8 +14,15 @@ export const ALPHION_BRAND = Object.freeze({
 
 export type AlphionBrand = typeof ALPHION_BRAND;
 
-export { AgentRuntime } from "./application/agent-runtime.js";
-export type { AgentRuntimeOptions } from "./application/agent-runtime.js";
+export { Agent } from "./application/agent.js";
+export type { AgentOptions } from "./application/agent.js";
+export { AgentSession } from "./application/agent-session.js";
+export { DefaultSessionManager } from "./application/session-manager.js";
+export { CapabilityRegistry, classifyTask, planHarness } from "./application/harness.js";
+export { createAgentEnvironment } from "./application/agent-environment.js";
+export { compactMessages, compactSessionEntries, compactSessionEntriesWithProvider } from "./application/compaction.js";
+export { projectAgentMessages } from "./application/message-projection.js";
+export { validateJsonSchema } from "./application/json-schema.js";
 export { AlphionError } from "./application/errors.js";
 export { DefaultCapabilityPolicy } from "./application/policy.js";
 export { TieredCache } from "./application/cache.js";
@@ -23,8 +30,28 @@ export { ToolRegistry } from "./application/tool-registry.js";
 export { ProviderConfigurationManager } from "./application/provider-configuration.js";
 export type {
   AgentBudgets,
-  AgentApplicationRunRequest,
   AgentMessage,
+  ProviderMessage,
+  AgentEnvironment,
+  AgentContext,
+  RuntimeConfig,
+  RuntimeState,
+  AgentExecutionRequest,
+  AgentResource,
+  AgentSessionRecord,
+  CapabilityDescriptor,
+  HarnessPlan,
+  HarnessTaskOverlay,
+  PendingSessionMessage,
+  RecallItem,
+  RecallResult,
+  ResourceLoadRequest,
+  ResourceLoadResult,
+  SessionEntry,
+  SessionView,
+  SessionWriteOptions,
+  SessionWriteReceipt,
+  TaskLabel,
   AgentRunRequest,
   AgentRunResult,
   AgentToolCall,
@@ -61,6 +88,10 @@ export type {
 } from "./domain/contracts.js";
 export type {
   AgentApplication,
+  AgentContract,
+  AgentExecutionHooks,
+  AgentSessionContract,
+  SessionManager,
   AgentProvider,
   AgentRunHandle,
   ApprovalDecision,
@@ -71,6 +102,10 @@ export type {
   CacheStore,
   CapabilityPolicy,
   EventStore,
+  SessionStore,
+  ResourceLoader,
+  ModelResolver,
+  CodeRecall,
   ProviderProfileStore,
   ProviderConfigurationService,
   ProjectProfiler,
@@ -79,7 +114,9 @@ export type {
   ShellPolicyStore,
   ToolExecutionContext,
   ToolExecutor,
+  ToolBeforeHook,
+  ToolAfterHook,
 } from "./ports/index.js";
-export type { AgentEvent, AgentEventDraft, AgentEventKind } from "./protocol/events.js";
+export type { AgentEvent, AgentEventDraft, AgentEventKind, AgentStreamEvent, AgentStreamEventKind, AgentTransientEvent, AgentTransientEventKind } from "./protocol/events.js";
 export { assembleContextPack, summarizeContextPack } from "./application/context-pack.js";
 export { EMPTY_WORKING_MEMORY, reduceWorkingMemory } from "./application/working-memory.js";
