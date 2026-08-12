@@ -17,6 +17,7 @@ win:
     - target: portable
       arch: [x64]
 nsis:
+  artifactName: Alphion-${version}-${arch}-setup.${ext}
   oneClick: false
   perMachine: false
   allowElevation: true
@@ -24,3 +25,5 @@ nsis:
   deleteAppDataOnUninstall: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
+portable:
+  artifactName: Alphion-${version}-${arch}-portable.${ext}

@@ -274,7 +274,7 @@ export function AppShell(props: Readonly<{
   </Box>;
 }
 
-function contentHeader(props: Readonly<{ section: WorkbenchSection; layout: WorkbenchLayout; projectRoot: string }>): React.JSX.Element {
+function contentHeader(props: Readonly<{ section: WorkbenchSection; layout: WorkbenchLayout; colorEnabled: boolean; projectRoot: string }>): React.JSX.Element {
   const current = SECTIONS.find((entry) => entry.id === props.section);
   return <Box flexDirection="column" marginTop={props.layout === "compact" ? 0 : 1} marginBottom={props.layout === "compact" ? 0 : 1}>
     <Text bold {...accent(props.colorEnabled)}>ALPHION · {current?.label ?? "对话"}</Text>
@@ -294,7 +294,8 @@ export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; mess
   const messages = props.messages ?? [];
   return <Box flexDirection="column" minHeight={props.compact ? 10 : 18} justifyContent="space-between">
     {messages.length === 0 ? <Box flexDirection="column" alignItems="center" marginTop={props.compact ? 0 : 2}>
-      {props.compact ? <Text bold {...accent(process.env.NO_COLOR === undefined)}>ALPHION</Text> : ALPHION_LOGO.map((line) => <Text key={line} bold {...accent(process.env.NO_COLOR === undefined)}>{line}</Text>)}
+      {props.compact ? null : ALPHION_LOGO.map((line) => <Text key={line} bold {...accent(process.env.NO_COLOR === undefined)}>{line}</Text>)}
+      <Text bold {...accent(process.env.NO_COLOR === undefined)}>ALPHION</Text>
       <Text dimColor>{props.activeProfile ? `${props.activeProfile.name} · ${props.activeProfile.model}` : "请先使用 /providers 配置 Provider"}</Text>
     </Box> : <Box flexDirection="column">{messages.slice(props.compact ? -4 : -10).map((message) => <Box key={message.id} flexDirection="column" marginBottom={1}>
       <Text bold {...(message.role === "assistant" ? accent(process.env.NO_COLOR === undefined) : {})}>{message.role === "assistant" ? "Alphion" : "你"}</Text>
@@ -307,10 +308,12 @@ export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; mess
 export function SettingsCard(props: Readonly<{ onSelect: (section: WorkbenchSection) => void }>): React.JSX.Element {
   const items = SECTIONS.filter((entry) => !["home", "settings"].includes(entry.id));
   const [selected, setSelected] = useState(0);
+  const selectedRef = useRef(0);
+  const select = (value: number) => { selectedRef.current = value; setSelected(value); };
   useInput((_input, key) => {
-    if (key.upArrow) setSelected((value) => Math.max(0, value - 1));
-    else if (key.downArrow) setSelected((value) => Math.min(items.length - 1, value + 1));
-    else if (key.return) { const item = items[selected]; if (item) props.onSelect(item.id); }
+    if (key.upArrow) select(Math.max(0, selectedRef.current - 1));
+    else if (key.downArrow) select(Math.min(items.length - 1, selectedRef.current + 1));
+    else if (key.return) { const item = items[selectedRef.current]; if (item) props.onSelect(item.id); }
   });
   return <Box flexDirection="column" borderStyle="round" paddingX={1} {...borderColor(BRAND_PURPLE)}>
     {items.map((item, index) => <Text key={item.id} {...(index === selected ? accent(process.env.NO_COLOR === undefined) : {})}>{index === selected ? "◆" : "◇"} /{item.id} · {item.label}</Text>)}
@@ -472,7 +475,7 @@ export function ProviderForm(props: Readonly<{ draft: ProviderDraft; presets: re
     if (next.kind === "custom-openai-compatible") { setValue(next); setStep(3); }
     else props.onSave(next);
   }} onCancel={() => setStep(1)} />;
-  return <TextEntry label="Base URL（仅自定义 Provider）" initialValue={value.baseUrl} onSubmit={(baseUrl) => props.onSave({ ...value, baseUrl })} onCancel={() => setStep(2)} />;
+  return <TextEntry label="Base URL（仅自定义 Provider）" {...(value.baseUrl === undefined ? {} : { initialValue: value.baseUrl })} onSubmit={(baseUrl) => props.onSave({ ...value, baseUrl })} onCancel={() => setStep(2)} />;
 }
 
 function PresetPicker(props: Readonly<{ presets: readonly ProviderPreset[]; selectedId: string; onSelect: (preset: ProviderPreset) => void; onCancel: () => void }>): React.JSX.Element {
@@ -489,38 +492,42 @@ function PresetPicker(props: Readonly<{ presets: readonly ProviderPreset[]; sele
 
 export function TextEntry(props: Readonly<{ label: string; initialValue?: string; masked?: boolean; clearOnSubmit?: boolean; resetKey?: string | number; onSubmit: (value: string) => void; onCancel?: () => void }>): React.JSX.Element {
   const [value, setValue] = useState(props.initialValue ?? "");
+  const valueRef = useRef(props.initialValue ?? "");
+  const replaceValue = (next: string) => { valueRef.current = next; setValue(next); };
   useEffect(() => {
-    setValue(props.initialValue ?? "");
-    return () => setValue("");
+    replaceValue(props.initialValue ?? "");
+    return () => { valueRef.current = ""; };
   }, [props.initialValue, props.label, props.masked, props.resetKey]);
   useInput((input, key) => {
     if (key.return) {
-      if (value.trim().length > 0) {
-        const submitted = value;
-        if (props.masked || props.clearOnSubmit) setValue("");
+      if (valueRef.current.trim().length > 0) {
+        const submitted = valueRef.current;
+        if (props.masked || props.clearOnSubmit) replaceValue("");
         props.onSubmit(submitted);
       }
       return;
     }
-    if (key.escape) { setValue(""); props.onCancel?.(); return; }
-    if (key.backspace || key.delete) { setValue((current) => current.slice(0, -1)); return; }
-    if (!key.ctrl && !key.meta && input) setValue((current) => current + input);
+    if (key.escape) { replaceValue(""); props.onCancel?.(); return; }
+    if (key.backspace || key.delete) { replaceValue(valueRef.current.slice(0, -1)); return; }
+    if (!key.ctrl && !key.meta && input) replaceValue(valueRef.current + input);
   });
   return <Box flexDirection="column" marginTop={1}><Text>{props.label}</Text><Text {...accent(process.env.NO_COLOR === undefined)}>› {props.masked ? "•".repeat(value.length) : sanitizeTerminalText(value)}</Text><Text dimColor>Enter 确认 · Esc 返回</Text></Box>;
 }
 
 export function ChatEntry(props: Readonly<{ disabled?: boolean; onSubmit: (value: string) => void }>): React.JSX.Element {
   const [value, setValue] = useState("");
-  useEffect(() => () => setValue(""), []);
+  const valueRef = useRef("");
+  const replaceValue = (next: string) => { valueRef.current = next; setValue(next); };
+  useEffect(() => () => { valueRef.current = ""; }, []);
   useInput((input, key) => {
     if (props.disabled) return;
-    if ((key.meta && key.return) || (key.ctrl && input === "j")) { setValue((current) => `${current}\n`); return; }
+    if ((key.meta && key.return) || (key.ctrl && input === "j")) { replaceValue(`${valueRef.current}\n`); return; }
     if (key.return) {
-      if (value.trim()) { const submitted = value; setValue(""); props.onSubmit(submitted); }
+      if (valueRef.current.trim()) { const submitted = valueRef.current; replaceValue(""); props.onSubmit(submitted); }
       return;
     }
-    if (key.backspace || key.delete) { setValue((current) => current.slice(0, -1)); return; }
-    if (!key.ctrl && !key.meta && input) setValue((current) => current + input);
+    if (key.backspace || key.delete) { replaceValue(valueRef.current.slice(0, -1)); return; }
+    if (!key.ctrl && !key.meta && input) replaceValue(valueRef.current + input);
   });
   return <Box flexDirection="column" marginTop={1} borderStyle="round" paddingX={1} {...borderColor(BRAND_PURPLE)}>
     <Text {...accent(process.env.NO_COLOR === undefined)}>› {props.disabled ? "先使用 /providers 配置并激活 Provider" : sanitizeTerminalText(value) || "输入消息，或使用 /settings"}</Text>
@@ -614,7 +621,7 @@ function profileDraft(profile: ProviderProfile): ProviderDraft {
 function toProfileInput(draft: ProviderDraft, firstProfile: boolean): ProviderProfileInput {
   const id = draft.existing?.id ?? toProfileId(draft.name);
   const common = {
-    schemaVersion: 2,
+    schemaVersion: 2 as const,
     id,
     name: draft.name.trim(),
     model: draft.model.trim(),

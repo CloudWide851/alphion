@@ -62,6 +62,11 @@ export interface AgentStreamControlEvent {
 
 export type AgentStreamEvent = AgentEvent | AgentTransientEvent | AgentStreamControlEvent;
 
+/** Narrows a mixed live stream to authority-backed events safe for durable projections. */
+export function isAgentEvent(event: AgentStreamEvent): event is AgentEvent {
+  return !("delivery" in event);
+}
+
 export type AgentEventDraft = Omit<
   AgentEvent,
   "schemaVersion" | "eventId" | "sequence" | "sessionSequence" | "timestamp" | "previousDigest" | "digest"

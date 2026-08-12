@@ -1690,10 +1690,10 @@ function decodeProviderProfile(row: Readonly<Record<string, unknown>>): Provider
     capabilities: { streaming, tools, promptCaching, reasoning },
     revision: readNumber(row, "revision"),
     active: readNumber(row, "active") === 1,
-  };
+  } as const;
   if (kind === "custom-openai-compatible") return { ...base, kind, baseUrl: storedEndpoint };
   if (kind === "deepseek" || kind === "kimi" || kind === "qwen" || kind === "glm") {
-    const profile = { ...base, kind, presetId: storedEndpoint };
+    const profile: ProviderProfile = { ...base, kind, presetId: storedEndpoint };
     validateProviderPreset(profile);
     return profile;
   }

@@ -151,7 +151,8 @@ function renderInline(children: readonly MarkdownInline[]): string {
     if (item.kind === "code") return `‹${item.value}›`;
     if (item.kind === "math") return renderTexForTerminal(item.value);
     if (item.kind === "link") return `${renderInline(item.children)} <${item.domain}>`;
-    return renderInline(item.children);
+    if (item.kind === "strong" || item.kind === "emphasis") return renderInline(item.children);
+    return "";
   }).join("");
 }
 

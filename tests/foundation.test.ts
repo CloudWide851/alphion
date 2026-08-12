@@ -11,7 +11,7 @@ import { BoundedEventChannel } from "../src/application/event-channel.js";
 import { ToolRegistry } from "../src/application/tool-registry.js";
 import type { AgentProvider, ApprovalPort, ToolExecutor } from "../src/ports/index.js";
 import type { EvidenceRef, ProviderEvent, ProviderProfile, ProviderRequest, SystemPromptPlan } from "../src/domain/contracts.js";
-import type { AgentStreamEvent } from "../src/protocol/events.js";
+import { isAgentEvent, type AgentStreamEvent } from "../src/protocol/events.js";
 import { MemoryLruCache } from "../adapters/cache/memory-cache.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
 import { EditTool, GrepTool, ReadTool, ShellTool, WriteTool } from "../adapters/tools/index.js";
@@ -446,9 +446,10 @@ test("tool pipeline revalidates final hook args, approves final args, orders par
     assert.ok(timeline.indexOf("end:parallel-b") < timeline.indexOf("end:parallel-a"), "executors may finish out of model order");
     assert.ok(timeline.indexOf("barrier") > timeline.indexOf("end:parallel-a"), "serialized call is a barrier");
     assert.deepEqual(approvals, [{}], "approval sees final before-hook arguments");
-    const updates = collected.events.filter((event) => event.kind === "tool.updated").map((event) => event.payload.content);
+    const durableEvents = collected.events.filter(isAgentEvent);
+    const updates = durableEvents.filter((event) => event.kind === "tool.updated").map((event) => event.payload.content);
     assert.deepEqual(updates, ["update:parallel-a", "update:parallel-b", "update:barrier"]);
-    const completed = collected.events.filter((event) => event.kind === "tool.completed");
+    const completed = durableEvents.filter((event) => event.kind === "tool.completed");
     assert.deepEqual(completed.map((event) => event.payload.toolName), ["parallel-a", "parallel-b", "barrier", "timeout-tool"], "durable completions retain model order");
     assert.equal(completed.at(-1)?.payload.code, "timeout");
     store.close();
@@ -463,7 +464,7 @@ test("tool pipeline rejects invalid before-hook arguments and evidence identity 
     const runtime = new AgentLoop({ provider: new ToolBatchProvider(["invalid", "replace"]), tools: new ToolRegistry([invalid, replace]), eventStore: store, approval: alwaysApprove() });
     const collected = await runAndCollect(runtime, directory, "pipeline-invalid", "pipeline");
     assert.equal(collected.result.status, "completed");
-    assert.deepEqual(collected.events.filter((event) => event.kind === "tool.completed").map((event) => event.payload.code), ["validation", "integrity-failed"]);
+    assert.deepEqual(collected.events.filter(isAgentEvent).filter((event) => event.kind === "tool.completed").map((event) => event.payload.code), ["validation", "integrity-failed"]);
     store.close();
   });
 });
@@ -517,9 +518,17 @@ class WriteThenStopProvider implements AgentProvider {
 
 class ReasoningThenAnswerProvider implements AgentProvider {
   readonly profile: ProviderProfile = {
-    ...PROFILE,
+    schemaVersion: 2,
+    id: PROFILE.id,
+    name: PROFILE.name,
     kind: "deepseek",
+    presetId: "deepseek",
+    model: "deepseek-reasoner",
+    protocol: "chat-completions",
+    auth: PROFILE.auth,
     capabilities: { ...PROFILE.capabilities, reasoning: true },
+    revision: PROFILE.revision,
+    active: PROFILE.active,
   };
   sawReasoningContinuation = false;
 

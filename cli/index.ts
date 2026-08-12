@@ -87,7 +87,7 @@ async function providerCommand(store: SqliteStore, command: string | undefined, 
       kind: kindValue,
       model: requiredFlag(parsed, "model"),
       protocol,
-      auth: authEnvironment ? { mode: "bearer-env", environmentVariable: authEnvironment } : { mode: "none" },
+      auth: authEnvironment ? { mode: "bearer-env" as const, environmentVariable: authEnvironment } : { mode: "none" as const },
       capabilities: {
         streaming: booleanFlag(parsed, "streaming", true),
         tools: booleanFlag(parsed, "tools", true),
@@ -346,7 +346,7 @@ function safeEventMessage(payload: Readonly<Record<string, unknown>>): string {
 }
 
 function printHelp(): void {
-  process.stdout.write(`Alphion v0.4.0\n\n`);
+  process.stdout.write(`Alphion v0.5.0\n\n`);
   process.stdout.write(`Commands:\n`);
   process.stdout.write(`  provider set --id ID --preset deepseek|deepseek-international|kimi|kimi-international|qwen|qwen-international|glm|glm-international|custom-openai-compatible --model MODEL [--base-url URL for custom only] [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
   process.stdout.write(`  provider list\n  provider activate ID\n`);

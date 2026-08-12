@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0] - 2026-08-12
+
+- Added case-insensitive/realpath-unique Project registration, one active Project writer, isolated per-Project SQLite state and a least-privilege unowned domain.
+- Added bounded same-domain `session.send` collaboration with durable receipts, idle target Run leases, busy target agent steering, idempotency and hop/send limits.
+- Replaced experimental `node:sqlite` with `better-sqlite3`, migrated to schema v5 with `.v4-backup`, and decoupled durable event writes from per-subscriber bounded UI queues/resync.
+- Added mainland/international DeepSeek, Kimi, Qwen and GLM catalog presets whose official Base URLs stay hidden; custom compatible Providers remain URL-validated.
+- Rebuilt the Simplified Chinese TUI around chat and reusable inputs; added shared safe GFM/TeX Markdown rendering with no reasoning projection.
+- Added a loopback-only React/Vite WebUI with strict commands, HttpOnly/Origin/CSRF security, cursor SSE, revision recovery, dedicated credential and digest-bound approval flows.
+- Replaced the v0.4.x Desktop JSONL Host with a sandboxed Electron workbench, narrow allowlisted preload IPC and unsigned Windows x64 NSIS/portable packaging.
+
+This pre-1.0 milestone intentionally changes the Desktop public contract and Session/Project schema. JSONL clients must stay on v0.4.x or migrate to Web command/SSE or Electron IPC. To roll back state, stop all Alphion processes, restore the adjacent `.v4-backup`, then run v0.4.0; v0.4.0 rejects schema v5 and post-migration data is not retained.
+
 ## [0.4.0] - 2026-08-12
 
 - Added deterministic four-scope resource manifests, provenance-aware resolution and versioned SystemPrompt plans.
