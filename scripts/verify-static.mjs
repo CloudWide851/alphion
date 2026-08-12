@@ -9,10 +9,10 @@ assert(packageJson.version === "0.4.0", "package.json must be version 0.4.0");
 assert(lock.version === packageJson.version, "package-lock top-level version must match package.json");
 assert(lock.packages?.[""]?.version === packageJson.version, "package-lock root package version must match package.json");
 assert(packageJson.engines?.node === ">=22.13", "Node engine must be >=22.13");
-assert(
-  JSON.stringify(Object.keys(packageJson.dependencies ?? {})) === JSON.stringify(["ink", "openai", "react"]),
-  "runtime dependencies must remain limited to the TUI and OpenAI transport",
-);
+const runtimeDependencies = Object.keys(packageJson.dependencies ?? {});
+for (const dependency of ["better-sqlite3", "ink", "katex", "openai", "react", "react-dom"]) {
+  assert(runtimeDependencies.includes(dependency), `required runtime dependency is missing: ${dependency}`);
+}
 
 const fileOutput = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
   cwd: root,

@@ -66,8 +66,10 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run build:core && npm run build:webui",
+    "build:core": "tsc -p tsconfig.json",
+    "build:webui": "vite build --config webui/vite.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p webui/tsconfig.json --noEmit",
     "verify:static": "node scripts/verify-static.mjs",
     "test": "npm run build && npm run test:built",
     "test:built": "node --test dist/tests/foundation.test.js dist/tests/openai-compatible.test.js dist/tests/deepseek.test.js dist/tests/vault.test.js dist/tests/project-phase1.test.js dist/tests/sessions-v032.test.js dist/tests/v040.test.js dist/tests/desktop-rpc.test.js dist/tests/tui.test.js dist/tests/cli.test.js",
@@ -83,14 +85,20 @@
   "dependencies": {
     "better-sqlite3": "^12.11.1",
     "ink": "^7.1.1",
+    "katex": "^0.16.27",
     "openai": "^7.4.0",
-    "react": "^19.2.8"
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/katex": "^0.16.8",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
     "ink-testing-library": "^4.0.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4"
   }
 }
