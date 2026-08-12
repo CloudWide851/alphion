@@ -3,20 +3,12 @@ import { realpath, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
-import { AgentRuntime } from "../src/application/agent-runtime.js";
 import { sha256 } from "../src/application/canonical.js";
-import { TieredCache } from "../src/application/cache.js";
 import { AlphionError, normalizeError } from "../src/application/errors.js";
-import { ToolRegistry } from "../src/application/tool-registry.js";
+import type { DiagnosticReport, ProjectProfile } from "../src/domain/contracts.js";
 import type { ApprovalDecision, ApprovalPort, ApprovalRequest } from "../src/ports/index.js";
-import { MemoryLruCache } from "../adapters/cache/memory-cache.js";
-import { DeepSeekProvider } from "../adapters/model/deepseek.js";
-import { OpenAICompatibleProvider } from "../adapters/model/openai-compatible.js";
-import { projectRevision } from "../adapters/project/project-revision.js";
-import { CompositeSecretResolver } from "../adapters/secrets/composite-secret.js";
-import { EnvironmentSecretResolver } from "../adapters/secrets/environment-secret.js";
+import { diagnoseLocalProject, openLocalAlphionApplication } from "../adapters/local/local-application.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
-import { EditTool, GrepTool, ReadTool, ShellTool, WriteTool } from "../adapters/tools/index.js";
 
 interface ParsedArguments {
   readonly positionals: readonly string[];
@@ -30,8 +22,19 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     printHelp();
     return 0;
   }
-  const projectRoot = await realpath(resolve(flagValue(parsed, "project-root") ?? process.cwd()));
-  const statePath = resolve(flagValue(parsed, "state") ?? join(projectRoot, ".alphion", "alphion.sqlite3"));
+  if (group === "_launcher") return launcherCommand(command, parsed);
+  const requestedRoot = resolve(flagValue(parsed, "project-root") ?? process.cwd());
+  const requestedState = flagValue(parsed, "state");
+  if (group === "doctor") {
+    const report = await diagnoseLocalProject({
+      projectRoot: requestedRoot,
+      ...(requestedState ? { statePath: resolve(requestedState) } : {}),
+    });
+    renderDiagnosticReport(report, hasFlag(parsed, "json"));
+    return report.overall === "unhealthy" ? 1 : 0;
+  }
+  const projectRoot = await realpath(requestedRoot);
+  const statePath = resolve(requestedState ?? join(projectRoot, ".alphion", "alphion.sqlite3"));
   if (group === "tui") {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       throw new AlphionError("validation", "The Alphion TUI requires an interactive terminal.", { stage: "tui" });
@@ -39,12 +42,16 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     const { runTui } = await import("../tui/index.js");
     return runTui({ projectRoot, statePath });
   }
+  if (group === "project") {
+    if (command !== "inspect") throw new AlphionError("validation", "project command must be inspect.", { stage: "cli" });
+    return projectInspectCommand(projectRoot, statePath, parsed);
+  }
+  if (group === "run") return runCommand(parsed, projectRoot, statePath);
   const store = new SqliteStore({ path: statePath });
   try {
     if (group === "provider") return await providerCommand(store, command, parsed);
     if (group === "policy" && command === "shell") return await shellPolicyCommand(store, parsed);
     if (group === "cache") return await cacheCommand(store, command, parsed);
-    if (group === "run") return await runCommand(store, parsed, projectRoot);
     throw new AlphionError("validation", `Unknown command: ${[group, command].filter(Boolean).join(" ")}`, { stage: "cli" });
   } finally {
     store.close();
@@ -140,49 +147,47 @@ async function cacheCommand(store: SqliteStore, command: string | undefined, par
   throw new AlphionError("validation", "cache command must be stats or clear.", { stage: "cli" });
 }
 
-async function runCommand(store: SqliteStore, parsed: ParsedArguments, projectRoot: string): Promise<number> {
+async function runCommand(parsed: ParsedArguments, projectRoot: string, statePath: string): Promise<number> {
   const prompt = requiredFlag(parsed, "prompt");
   const selected = flagValue(parsed, "provider");
-  const profile = selected ? await store.getProfile(selected) : await store.getActiveProfile();
-  if (!profile) {
-    throw new AlphionError("validation", selected ? `Unknown provider profile: ${selected}` : "No active provider profile is configured.", {
-      stage: "cli",
-    });
-  }
-  const secrets = new CompositeSecretResolver([new EnvironmentSecretResolver(), store]);
-  const provider = profile.kind === "deepseek"
-    ? new DeepSeekProvider(profile, secrets)
-    : new OpenAICompatibleProvider(profile, secrets);
-  const cache = new TieredCache(new MemoryLruCache(), store);
-  const tools = new ToolRegistry([new ReadTool(), new GrepTool(), new EditTool(), new WriteTool(), new ShellTool(store)]);
-  const runtime = new AgentRuntime({
-    provider,
-    cache,
-    tools,
-    eventStore: store,
-    approval: new CliApprovalPort(),
-  });
-  const handle = runtime.start({
-    prompt,
-    projectRoot,
-    projectRevision: await projectRevision(projectRoot),
-    cacheResponses: !hasFlag(parsed, "no-cache"),
-  });
-  const render = (async () => {
-    for await (const event of handle.events) {
-      if (event.kind === "model.delta") {
-        const delta = event.payload.delta;
-        if (typeof delta === "string") process.stdout.write(delta);
-      } else if (event.kind === "provider.degraded" || event.kind === "run.failed" || event.kind === "run.cancelled") {
-        process.stderr.write(`\n[${event.kind}] ${safeEventMessage(event.payload)}\n`);
+  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  try {
+    const handle = await application.startRun({
+      prompt,
+      projectRoot,
+      ...(selected ? { providerId: selected } : {}),
+      cacheResponses: !hasFlag(parsed, "no-cache"),
+    }, new CliApprovalPort());
+    const render = (async () => {
+      for await (const event of handle.events) {
+        if (event.kind === "model.delta") {
+          const delta = event.payload.delta;
+          if (typeof delta === "string") process.stdout.write(delta);
+        } else if (event.kind === "provider.degraded" || event.kind === "run.failed" || event.kind === "run.cancelled") {
+          process.stderr.write(`\n[${event.kind}] ${safeEventMessage(event.payload)}\n`);
+        }
       }
-    }
-  })();
-  const result = await handle.result;
-  await render;
-  process.stdout.write(`\n\nrun=${result.runId} status=${result.status} turns=${result.turns} tools=${result.toolCalls}\n`);
-  process.stdout.write(`evidence referenced=${result.grounding.referencedEvidenceIds.length} missing=${result.grounding.missingEvidenceIds.length}\n`);
-  return result.status === "completed" ? 0 : 1;
+    })();
+    const result = await handle.result;
+    await render;
+    process.stdout.write(`\n\nrun=${result.runId} status=${result.status} turns=${result.turns} tools=${result.toolCalls}\n`);
+    process.stdout.write(`evidence referenced=${result.grounding.referencedEvidenceIds.length} missing=${result.grounding.missingEvidenceIds.length}\n`);
+    return result.status === "completed" ? 0 : 1;
+  } finally {
+    application.close();
+  }
+}
+
+async function projectInspectCommand(projectRoot: string, statePath: string, parsed: ParsedArguments): Promise<number> {
+  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  try {
+    const profile = await application.inspectProject({ ...(hasFlag(parsed, "refresh") ? { refresh: true } : {}) });
+    if (hasFlag(parsed, "json")) process.stdout.write(`${JSON.stringify(profile, null, 2)}\n`);
+    else renderProjectProfile(profile);
+    return 0;
+  } finally {
+    application.close();
+  }
 }
 
 class CliApprovalPort implements ApprovalPort {
@@ -258,16 +263,56 @@ function safeEventMessage(payload: Readonly<Record<string, unknown>>): string {
 }
 
 function printHelp(): void {
-  process.stdout.write(`Alphion v0.3.0\n\n`);
+  process.stdout.write(`Alphion v0.3.1\n\n`);
   process.stdout.write(`Commands:\n`);
   process.stdout.write(`  provider set --id ID --kind openai-compatible|deepseek --base-url URL --model MODEL [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
   process.stdout.write(`  provider list\n  provider activate ID\n`);
   process.stdout.write(`  policy shell allow --executable ABSOLUTE_PATH [--arg-prefix VALUE ...]\n`);
   process.stdout.write(`  policy shell list\n  policy shell remove ID\n`);
   process.stdout.write(`  cache stats\n  cache clear [--namespace NAME]\n`);
+  process.stdout.write(`  doctor [--json] [--project-root PATH] [--state PATH]\n`);
+  process.stdout.write(`  project inspect [--refresh] [--json] [--project-root PATH]\n`);
   process.stdout.write(`  run --prompt TEXT [--provider ID] [--project-root PATH] [--no-cache]\n\n`);
   process.stdout.write(`  tui [--project-root PATH] [--state PATH]\n\n`);
   process.stdout.write(`Global options: --state PATH --project-root PATH\n`);
+}
+
+function launcherCommand(command: string | undefined, parsed: ParsedArguments): number {
+  if (command === "menu") {
+    process.stdout.write(`\n  ALPHION 0.3.1  工程工作台\n  ==========================\n\n`);
+    process.stdout.write(`  1. 启动 Alphion 工程工作台\n  2. 运行只读诊断\n  3. 查看命令帮助\n  4. 退出\n\n`);
+    return 0;
+  }
+  if (command === "result") {
+    const action = flagValue(parsed, "action") ?? "操作";
+    const code = flagValue(parsed, "code") ?? "1";
+    process.stdout.write(`[提示] ${sanitizeLauncherLabel(action)}已结束，退出码：${sanitizeLauncherLabel(code)}\n`);
+    return 0;
+  }
+  throw new AlphionError("validation", "Unknown internal launcher command.", { stage: "cli" });
+}
+
+function sanitizeLauncherLabel(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]/gu, "").slice(0, 32);
+}
+
+function renderProjectProfile(profile: ProjectProfile): void {
+  process.stdout.write(`项目类型: ${profile.projectType}\nrevision: ${profile.projectRevision}\n扫描路径: ${profile.scannedPaths}${profile.truncated ? "（已截断）" : ""}\n`);
+  for (const fact of profile.facts) process.stdout.write(`  ✓ ${fact.category} · ${fact.name}: ${fact.value}\n`);
+  for (const diagnostic of profile.diagnostics) process.stdout.write(`  ${diagnostic.severity === "warning" ? "!" : "·"} ${diagnostic.message}${diagnostic.path ? ` (${diagnostic.path})` : ""}\n`);
+}
+
+function renderDiagnosticReport(report: DiagnosticReport, json: boolean): void {
+  if (json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(`Alphion 只读诊断 · ${report.overall}\n`);
+  for (const check of report.checks) {
+    const symbol = check.status === "pass" ? "✓" : check.status === "warning" || check.status === "unknown" ? "!" : "✗";
+    process.stdout.write(`${symbol} ${check.label}: ${check.summary}\n`);
+    if (check.remediation) process.stdout.write(`  修复: ${check.remediation}\n`);
+  }
 }
 
 async function runAsProgram(): Promise<void> {

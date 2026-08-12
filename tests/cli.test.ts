@@ -51,6 +51,16 @@ test("compiled CLI configures a provider, runs through a fake endpoint, and deni
     const stats = await runCli(["cache", "stats", "--state", state, "--project-root", directory]);
     assert.equal(stats.code, 0, stats.stderr);
     assert.match(stats.stdout, /"entries"/);
+
+    const inspected = await runCli(["project", "inspect", "--json", "--state", state, "--project-root", directory]);
+    assert.equal(inspected.code, 0, inspected.stderr);
+    assert.match(inspected.stdout, /"schemaVersion": 1/);
+    assert.match(inspected.stdout, /"projectRevision"/);
+
+    const diagnosed = await runCli(["doctor", "--json", "--state", state, "--project-root", directory]);
+    assert.equal(diagnosed.code, 0, diagnosed.stderr);
+    assert.match(diagnosed.stdout, /"overall"/);
+    assert.doesNotMatch(diagnosed.stdout, /hello from cli|API[_ -]?KEY/iu);
   } finally {
     await new Promise<void>((done, reject) => server.close((error) => (error ? reject(error) : done())));
     await rm(directory, { recursive: true, force: true });
@@ -67,7 +77,15 @@ test("compiled live smoke is guarded and Windows batch launcher shows help", asy
   }
   const launched = await runExecutable("cmd.exe", ["/d", "/c", "alphion.bat", "help"]);
   assert.equal(launched.code, 0, launched.stderr);
-  assert.match(launched.stdout, /Alphion v0\.3\.0/);
+  assert.match(launched.stdout, /Alphion v0\.3\.1/);
+  const launcherMenu = await runCli(["_launcher", "menu"]);
+  assert.equal(launcherMenu.code, 0, launcherMenu.stderr);
+  assert.match(launcherMenu.stdout, /启动 Alphion 工程工作台/u);
+  assert.match(launcherMenu.stdout, /运行只读诊断/u);
+  const batch = await readFile(resolve("alphion.bat"), "utf8");
+  assert.match(batch, /:menu[\s\S]*choice \/c 1234/iu);
+  assert.match(batch, /_launcher menu/iu);
+  assert.match(batch, /if not "%~1"=="" goto explicit/iu);
 });
 
 test("compiled TUI refuses a non-interactive terminal", async () => {

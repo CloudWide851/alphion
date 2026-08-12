@@ -114,6 +114,141 @@ export interface AgentBudgets {
   readonly modelTimeoutMs: number;
 }
 
+export type ProfileFactCategory =
+  | "language"
+  | "runtime"
+  | "module-system"
+  | "package-manager"
+  | "framework"
+  | "quality-command"
+  | "git"
+  | "ci"
+  | "constraint"
+  | "risk";
+
+export interface ProfileEvidence {
+  readonly path: string;
+  readonly detail: string;
+  readonly digest?: string;
+}
+
+export interface ProfileFact {
+  readonly id: string;
+  readonly category: ProfileFactCategory;
+  readonly name: string;
+  readonly value: string;
+  readonly confidence: "observed" | "inferred";
+  readonly evidence: readonly ProfileEvidence[];
+}
+
+export interface ProfileDiagnostic {
+  readonly code:
+    | "unknown-project"
+    | "scan-truncated"
+    | "profile-truncated"
+    | "oversize-config"
+    | "invalid-config"
+    | "conflicting-lockfiles"
+    | "git-unavailable"
+    | "path-skipped";
+  readonly severity: "info" | "warning";
+  readonly message: string;
+  readonly path?: string;
+}
+
+export interface ProjectProfile {
+  readonly schemaVersion: 1;
+  readonly projectRevision: string;
+  readonly profilerVersion: string;
+  readonly rulesVersion: string;
+  readonly projectType: "node-typescript" | "node-javascript" | "unknown";
+  readonly facts: readonly ProfileFact[];
+  readonly qualityCommands: readonly string[];
+  readonly diagnostics: readonly ProfileDiagnostic[];
+  readonly scannedPaths: number;
+  readonly truncated: boolean;
+  readonly digest: string;
+}
+
+export type ContextItemCategory =
+  | "security-policy"
+  | "goal"
+  | "permission"
+  | "constraint"
+  | "project-profile"
+  | "quality-command"
+  | "working-memory";
+
+export interface ContextPackItem {
+  readonly id: string;
+  readonly category: ContextItemCategory;
+  readonly content: string;
+  readonly required: boolean;
+  readonly estimatedTokens: number;
+}
+
+export interface ContextOmission {
+  readonly id: string;
+  readonly category: ContextItemCategory;
+  readonly reason: "empty" | "budget" | "oversize";
+}
+
+export interface ContextPack {
+  readonly schemaVersion: 1;
+  readonly projectRevision: string;
+  readonly budgetTokens: number;
+  readonly estimatedTokens: number;
+  readonly items: readonly ContextPackItem[];
+  readonly omissions: readonly ContextOmission[];
+  readonly digest: string;
+  readonly rendered: string;
+}
+
+export interface ContextPackSummary {
+  readonly digest: string;
+  readonly budgetTokens: number;
+  readonly estimatedTokens: number;
+  readonly itemCount: number;
+  readonly omissionCount: number;
+}
+
+export interface WorkingMemorySnapshot {
+  readonly schemaVersion: 1;
+  readonly phase: "idle" | "profiling" | "context" | "model" | "tools" | "completed" | "failed" | "cancelled";
+  readonly turns: number;
+  readonly toolCalls: number;
+  readonly evidenceIds: readonly string[];
+  readonly errorCodes: readonly string[];
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly lastEventSequence: number;
+}
+
+export interface DiagnosticCheck {
+  readonly id: string;
+  readonly label: string;
+  readonly status: "pass" | "warning" | "fail" | "unknown";
+  readonly summary: string;
+  readonly remediation?: string;
+}
+
+export interface DiagnosticReport {
+  readonly schemaVersion: 1;
+  readonly projectRoot: string;
+  readonly overall: "healthy" | "attention" | "unhealthy";
+  readonly checks: readonly DiagnosticCheck[];
+}
+
+export interface ProviderPreset {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: ProviderKind;
+  readonly baseUrl: string;
+  readonly models: readonly string[];
+  readonly protocol: OpenAICompatibleProtocol;
+}
+
 export interface AgentRunRequest {
   readonly prompt: string;
   readonly projectRoot: string;
@@ -122,6 +257,9 @@ export interface AgentRunRequest {
   readonly systemInstructions?: string;
   readonly budgets?: Partial<AgentBudgets>;
   readonly cacheResponses?: boolean;
+  readonly projectProfile?: ProjectProfile;
+  readonly contextPack?: ContextPack;
+  readonly workingMemory?: WorkingMemorySnapshot;
 }
 
 export interface AgentApplicationRunRequest extends Omit<AgentRunRequest, "projectRevision"> {
@@ -152,6 +290,8 @@ export interface AgentRunResult {
   readonly usage: ProviderUsage;
   readonly grounding: GroundingReport;
   readonly errorCode?: string;
+  readonly context?: ContextPackSummary;
+  readonly workingMemory?: WorkingMemorySnapshot;
 }
 
 export interface ShellRule {

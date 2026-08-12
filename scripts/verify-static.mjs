@@ -5,7 +5,7 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
-assert(packageJson.version === "0.3.0", "package.json must be version 0.3.0");
+assert(packageJson.version === "0.3.1", "package.json must be version 0.3.1");
 assert(lock.version === packageJson.version, "package-lock top-level version must match package.json");
 assert(lock.packages?.[""]?.version === packageJson.version, "package-lock root package version must match package.json");
 assert(packageJson.engines?.node === ">=22.13", "Node engine must be >=22.13");
@@ -32,6 +32,13 @@ for (const localPath of ["docs", ".trellis", ".codegraph", ".agents", ".codex", 
     cwd: root,
     stdio: "ignore",
   });
+}
+execFileSync("git", ["check-ignore", "-q", "--no-index", ".impeccable.md"], { cwd: root, stdio: "ignore" });
+
+const tuiFiles = files.filter((file) => file.startsWith("tui/") && /\.tsx?$/u.test(file));
+for (const file of tuiFiles) {
+  const content = readFileSync(resolve(root, file), "utf8");
+  assert(!/from\s+["'][^"']*adapters\/(?:model|store|tools|cache)[^"']*["']/.test(content), `TUI adapter boundary violation in ${file}`);
 }
 
 const sourceFiles = files.filter((file) => file.startsWith("src/") && file.endsWith(".ts"));

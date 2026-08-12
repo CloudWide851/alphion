@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
+import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { TuiApprovalPort } from "../tui/approval-port.js";
-import { ProviderList, TextEntry } from "../tui/index.js";
+import { AppShell, ProviderList, TextEntry, selectWorkbenchLayout } from "../tui/index.js";
 import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "../tui/run-projection.js";
 
 test("TUI strips terminal controls and keeps reasoning separate from the answer", () => {
@@ -89,5 +90,24 @@ test("provider list keyboard navigation dispatches adapter intents", async () =>
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(created, 1);
   assert.match(view.lastFrame() ?? "", /DeepSeek/);
+  view.unmount();
+});
+
+test("TUI workbench selects wide, narrow and compact layouts and renders Chinese navigation without color", () => {
+  assert.equal(selectWorkbenchLayout(120, 30), "wide");
+  assert.equal(selectWorkbenchLayout(99, 30), "narrow");
+  assert.equal(selectWorkbenchLayout(120, 17), "compact");
+  const view = render(React.createElement(AppShell, {
+    section: "profile",
+    layout: "wide",
+    colorEnabled: false,
+    projectRoot: "C:\\项目\\alphion",
+    children: React.createElement(Text, null, "画像内容"),
+  }));
+  const frame = view.lastFrame() ?? "";
+  assert.match(frame, /工程工作台/);
+  assert.match(frame, /项目画像/);
+  assert.match(frame, /只读诊断/);
+  assert.match(frame, /画像内容/);
   view.unmount();
 });

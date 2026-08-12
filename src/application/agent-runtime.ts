@@ -10,6 +10,7 @@ import type {
   ProviderRequest,
   ProviderUsage,
   ToolResult,
+  WorkingMemorySnapshot,
 } from "../domain/contracts.js";
 import type {
   AgentProvider,
@@ -27,6 +28,8 @@ import { AlphionError, normalizeError } from "./errors.js";
 import { DefaultCapabilityPolicy } from "./policy.js";
 import { containsPotentialSecret, sanitizeRecord } from "./sensitive-data.js";
 import { ToolRegistry } from "./tool-registry.js";
+import { summarizeContextPack } from "./context-pack.js";
+import { EMPTY_WORKING_MEMORY, reduceWorkingMemory } from "./working-memory.js";
 
 const DEFAULT_BUDGETS: AgentBudgets = Object.freeze({
   maxTurns: 12,
@@ -62,6 +65,7 @@ interface RuntimeContext {
   readonly channel: BoundedEventChannel<AgentEvent>;
   readonly budgets: AgentBudgets;
   mutationRevision: number;
+  workingMemory: WorkingMemorySnapshot;
 }
 
 interface TurnOutcome {
@@ -114,6 +118,7 @@ export class AgentRuntime {
       channel,
       budgets,
       mutationRevision: 0,
+      workingMemory: request.workingMemory ?? EMPTY_WORKING_MEMORY,
     };
     const result = this.#execute(context, () => timedOut).finally(() => {
       clearTimeout(timer);
@@ -138,11 +143,33 @@ export class AgentRuntime {
         projectRevision: context.request.projectRevision,
         providerProfileId: this.#provider.profile.id,
       });
+      if (context.request.projectProfile) {
+        const profile = context.request.projectProfile;
+        await this.#emit(context, "project.profiled", {
+          projectRevision: profile.projectRevision,
+          profileDigest: profile.digest,
+          projectType: profile.projectType,
+          scannedPaths: profile.scannedPaths,
+          factCount: profile.facts.length,
+          diagnosticCount: profile.diagnostics.length,
+          truncated: profile.truncated,
+        });
+      }
+      if (context.request.contextPack) {
+        const pack = context.request.contextPack;
+        await this.#emit(context, "context.assembled", {
+          ...summarizeContextPack(pack),
+          omissions: pack.omissions,
+        });
+      }
       const systemInstructions = [DEFAULT_SYSTEM_INSTRUCTIONS, context.request.systemInstructions]
         .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
         .join("\n\n");
       const messages: AgentMessage[] = [
         { role: "system", content: systemInstructions },
+        ...(context.request.contextPack
+          ? [{ role: "system" as const, content: context.request.contextPack.rendered }]
+          : []),
         { role: "user", content: context.request.prompt },
       ];
 
@@ -170,6 +197,8 @@ export class AgentRuntime {
             toolCalls,
             usage,
             grounding,
+            ...(context.request.contextPack ? { context: summarizeContextPack(context.request.contextPack) } : {}),
+            workingMemory: context.workingMemory,
           };
         }
 
@@ -215,6 +244,8 @@ export class AgentRuntime {
         usage,
         grounding: buildGroundingReport(finalText, [...evidence.keys()]),
         errorCode: normalized.code,
+        ...(context.request.contextPack ? { context: summarizeContextPack(context.request.contextPack) } : {}),
+        workingMemory: context.workingMemory,
       };
     }
   }
@@ -489,6 +520,7 @@ export class AgentRuntime {
       ...(causationId ? { causationId } : {}),
     };
     const event = await this.#eventStore.append(draft);
+    context.workingMemory = reduceWorkingMemory(context.workingMemory, event);
     await context.channel.push(event, isCriticalAgentEvent(kind));
     return event;
   }

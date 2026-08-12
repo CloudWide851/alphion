@@ -2,6 +2,8 @@ import type { ProviderUsage } from "../domain/contracts.js";
 
 export type AgentEventKind =
   | "run.started"
+  | "project.profiled"
+  | "context.assembled"
   | "provider.started"
   | "provider.degraded"
   | "model.delta"

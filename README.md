@@ -6,14 +6,17 @@
 
 Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前 **v0.3.0** 在受控 Agent 基础层上加入可运行的 Ink TUI、加密 SQLite 凭据库和独立 DeepSeek provider。OpenAI-compatible Chat Completions/Responses 仍受支持；详细 Phase 1–6 Agent 架构已经定稿，但画像、长期记忆、自我进化、Framework Scout 和 SubAgent 仍是后续运行时里程碑。
+当前 **v0.3.1** 已完成 Phase 1 工程化：每次运行前确定性生成只读 Project Profile，自动组装有预算的 ContextPack，并从事件流派生运行期工作记忆。Ink TUI 已升级为简体中文、自适应布局的“工程工作台”，Windows 双击启动也会进入可持续操作的菜单。长期记忆、自我进化、Framework Scout 和 SubAgent 仍是后续里程碑。
 
 ## 当前能力
 
 - 单任务 Agent 循环，支持流式输出、函数工具调用、取消、超时，以及轮次、工具、token 和输出字节预算。
+- Node/TypeScript 优先的确定性只读 Project Profile，识别语言、运行时、模块系统、包管理器、框架、质量命令、Git/CI、约束、风险和冲突；未知项目安全降级。
+- 每次运行自动注入最多 2,048 estimated tokens 的不可变 ContextPack；安全、目标、权限和强约束不会被可选画像事实挤出预算。
+- 运行期 Working Memory 仅由当前任务事件 reducer 重放，跟踪阶段、轮次、工具、Evidence、错误和用量，不写入长期记忆。
 - OpenAI-compatible Chat Completions 与 Responses 双协议；模型、Base URL 和能力均由本地 profile 配置。
 - 独立 DeepSeek Chat Completions provider，支持 `deepseek-chat`、`deepseek-reasoner`、推理流、工具续轮和 prompt-cache 命中用量。
-- Ink + React TUI，可管理 provider、导入或轮换加密 API key、执行单次任务、审批工具、取消运行并折叠查看 reasoning。
+- 简体中文 Ink + React 工程工作台，宽终端使用侧栏、窄终端使用顶部导航，并提供首页、画像、Provider/Vault、任务与只读诊断五个区域。
 - `read`、`grep`、`edit`、`write` 和 `shell` 工具；写入和进程执行必须逐次审批。
 - 单写者类型化事件、背压、关键事件持久化及 SHA-256 审计链。
 - 进程内 LRU + SQLite L2 缓存、single-flight 合并、策略/权限/项目修订失效和可选 provider prompt caching；疑似秘密不进入缓存。
@@ -34,7 +37,7 @@ npm run typecheck
 npm run build
 ```
 
-正式构建产物写入被忽略的 `dist/`。Windows 可在构建后通过 `alphion.bat` 启动；其他平台使用 `npm run cli --` 或 `node dist/cli/index.js`。交互界面使用：
+正式构建产物写入被忽略的 `dist/`。Windows 构建后双击 `alphion.bat` 会显示循环启动菜单，可进入工作台、运行只读诊断或查看帮助；带参数调用仍原样透传退出码，适合 CI/脚本。其他平台使用 `npm run cli --` 或 `node dist/cli/index.js`。交互界面使用：
 
 ```bash
 npm run tui
@@ -66,6 +69,8 @@ alphion.bat provider set --id hosted --base-url https://example.com/v1 --model m
 provider set/list/activate
 policy shell allow/list/remove
 cache stats/clear
+doctor [--json]
+project inspect [--refresh] [--json]
 run --prompt ...
 tui
 ```
@@ -76,7 +81,7 @@ tui
 
 ```text
 src/          模型和界面无关的领域、应用、端口与协议核心
-adapters/     OpenAI-compatible、DeepSeek、SQLite/vault、缓存、秘密和工具实现
+adapters/     只读画像、OpenAI-compatible、DeepSeek、SQLite/vault、缓存、秘密和工具实现
 cli/          当前单任务命令行适配器
 tui/          Ink 终端界面、运行投影和逐次审批适配器
 webui/        未来 Web 界面边界；当前仅 README
@@ -88,7 +93,7 @@ benchmarks/   通信、缓存和 SQLite 基线
 
 ## 公共接口
 
-根入口保留稳定只读的 `ALPHION_BRAND`，并公开 `AgentRuntime`、运行/事件、provider、工具、审批、缓存、事件存储和密钥引用合同。具体实现通过 `alphion/openai-compatible`、`alphion/deepseek`、`alphion/local`、`alphion/sqlite` 和 `alphion/tools` 子路径暴露。Provider profile schema v2 以 `kind` 区分实现，并支持环境变量或加密 SQLite 凭据引用。
+根入口保留稳定只读的 `ALPHION_BRAND`，并公开 `AgentRuntime`、Project Profile、ContextPack、Working Memory、诊断、运行/事件、provider、工具、审批、缓存、事件存储和密钥引用合同。具体实现通过 `alphion/openai-compatible`、`alphion/deepseek`、`alphion/local`、`alphion/sqlite` 和 `alphion/tools` 子路径暴露。Provider profile schema v2 以 `kind` 区分实现，并支持环境变量或加密 SQLite 凭据引用；SQLite user_version 保持 2。
 
 ## 安全和数据
 

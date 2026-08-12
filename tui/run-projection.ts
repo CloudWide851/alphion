@@ -39,7 +39,13 @@ export function reduceRunProjection(state: TuiRunProjection, action: TuiProjecti
   const { event } = action;
   switch (event.kind) {
     case "run.started":
-      return { ...state, status: "running", message: "Agent started." };
+      return { ...state, status: "running", message: "Agent 已启动。" };
+    case "project.profiled":
+      return { ...state, status: "running", message: "项目画像已生成。" };
+    case "context.assembled":
+      return { ...state, status: "running", message: "ContextPack 已组装。" };
+    case "provider.started":
+      return { ...state, status: "running", message: "模型调用中。" };
     case "model.usage": {
       const usage = isRecord(event.payload.usage) ? event.payload.usage : undefined;
       return usage
@@ -52,18 +58,18 @@ export function reduceRunProjection(state: TuiRunProjection, action: TuiProjecti
         : state;
     }
     case "provider.degraded":
-      return { ...state, message: stringOr(event.payload.reason, "Provider degraded.") };
+      return { ...state, message: stringOr(event.payload.reason, "Provider 已降级。") };
     case "run.completed":
       return {
         ...state,
         ...usageProjection(event.payload.usage, state),
         status: "completed",
-        message: "Run completed.",
+        message: "任务已完成。",
       };
     case "run.failed":
-      return { ...state, status: "failed", message: stringOr(event.payload.message, "Run failed.") };
+      return { ...state, status: "failed", message: stringOr(event.payload.message, "任务失败。") };
     case "run.cancelled":
-      return { ...state, status: "cancelled", message: stringOr(event.payload.message, "Run cancelled.") };
+      return { ...state, status: "cancelled", message: stringOr(event.payload.message, "任务已取消。") };
     default:
       return state;
   }

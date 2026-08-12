@@ -2,6 +2,31 @@
 
 All notable changes to Alphion are documented here. Before 1.0, compatible increments advance the current `0.x.y` line and larger milestones advance to a new `0.x.0`; detailed architecture research remains in the local, Git-ignored design workspace.
 
+## [0.3.1] - 2026-08-12
+
+### Added
+
+- Added the complete Phase 1 runtime baseline: deterministic read-only Node/TypeScript Project Profile, a bounded automatic ContextPack, and replayable run-scoped Working Memory.
+- Added `project inspect [--refresh] [--json]` and offline, non-migrating `doctor [--json]` commands.
+- Added `project.profiled` and `context.assembled` critical events with bounded summaries and explicit ContextPack omissions.
+- Added a persistent Windows launcher menu for workbench, diagnostics, help, and exit.
+
+### Changed
+
+- Rebuilt the Ink TUI as a Simplified Chinese engineering workbench with responsive sidebar/top navigation, compact mode, consistent status/error/empty states, and `NO_COLOR` support.
+- Moved DeepSeek/OpenAI-compatible presets behind the local application façade and reused one session-scoped L1 cache, tool registry, and profiler service.
+- Replaced the timestamp-based filesystem revision overflow marker with a stable bounded identity and expanded the safe scan limit to 20,000 paths.
+
+### Security and compatibility
+
+- Project inspection skips symlinks, dependency/build/local-state directories, secret-like paths, oversized configuration content, and never asks a model to invent missing facts.
+- Doctor performs no network calls, database migrations, credential resolution, or plaintext output; future/corrupt SQLite state fails visibly.
+- `ALPHION_BRAND`, ProviderProfile schema v2, SQLite user_version 2, OpenAI-compatible and DeepSeek behavior, and the dependency set are unchanged.
+
+### Rollback
+
+- Return to tag `v0.3.0`. No persistent schema migration is required; cached Project Profiles are disposable.
+
 ## [0.3.0] - 2026-08-11
 
 ### Added

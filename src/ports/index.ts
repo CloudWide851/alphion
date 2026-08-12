@@ -5,6 +5,9 @@ import type {
   ProviderEvent,
   ProviderProfile,
   ProviderProfileInput,
+  ProviderPreset,
+  ProjectProfile,
+  DiagnosticReport,
   ProviderRequest,
   ShellRule,
   ToolContract,
@@ -125,6 +128,10 @@ export interface ProviderConfigurationService {
   resetVault(): Promise<number>;
 }
 
+export interface ProjectProfiler {
+  inspect(options: Readonly<{ projectRoot: string; refresh?: boolean }>): Promise<ProjectProfile>;
+}
+
 export interface ShellPolicyStore {
   addShellRule(rule: Omit<ShellRule, "schemaVersion" | "id" | "enabled">): Promise<ShellRule>;
   listShellRules(): readonly ShellRule[];
@@ -145,5 +152,9 @@ export interface AgentRuntimeContract {
 export interface AgentApplication {
   readonly configuration: ProviderConfigurationService;
   startRun(request: AgentApplicationRunRequest, approval: ApprovalPort): Promise<AgentRunHandle>;
+  inspectProject(options?: Readonly<{ refresh?: boolean }>): Promise<ProjectProfile>;
+  diagnose(): Promise<DiagnosticReport>;
+  providerPresets(): readonly ProviderPreset[];
+  cacheStats(): Promise<CacheStats>;
   close(): void;
 }

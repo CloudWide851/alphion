@@ -1,6 +1,6 @@
 # Alphion TUI 边界
 
-`tui/` 是 v0.3.0 的 Ink/React 终端适配器。运行 `alphion tui` 或 `npm run tui` 可配置 provider、导入加密 API key，并执行一次受控 Agent 任务。
+`tui/` 是 v0.3.1 的 Ink/React 终端适配器。运行 `alphion tui` 或 `npm run tui` 可进入简体中文“工程工作台”，查看 Project Profile/诊断、配置 provider、导入加密 API key，并执行一次受控 Agent 任务。
 
 ## 职责
 
@@ -27,10 +27,15 @@ terminal view  <- TUI adapter <- core event boundary
 
 ## 当前交互
 
+- 首页概览、项目画像、Provider/Vault、任务运行和只读诊断五个工作区；
+- 100 列及以上使用侧栏，窄终端使用顶部导航，低于 18 行启用紧凑布局；
+- 品牌紫 `#A377F6` 作为唯一主强调色，状态始终同时显示文字/符号，并支持 `NO_COLOR`；
 - vault 初始化/解锁，遮罩输入主密码；
 - provider 列表、新增/编辑/激活及 API key 导入、轮换和删除；
 - 单次任务输入、流式答案、工具审批、取消、token 用量；
 - DeepSeek reasoning 默认折叠并标记为“非证据”。
+
+数字键或 Tab 切换区域，Enter 确认，Esc 返回首页，`?` 查看帮助，`q` 退出。Ctrl+C 在任务运行中优先取消任务。Provider 预设由本地 application façade 提供，TUI 不导入 DeepSeek 或其他模型 adapter 常量。
 
 界面使用进程内异步事件流，不创建守护进程或网络服务。显示层最多约 30 FPS 合并模型 delta，但最终文本、审批和审计事件不会丢失。
 

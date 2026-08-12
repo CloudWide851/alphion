@@ -30,6 +30,13 @@ export type {
   AgentToolCall,
   EvidenceRef,
   GroundingReport,
+  ContextItemCategory,
+  ContextOmission,
+  ContextPack,
+  ContextPackItem,
+  ContextPackSummary,
+  DiagnosticCheck,
+  DiagnosticReport,
   OpenAICompatibleProtocol,
   ProviderAuth,
   ProviderCapabilities,
@@ -37,13 +44,20 @@ export type {
   ProviderKind,
   ProviderProfile,
   ProviderProfileInput,
+  ProviderPreset,
   ProviderRequest,
   ProviderToolDefinition,
   ProviderUsage,
   ShellRule,
+  ProfileDiagnostic,
+  ProfileEvidence,
+  ProfileFact,
+  ProfileFactCategory,
+  ProjectProfile,
   ToolContract,
   ToolResult,
   VaultStatus,
+  WorkingMemorySnapshot,
 } from "./domain/contracts.js";
 export type {
   AgentApplication,
@@ -59,6 +73,7 @@ export type {
   EventStore,
   ProviderProfileStore,
   ProviderConfigurationService,
+  ProjectProfiler,
   SecretResolver,
   SecretVault,
   ShellPolicyStore,
@@ -66,3 +81,5 @@ export type {
   ToolExecutor,
 } from "./ports/index.js";
 export type { AgentEvent, AgentEventDraft, AgentEventKind } from "./protocol/events.js";
+export { assembleContextPack, summarizeContextPack } from "./application/context-pack.js";
+export { EMPTY_WORKING_MEMORY, reduceWorkingMemory } from "./application/working-memory.js";
