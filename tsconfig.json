@@ -38,6 +38,7 @@
     "tui/**/*.tsx",
     "ui/**/*.ts",
     "webui/*.ts",
-    "desktop/**/*.ts"
+    "desktop/**/*.ts",
+    "desktop/**/*.cts"
   ]
 }

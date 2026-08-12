@@ -1,0 +1,26 @@
+appId: dev.alphion.workbench
+productName: Alphion
+artifactName: Alphion-${version}-${arch}.${ext}
+asar: true
+asarUnpack:
+  - node_modules/better-sqlite3/**
+files:
+  - dist/**
+  - package.json
+  - alphion-icon.svg
+directories:
+  output: release
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

@@ -43,13 +43,14 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     const { runTui } = await import("../tui/index.js");
     return runTui({ projectRoot, statePath });
   }
+  if (group === "web") { const { runWebUi } = await import("../webui/main.js"); await runWebUi({ ...(flagValue(parsed, "port") ? { port: Number(flagValue(parsed, "port")) } : {}) }); return 0; }
   if (group === "project") {
     if (command === "inspect") return projectInspectCommand(projectRoot, statePath, parsed);
     return projectRegistryCommand(command, parsed);
   }
   if (group === "session") return sessionCommand(command, parsed, projectRoot, statePath);
   if (group === "resource") return resourceCommand(command, parsed, projectRoot, statePath);
-  if (group === "desktop") { const { runDesktopHost } = await import("../desktop/main.js"); await runDesktopHost({ projectRoot, statePath }); return 0; }
+  if (group === "desktop") { const { launchDesktop } = await import("../desktop/launcher.js"); await launchDesktop(); return 0; }
   if (group === "harness" && command === "plan") return harnessPlanCommand(parsed, projectRoot, statePath);
   if (group === "run") return runCommand(parsed, projectRoot, statePath);
   const { SqliteStore: Store } = await import("../adapters/store/sqlite-store.js");
@@ -356,7 +357,7 @@ function printHelp(): void {
   process.stdout.write(`  project inspect [--refresh] [--json] [--project-root PATH]\n  project register|create --name NAME --root PATH\n  project list|current|activate|remove ...\n`);
   process.stdout.write(`  run --prompt TEXT [--provider ID] [--project-root PATH] [--no-cache]\n\n`);
   process.stdout.write(`  session create|list|show|shape|reshape|checkout|send|steer|follow-up ...\n  harness plan --prompt TEXT\n`);
-  process.stdout.write(`  resource list|doctor [--disable-scope SCOPE] [--disable-id ID]\n  desktop [--project-root PATH] [--state PATH]\n`);
+  process.stdout.write(`  resource list|doctor [--disable-scope SCOPE] [--disable-id ID]\n  web [--port PORT]\n  desktop\n`);
   process.stdout.write(`  tui [--project-root PATH] [--state PATH]\n\n`);
   process.stdout.write(`Global options: --state PATH --project-root PATH\n`);
 }

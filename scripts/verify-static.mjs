@@ -47,15 +47,16 @@ for (const file of sourceFiles) {
   assert(!/from\s+["'][^"']*(?:adapters|cli|tui|webui|openai)[^"']*["']/.test(content), `core dependency boundary violation in ${file}`);
 }
 
-const desktopFiles = files.filter((file) => file.startsWith("desktop/") && file.endsWith(".ts"));
+const desktopFiles = files.filter((file) => file.startsWith("desktop/") && /\.c?ts$/u.test(file) && existsSync(resolve(root, file)));
 for (const file of desktopFiles) {
   const content = readFileSync(resolve(root, file), "utf8");
-  assert(!/vault\.(?:unlock|initialize)|masterPassword|apiKey\s*:/iu.test(content), `sensitive Desktop RPC surface in ${file}`);
+  assert(!/vault\.(?:unlock|initialize)|masterPassword|apiKey\s*:/iu.test(content), `sensitive Desktop IPC surface in ${file}`);
 }
 
 const adapterImports = sourceFiles.flatMap((file) => [...readFileSync(resolve(root, file), "utf8").matchAll(/from\s+["']([^"']+)["']/g)].map((match) => ({ file, target: match[1] })));
 assert(adapterImports.every(({ target }) => !target?.includes("desktop") && !target?.includes("cli") && !target?.includes("tui") && !target?.includes("adapters")), "core must not reverse-depend on adapter surfaces");
-assert(existsSync(resolve(root, "desktop", "main.ts")), "Desktop executable composition root must exist");
+for (const desktopPath of ["desktop/main.ts", "desktop/preload.cts", "desktop/contracts.ts", "electron-builder.yml"]) assert(existsSync(resolve(root, desktopPath)), `Desktop Electron file must exist: ${desktopPath}`);
+for (const removedRpc of ["desktop/host.ts", "desktop/protocol.ts", "desktop/stdio.ts", "tests/desktop-rpc.test.ts"]) assert(!existsSync(resolve(root, removedRpc)), `removed Desktop JSONL file remains: ${removedRpc}`);
 assert(existsSync(resolve(root, "scripts", "verify-built.mjs")), "built subpath/Desktop smoke must exist");
 
 const markdownFiles = [...files.filter((file) => file.endsWith(".md")), ...listMarkdown(resolve(root, "docs"))];

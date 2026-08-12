@@ -18,7 +18,7 @@ export class ActiveProjectController {
   #active: ActiveProjectSnapshot | undefined;
   #tail: Promise<void> = Promise.resolve();
 
-  constructor(projects: ProjectManager = new LocalProjectManager()) { this.projects = projects; }
+  constructor(projects: ProjectManager = new LocalProjectManager(), private readonly configRoot?: string) { this.projects = projects; }
 
   current(): ActiveProjectSnapshot | undefined { return this.#active; }
 
@@ -50,7 +50,7 @@ export class ActiveProjectController {
         const application = await openLocalAlphionApplication({ projectRoot: project.root, statePath: project.statePath, projectId: project.id, domainId: project.domainId });
         snapshot = Object.freeze({ project, domain: "project" as const, application });
       } else {
-        const configRoot = dirname(defaultProjectRegistryPath());
+        const configRoot = this.configRoot ?? dirname(defaultProjectRegistryPath());
         const domainRoot = join(configRoot, "unowned");
         await mkdir(domainRoot, { recursive: true });
         const application = await openLocalAlphionApplication({ projectRoot: domainRoot, statePath: join(configRoot, "default.sqlite3"), domainId: "domain_unowned", unowned: true });

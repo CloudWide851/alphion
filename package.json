@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "sideEffects": false,
-  "main": "./dist/src/index.js",
+  "main": "./dist/desktop/main.js",
   "types": "./dist/src/index.d.ts",
   "bin": {
     "alphion": "./dist/cli/index.js"
@@ -50,6 +50,10 @@
     "./desktop": {
       "types": "./dist/desktop/index.d.ts",
       "import": "./dist/desktop/index.js"
+    },
+    "./webui": {
+      "types": "./dist/webui/index.d.ts",
+      "import": "./dist/webui/index.js"
     }
   },
   "files": [
@@ -57,7 +61,10 @@
     "dist/adapters",
     "dist/cli",
     "dist/tui",
+    "dist/ui",
+    "dist/webui",
     "dist/desktop",
+    "electron-builder.yml",
     "alphion.bat",
     "alphion-icon.svg",
     "alphion-logo.svg",
@@ -72,11 +79,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p webui/tsconfig.json --noEmit",
     "verify:static": "node scripts/verify-static.mjs",
     "test": "npm run build && npm run test:built",
-    "test:built": "node --test dist/tests/foundation.test.js dist/tests/openai-compatible.test.js dist/tests/deepseek.test.js dist/tests/vault.test.js dist/tests/project-phase1.test.js dist/tests/sessions-v032.test.js dist/tests/v040.test.js dist/tests/desktop-rpc.test.js dist/tests/tui.test.js dist/tests/cli.test.js",
+    "test:built": "node --test dist/tests/foundation.test.js dist/tests/openai-compatible.test.js dist/tests/deepseek.test.js dist/tests/vault.test.js dist/tests/project-phase1.test.js dist/tests/sessions-v032.test.js dist/tests/v040.test.js dist/tests/v050-project-collaboration.test.js dist/tests/v050-event-channel.test.js dist/tests/provider-catalog.test.js dist/tests/markdown.test.js dist/tests/webui.test.js dist/tests/desktop.test.js dist/tests/tui.test.js dist/tests/cli.test.js",
     "benchmark:built": "node dist/benchmarks/foundation.js",
     "smoke:built": "node scripts/verify-built.mjs",
     "cli": "node dist/cli/index.js",
     "tui": "node dist/cli/index.js tui",
+    "desktop": "electron dist/desktop/main.js",
+    "desktop:deps": "electron-builder install-app-deps",
+    "desktop:pack": "electron-builder --win nsis portable --x64",
     "smoke:live": "node dist/cli/live-smoke.js"
   },
   "engines": {
@@ -97,6 +107,8 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
     "ink-testing-library": "^4.0.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.4"

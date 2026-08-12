@@ -55,7 +55,15 @@ export class LocalUiCommandClient implements UiCommandClient {
 
   async #dispatch(command: UiCommand): Promise<unknown> {
     if (command.kind === "project.list") return this.options.projects?.list() ?? [];
-    if (command.kind === "project.activate") { if (!this.options.activateProject) throw new AlphionError("forbidden", "Project activation is unavailable.", { stage: "ui" }); await this.options.activateProject(command.projectId); return { activated: command.projectId }; }
+    if (command.kind === "project.activate") {
+      if (!this.options.activateProject) throw new AlphionError("forbidden", "Project activation is unavailable.", { stage: "ui" });
+      for (const run of this.#runs.values()) run.cancel("Project is switching.");
+      this.#approval.close();
+      await Promise.allSettled([...this.#runs.values()].map((run) => run.result));
+      await this.options.activateProject(command.projectId);
+      this.#publish({ kind: "stream.resync-required", cursor: this.#cursor });
+      return { activated: command.projectId };
+    }
     const application = this.options.application();
     switch (command.kind) {
       case "session.list": return application.sessions.list();
