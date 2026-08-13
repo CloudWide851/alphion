@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0] - 2026-08-13
+
+- Added revision-checked, idempotent transactional Session Fork across Core, SQLite, CLI, TUI, WebUI and Electron, with remapped independent history, preserved Evidence and immutable provenance.
+- Migrated SQLite to schema v6 after a verified `.v5-backup`, enforcing same-Session parents/current leaves and retaining non-fork v5 Sessions without invented history.
+- Added subscribe-first `surface.snapshot`, cursor-watermarked resync and bounded 30/60 FPS event frames so slow surfaces never block Agent execution.
+- Added shared safe code projections with deterministic highlighting, streaming previews, bounded truncation, TUI `NO_COLOR`, and Web/Desktop copy/scroll rendering.
+- Isolated Node and Electron `better-sqlite3` ABI install trees, added native preflight/doctor diagnostics, and stopped misclassifying `NODE_MODULE_VERSION` failures as database corruption.
+- Added TUI `/fork` with argv-only new-terminal launch and failure recovery; Web/Desktop select a new Fork in the current surface.
+- Enforced a 32768-byte limit for maintained source, tests, configuration, Trellis specs and docs, with explicit generated/binary/lockfile exceptions.
+
+This pre-1.0 milestone adds public Session Fork, Session record schema v3, SQLite v6 and shared Snapshot/Frame contracts. To roll back, stop all Alphion processes, preserve the v6 files for diagnosis, restore the verified adjacent `.v5-backup`, then run v0.5.0; v0.5.0 rejects schema v6 and post-migration Fork data is not retained. Native ABI mismatch recovery repairs the corresponding install tree and never deletes the database.
+
 ## [0.5.0] - 2026-08-12
 
 - Added case-insensitive/realpath-unique Project registration, one active Project writer, isolated per-Project SQLite state and a least-privilege unowned domain.

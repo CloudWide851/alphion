@@ -6,23 +6,24 @@
 
 Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前 **v0.5.0** 把运行层级扩展为 `Project → shared Agent → Session → Run → Turn → ToolCall`：每个活动 Project 拥有一个无 Session 可变状态的 Agent，同域 Session 可在有界预算内协作，跨 Project 严格隔离。中文聊天式 TUI、本地 loopback WebUI 和 Electron Desktop 共享命令、事件、Markdown 与 revision/cursor 合同。
+当前 **v0.6.0** 延续 `Project → shared Agent → Session → Run → Turn → ToolCall`，增加同域事务型 Session Fork、SQLite v6、Snapshot/Frame 自动刷新、安全代码投影，以及 Node/Electron 原生 SQLite ABI 隔离。中文聊天式 TUI、本地 loopback WebUI 和 Electron Desktop 共享命令、事件、Markdown 与 revision/cursor 合同。
 
 资源优先级固定为内置 → 用户共享 → 项目 `.alphion-resources/manifest.json` → Session overrides。扩展包仅支持声明式资源，不执行第三方 JavaScript。用户资源根可通过 `ALPHION_RESOURCE_HOME` 指定，否则使用平台标准配置目录。
 
-这是新的 0.x 能力里程碑。SQLite 已迁移到 `better-sqlite3` 和 user_version 5；首次打开 v4 数据库会先 checkpoint 并创建相邻 `.v4-backup`。v0.4.x Desktop JSONL Host 已移除，`alphion/desktop` 现在是 Electron IPC 合同。回滚必须停止所有 Alphion 进程、恢复 `.v4-backup` 并切回 v0.4.0；迁移后的 v5 Project/协作数据会丢失。
+这是新的 0.x 能力里程碑。SQLite user_version 为 6；首次打开 v5 数据库会先 checkpoint 并创建、验证相邻 `.v5-backup`。回滚必须停止所有 Alphion 进程、恢复 `.v5-backup` 并切回 v0.5.0；迁移后的 v6 Fork 数据会丢失。
 
 ## 当前能力
 
 - 项目级共享 Agent 与分层 Session/Run/Turn/ToolCall；每个 Session 独立持有分支消息、双队列、运行租约、审批上下文、compaction 和 append-only AgentShape。
+- idle、已塑形 Session 可按当前 leaf 或指定 entry 原子 Fork；目标保留 Evidence、重映射 entry/Memory 引用、重新计算身份 digest，并记录不可变 provenance。
 - 四层声明式资源解析、确定性 SystemPrompt Composer、任务分类与最小 HarnessPlan，以及 CodeGraph 优先、词法降级的有界代码召回。
 - Node/TypeScript 优先的确定性只读 Project Profile，识别语言、运行时、模块系统、包管理器、框架、质量命令、Git/CI、约束、风险和冲突；未知项目安全降级。
 - 每次运行自动注入最多 2,048 estimated tokens 的不可变 ContextPack；安全、目标、权限和强约束不会被可选画像事实挤出预算。
 - 运行期 Working Memory 仅由当前任务事件 reducer 重放，跟踪阶段、轮次、工具、Evidence、错误和用量，不写入长期记忆。
 - OpenAI-compatible Chat Completions 与 Responses 双协议；DeepSeek、Kimi、Qwen、GLM 提供内置大陆/国际 official endpoint，普通配置无需 Base URL，只有自定义兼容 Provider 接受 URL。
-- 简体中文聊天式 Ink TUI、React/Vite loopback WebUI 和 Electron Desktop；三端完整渲染共享安全 Markdown（GFM 表格、任务、代码、链接与 TeX），reasoning 不可见。
+- 简体中文聊天式 Ink TUI、React/Vite loopback WebUI 和 Electron Desktop；三端完整渲染共享安全 Markdown 与受限代码投影（语言、高亮、复制/裁剪、稳定 digest），reasoning 不可见。
 - `read`、`grep`、`edit`、`write` 和 `shell` 工具；写入和进程执行必须逐次审批。
-- SQLite 权威事件写入与 SHA-256 审计链；UI fan-out 为每订阅者 256 项/1 MiB 的非阻塞队列，慢消费者通过 cursor/snapshot resync，不延迟 AgentLoop。
+- SQLite 权威事件写入与 SHA-256 审计链；三端先订阅再取 snapshot，按 30/60 FPS frame 合并 delta/invalidation，慢消费者通过 cursor resync，不延迟 AgentLoop。
 - 进程内 LRU + SQLite L2 缓存、single-flight 合并、策略/权限/项目修订失效和可选 provider prompt caching；疑似秘密不进入缓存。
 - Project 注册层保证名称/realpath 唯一、每项目独立 SQLite v5；同域 `session.send` 支持 idle 自动 Run 与 busy steering，并限制 8 hop/每 Run 4 次发送。
 - WebUI 只绑定 `127.0.0.1`，采用 HttpOnly/Origin/CSRF/SSE；Electron 开启 sandbox/contextIsolation、禁用 Node integration/任意导航，preload 仅暴露五个 allowlisted IPC 通道。
@@ -34,7 +35,7 @@ Alphion 是一个面向不同软件项目、在证据和安全边界内持续优
 - Node.js 22.13+
 - TypeScript 5.9+
 - ESM
-- `better-sqlite3` 含原生 ABI；Electron 打包前需运行 `npm run desktop:deps`
+- `better-sqlite3` 含原生 ABI；根安装树固定用于 Node，Electron 使用忽略的独立 `.desktop-runtime/`，打包前运行 `npm run desktop:deps`
 
 ```bash
 npm install
@@ -79,12 +80,12 @@ policy shell allow/list/remove
 cache stats/clear
 doctor [--json]
 project inspect [--refresh] [--json]
-session create/list/show/shape/reshape/checkout/send/steer/follow-up
+session create/list/show/shape/reshape/checkout/send/steer/follow-up/fork
 resource list/doctor
 desktop
 web [--port PORT]
 run --prompt ...
-tui
+tui [--session SESSION_ID]
 ```
 
 `edit`、`write` 和 `shell` 只在交互式终端逐次展示完整动作并批准；管道、CI 或其他无 TTY 场景默认拒绝。shell 还必须匹配本地白名单中的可执行文件、摘要和参数前缀。这个边界是“白名单 + 审批”的进程控制，不是操作系统级沙箱。
@@ -107,7 +108,7 @@ benchmarks/   通信、缓存和 SQLite 基线
 
 ## 公共接口
 
-根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 Agent、Project/Session、AgentShape、HarnessPlan、ResourceResolution、SystemPromptPlan 与 Provider/runtime 端口。稳定子路径包括 `alphion/runtime`、`alphion/providers`、`alphion/resources`、`alphion/webui`、`alphion/desktop` 及既有具体 adapter。Provider profile schema v2 继续支持环境变量或加密 SQLite 凭据引用；SQLite user_version 现为 5。
+根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 Agent、Project/Session、AgentShape、HarnessPlan、ResourceResolution、SystemPromptPlan 与 Provider/runtime 端口。稳定子路径包括 `alphion/runtime`、`alphion/providers`、`alphion/resources`、`alphion/webui`、`alphion/desktop` 及既有具体 adapter。Provider profile schema v2 继续支持环境变量或加密 SQLite 凭据引用；AgentSessionRecord schema v3 可携带 Fork provenance，SQLite user_version 现为 6。
 
 当当前分支超过模型上下文预算时，会话会从原始分支重建压缩：保留最近两个交互周期及系统/目标/验收、权限/约束/revision、失败、Evidence 和未解决项，并可调用同一 Provider 生成禁用工具、`temperature: 0`、闭合 JSON schema 校验的结构化摘要；超时、非法输出或 Provider 失败会确定性回退。模型 reasoning 只存在于实时 `AgentStreamEvent`，不进入 SQLite 事件、会话条目、重放、Working Memory 或持久缓存。
 
