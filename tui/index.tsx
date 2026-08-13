@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
 import { openLocalAlphionApplication } from "../adapters/local/local-application.js";
 import type {
@@ -6,7 +6,6 @@ import type {
   AgentSessionContract,
   AgentSessionRecord,
   HarnessPlan,
-  AgentRunHandle,
   DiagnosticReport,
   ProjectProfile,
   ProviderPreset,
@@ -14,8 +13,11 @@ import type {
   ProviderProfileInput,
   ApprovalPort,
 } from "../src/index.js";
-import { TuiApprovalPort, type PendingApproval } from "./approval-port.js";
-import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "./run-projection.js";
+import { TuiApprovalPort } from "./approval-port.js";
+import { sanitizeTerminalText } from "./run-projection.js";
+import { ChatEntry, TextEntry } from "./input.js";
+import { RunView } from "./run-view.js";
+import { accent, AppShell, borderColor, BRAND_PURPLE, ChatHome, SettingsCard, textColor, selectWorkbenchLayout, type ChatMessage, type WorkbenchLayout, type WorkbenchSection } from "./shell.js";
 import { parseMarkdown, renderMarkdownText } from "../ui/markdown.js";
 
 export interface RunTuiOptions {
@@ -23,9 +25,11 @@ export interface RunTuiOptions {
   readonly statePath?: string;
 }
 
+export { AppShell, ChatHome, SettingsCard, selectWorkbenchLayout } from "./shell.js";
+export { ChatEntry, TextEntry } from "./input.js";
+export type { WorkbenchLayout, WorkbenchSection } from "./shell.js";
+
 type Screen = "loading" | "vault-setup" | "vault-unlock" | "workbench" | "provider-form" | "credential" | "run";
-export type WorkbenchSection = "home" | "settings" | "projects" | "profile" | "providers" | "sessions" | "resources" | "harness" | "doctor" | "help";
-export type WorkbenchLayout = "wide" | "narrow" | "compact";
 
 interface ProviderDraft {
   readonly existing?: ProviderProfile;
@@ -42,29 +46,6 @@ interface WorkbenchSnapshot {
   readonly diagnostics?: DiagnosticReport;
 }
 
-interface ChatMessage { readonly id: string; readonly role: "user" | "assistant"; readonly content: string; }
-
-const SECTIONS: readonly Readonly<{ id: WorkbenchSection; label: string; short: string }>[] = Object.freeze([
-  { id: "home", label: "对话", short: "对话" },
-  { id: "settings", label: "设置", short: "设置" },
-  { id: "projects", label: "项目", short: "项目" },
-  { id: "profile", label: "项目画像", short: "画像" },
-  { id: "providers", label: "Provider / Vault", short: "Provider" },
-  { id: "sessions", label: "共享会话", short: "会话" },
-  { id: "resources", label: "Agent 资源", short: "资源" },
-  { id: "harness", label: "HarnessPlan", short: "Harness" },
-  { id: "doctor", label: "只读诊断", short: "诊断" },
-  { id: "help", label: "快捷命令", short: "帮助" },
-]);
-const BRAND_PURPLE = "#A377F6";
-const ALPHION_LOGO = Object.freeze([
-  " █████╗ ██╗     ██████╗ ██╗  ██╗██╗ ██████╗ ███╗   ██╗",
-  "██╔══██╗██║     ██╔══██╗██║  ██║██║██╔═══██╗████╗  ██║",
-  "███████║██║     ██████╔╝███████║██║██║   ██║██╔██╗ ██║",
-  "██╔══██║██║     ██╔═══╝ ██╔══██║██║██║   ██║██║╚██╗██║",
-  "██║  ██║███████╗██║     ██║  ██║██║╚██████╔╝██║ ╚████║",
-  "╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝",
-]);
 
 export async function runTui(options: RunTuiOptions): Promise<number> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return 1;
@@ -212,7 +193,6 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
       <RunView
         application={application}
         approval={approval}
-        projectRoot={projectRoot}
         prompt={runPrompt}
         {...(runSession ? { session: runSession } : {})}
         {...(runProviderId ? { providerId: runProviderId } : {})}
@@ -249,75 +229,6 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
     {section === "doctor" ? <DoctorView {...(snapshot.diagnostics ? { report: snapshot.diagnostics } : {})} onRefresh={() => void refreshSnapshot().catch((cause: unknown) => setError(safeError(cause)))} /> : null}
     {section === "help" ? <HelpCard /> : null}
   </AppShell>;
-}
-
-export function selectWorkbenchLayout(columns: number, rows: number): WorkbenchLayout {
-  if (rows < 18) return "compact";
-  return columns >= 100 ? "wide" : "narrow";
-}
-
-export function AppShell(props: Readonly<{
-  section: WorkbenchSection;
-  layout: WorkbenchLayout;
-  colorEnabled: boolean;
-  projectRoot: string;
-  error?: string;
-  help?: boolean;
-  children: React.ReactNode;
-}>): React.JSX.Element {
-  return <Box flexDirection="column" paddingX={1}>
-    {props.section === "home" ? null : contentHeader(props)}
-    {props.children}
-    {props.error ? <Box borderStyle="round" {...borderColor("red")} paddingX={1}><Text {...textColor("red")}>✗ {sanitizeTerminalText(props.error)}</Text></Box> : null}
-    {props.help ? <Box borderStyle="round" paddingX={1}><Text>↑/↓ 选择 · Enter 确认 · Esc 返回对话 · ? 帮助 · q 退出 · Ctrl+C 取消/退出</Text></Box> : null}
-    {props.section === "home" ? null : <Text dimColor>Esc 返回对话 · ↑/↓ 选择 · Enter 确认 · ? 帮助 · q 退出</Text>}
-  </Box>;
-}
-
-function contentHeader(props: Readonly<{ section: WorkbenchSection; layout: WorkbenchLayout; colorEnabled: boolean; projectRoot: string }>): React.JSX.Element {
-  const current = SECTIONS.find((entry) => entry.id === props.section);
-  return <Box flexDirection="column" marginTop={props.layout === "compact" ? 0 : 1} marginBottom={props.layout === "compact" ? 0 : 1}>
-    <Text bold {...accent(props.colorEnabled)}>ALPHION · {current?.label ?? "对话"}</Text>
-    {props.layout === "compact" ? null : <Text dimColor>{sanitizeTerminalText(props.projectRoot)}</Text>}
-  </Box>;
-}
-
-function LoadingView({ colorEnabled }: Readonly<{ colorEnabled: boolean }>): React.JSX.Element {
-  return <Box flexDirection="column" paddingX={1}><Text bold {...accent(colorEnabled)}>ALPHION</Text><Text>◌ 正在准备对话…</Text></Box>;
-}
-
-function EntryShell(props: Readonly<{ title: string; colorEnabled: boolean; error?: string; children: React.ReactNode }>): React.JSX.Element {
-  return <Box flexDirection="column" paddingX={1}><Text bold {...accent(props.colorEnabled)}>ALPHION · {props.title}</Text>{props.error ? <Text {...textColor("red")}>✗ {sanitizeTerminalText(props.error)}</Text> : null}{props.children}</Box>;
-}
-
-export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; messages?: readonly ChatMessage[]; compact: boolean; onSubmit: (value: string) => void }>): React.JSX.Element {
-  const messages = props.messages ?? [];
-  return <Box flexDirection="column" minHeight={props.compact ? 10 : 18} justifyContent="space-between">
-    {messages.length === 0 ? <Box flexDirection="column" alignItems="center" marginTop={props.compact ? 0 : 2}>
-      {props.compact ? null : ALPHION_LOGO.map((line) => <Text key={line} bold {...accent(process.env.NO_COLOR === undefined)}>{line}</Text>)}
-      <Text bold {...accent(process.env.NO_COLOR === undefined)}>ALPHION</Text>
-      <Text dimColor>{props.activeProfile ? `${props.activeProfile.name} · ${props.activeProfile.model}` : "请先使用 /providers 配置 Provider"}</Text>
-    </Box> : <Box flexDirection="column">{messages.slice(props.compact ? -4 : -10).map((message) => <Box key={message.id} flexDirection="column" marginBottom={1}>
-      <Text bold {...(message.role === "assistant" ? accent(process.env.NO_COLOR === undefined) : {})}>{message.role === "assistant" ? "Alphion" : "你"}</Text>
-      <Text>{renderMarkdownText(parseMarkdown(message.content), 88)}</Text>
-    </Box>)}</Box>}
-    <ChatEntry disabled={!props.activeProfile} onSubmit={props.onSubmit} />
-  </Box>;
-}
-
-export function SettingsCard(props: Readonly<{ onSelect: (section: WorkbenchSection) => void }>): React.JSX.Element {
-  const items = SECTIONS.filter((entry) => !["home", "settings"].includes(entry.id));
-  const [selected, setSelected] = useState(0);
-  const selectedRef = useRef(0);
-  const select = (value: number) => { selectedRef.current = value; setSelected(value); };
-  useInput((_input, key) => {
-    if (key.upArrow) select(Math.max(0, selectedRef.current - 1));
-    else if (key.downArrow) select(Math.min(items.length - 1, selectedRef.current + 1));
-    else if (key.return) { const item = items[selectedRef.current]; if (item) props.onSelect(item.id); }
-  });
-  return <Box flexDirection="column" borderStyle="round" paddingX={1} {...borderColor(BRAND_PURPLE)}>
-    {items.map((item, index) => <Text key={item.id} {...(index === selected ? accent(process.env.NO_COLOR === undefined) : {})}>{index === selected ? "◆" : "◇"} /{item.id} · {item.label}</Text>)}
-  </Box>;
 }
 
 function ProjectCard({ projectRoot }: Readonly<{ projectRoot: string }>): React.JSX.Element {
@@ -490,124 +401,6 @@ function PresetPicker(props: Readonly<{ presets: readonly ProviderPreset[]; sele
   return <Box flexDirection="column"><Text>选择 Provider 预设</Text>{props.presets.map((preset, index) => <Text key={preset.id} {...(index === selected ? accent(process.env.NO_COLOR === undefined) : {})}>{index === selected ? "◆" : "◇"} {preset.label}</Text>)}</Box>;
 }
 
-export function TextEntry(props: Readonly<{ label: string; initialValue?: string; masked?: boolean; clearOnSubmit?: boolean; resetKey?: string | number; onSubmit: (value: string) => void; onCancel?: () => void }>): React.JSX.Element {
-  const [value, setValue] = useState(props.initialValue ?? "");
-  const valueRef = useRef(props.initialValue ?? "");
-  const replaceValue = (next: string) => { valueRef.current = next; setValue(next); };
-  useEffect(() => {
-    replaceValue(props.initialValue ?? "");
-    return () => { valueRef.current = ""; };
-  }, [props.initialValue, props.label, props.masked, props.resetKey]);
-  useInput((input, key) => {
-    if (key.return) {
-      if (valueRef.current.trim().length > 0) {
-        const submitted = valueRef.current;
-        if (props.masked || props.clearOnSubmit) replaceValue("");
-        props.onSubmit(submitted);
-      }
-      return;
-    }
-    if (key.escape) { replaceValue(""); props.onCancel?.(); return; }
-    if (key.backspace || key.delete) { replaceValue(valueRef.current.slice(0, -1)); return; }
-    if (!key.ctrl && !key.meta && input) replaceValue(valueRef.current + input);
-  });
-  return <Box flexDirection="column" marginTop={1}><Text>{props.label}</Text><Text {...accent(process.env.NO_COLOR === undefined)}>› {props.masked ? "•".repeat(value.length) : sanitizeTerminalText(value)}</Text><Text dimColor>Enter 确认 · Esc 返回</Text></Box>;
-}
-
-export function ChatEntry(props: Readonly<{ disabled?: boolean; onSubmit: (value: string) => void }>): React.JSX.Element {
-  const [value, setValue] = useState("");
-  const valueRef = useRef("");
-  const replaceValue = (next: string) => { valueRef.current = next; setValue(next); };
-  useEffect(() => () => { valueRef.current = ""; }, []);
-  useInput((input, key) => {
-    if (props.disabled) return;
-    if ((key.meta && key.return) || (key.ctrl && input === "j")) { replaceValue(`${valueRef.current}\n`); return; }
-    if (key.return) {
-      if (valueRef.current.trim()) { const submitted = valueRef.current; replaceValue(""); props.onSubmit(submitted); }
-      return;
-    }
-    if (key.backspace || key.delete) { replaceValue(valueRef.current.slice(0, -1)); return; }
-    if (!key.ctrl && !key.meta && input) replaceValue(valueRef.current + input);
-  });
-  return <Box flexDirection="column" marginTop={1} borderStyle="round" paddingX={1} {...borderColor(BRAND_PURPLE)}>
-    <Text {...accent(process.env.NO_COLOR === undefined)}>› {props.disabled ? "先使用 /providers 配置并激活 Provider" : sanitizeTerminalText(value) || "输入消息，或使用 /settings"}</Text>
-    <Text dimColor>Enter 发送 · Alt+Enter / Ctrl+J 换行</Text>
-  </Box>;
-}
-
-function RunView(props: Readonly<{ application: AgentApplication; approval: TuiApprovalPort; projectRoot: string; prompt: string; providerId?: string; session?: AgentSessionContract; onDone: (answer: string) => void; onExit: () => void }>): React.JSX.Element {
-  const [projection, dispatch] = useReducer(reduceRunProjection, EMPTY_RUN_PROJECTION);
-  const [pendingApproval, setPendingApproval] = useState<PendingApproval | undefined>();
-  const handle = useRef<AgentRunHandle | undefined>(undefined);
-  const started = useRef(false);
-  const activeSession = useRef<AgentSessionContract | undefined>(props.session);
-  const [queueMode, setQueueMode] = useState<"steer" | "follow-up" | undefined>();
-
-  useEffect(() => props.approval.subscribe(setPendingApproval), [props.approval]);
-  useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    dispatch({ type: "reset" });
-    let active = true;
-    let flushTimer: ReturnType<typeof setTimeout> | undefined;
-    let answerBuffer = "";
-    let lastFlush = Date.now();
-    const flush = () => {
-      if (flushTimer) clearTimeout(flushTimer);
-      flushTimer = undefined;
-      if (!active) return;
-      if (answerBuffer) { dispatch({ type: "answer-delta", delta: answerBuffer }); answerBuffer = ""; }
-      lastFlush = Date.now();
-    };
-    const scheduleFlush = () => {
-      if (!active || flushTimer) return;
-      flushTimer = setTimeout(flush, Math.max(0, 33 - (Date.now() - lastFlush)));
-    };
-    const resolveSession = props.session ? Promise.resolve(props.session) : props.application.sessions.create({ title: props.prompt.slice(0, 80), ...(props.providerId ? { providerId: props.providerId } : {}) });
-    void resolveSession
-      .then(async (session) => { activeSession.current = session; return session.send(props.prompt, { expectedRevision: (await session.get()).revision, idempotencyKey: `tui:send:${Date.now()}` }, props.approval); })
-      .then(async (runHandle) => {
-        handle.current = runHandle;
-        for await (const event of runHandle.events) {
-          if (event.kind === "model.delta" && typeof event.payload.delta === "string") { answerBuffer += event.payload.delta; scheduleFlush(); }
-          else if (!("delivery" in event)) { flush(); dispatch({ type: "event", event }); }
-        }
-        flush();
-        await runHandle.result;
-      })
-      .catch((cause: unknown) => { if (active) dispatch({ type: "run-error", message: safeError(cause) }); });
-    return () => { active = false; if (flushTimer) clearTimeout(flushTimer); handle.current?.cancel("TUI view closed."); };
-  }, [props.application, props.approval, props.projectRoot, props.prompt, props.providerId]);
-
-  useInput((input, key) => {
-    if (queueMode) return;
-    if (pendingApproval && (input === "y" || input === "n")) pendingApproval.decide(input === "y");
-    else if (input === "s" && projection.status === "running") setQueueMode("steer");
-    else if (input === "f") setQueueMode("follow-up");
-    else if (key.ctrl && input === "c") { if (projection.status === "running") handle.current?.cancel("Cancelled from TUI."); else props.onExit(); }
-    else if (key.return && projection.status !== "running") props.onDone(projection.answer);
-  });
-
-  if (queueMode) return <TextEntry label={queueMode === "steer" ? "注入下一模型边界（steer）" : "排队终态后续（follow-up）"} onCancel={() => setQueueMode(undefined)} onSubmit={(content) => {
-    const value = activeSession.current;
-    if (!value) { dispatch({ type: "run-error", message: "会话尚未准备好。" }); setQueueMode(undefined); return; }
-    void value.get().then((record) => queueMode === "steer"
-      ? value.steer(content, { expectedRevision: record.revision, idempotencyKey: `tui:steer:${Date.now()}` })
-      : value.followUp(content, { expectedRevision: record.revision, idempotencyKey: `tui:follow-up:${Date.now()}` }, props.approval))
-      .then(() => { setQueueMode(undefined); })
-      .catch((cause: unknown) => { dispatch({ type: "run-error", message: safeError(cause) }); setQueueMode(undefined); });
-  }} />;
-
-  return <Box flexDirection="column" marginTop={1}>
-    <Text bold>状态 · {projection.status}</Text>
-    <Text>{projection.answer ? renderMarkdownText(parseMarkdown(projection.answer), 88) : "◌ 等待模型输出…"}</Text>
-    <Text dimColor>tokens 输入={projection.inputTokens} 输出={projection.outputTokens} 缓存={projection.cachedInputTokens}</Text>
-    {projection.message ? <Text {...(projection.status === "failed" ? textColor("red") : {})}>{projection.message}</Text> : null}
-    {pendingApproval ? <Box flexDirection="column" borderStyle="round" {...borderColor("yellow")} paddingX={1}><Text bold>! 需要逐次审批：{sanitizeTerminalText(pendingApproval.request.toolName)}</Text><Text>{sanitizeTerminalText(pendingApproval.request.summary)}</Text><Text>y 批准此精确动作 · n 拒绝</Text></Box> : null}
-    <Text dimColor>{projection.status === "running" ? "s steer · f follow-up · Ctrl+C 取消" : "f follow-up · Enter 返回对话"}</Text>
-  </Box>;
-}
-
 function presetDraft(preset: ProviderPreset | undefined): ProviderDraft {
   const fallback: ProviderPreset = { id: "deepseek", label: "DeepSeek（中国大陆）", kind: "deepseek", region: "mainland", requiresBaseUrl: false, models: ["deepseek-chat"], protocol: "chat-completions" };
   const value = preset ?? fallback;
@@ -652,18 +445,6 @@ function authLabel(profile: ProviderProfile): string {
 
 function shortRevision(value: string): string {
   return value.length > 12 ? value.slice(0, 12) : value;
-}
-
-function accent(enabled: boolean): Readonly<{ color?: string }> {
-  return enabled ? { color: BRAND_PURPLE } : {};
-}
-
-function textColor(color: string): Readonly<{ color?: string }> {
-  return process.env.NO_COLOR === undefined ? { color } : {};
-}
-
-function borderColor(color: string): Readonly<{ borderColor?: string }> {
-  return process.env.NO_COLOR === undefined ? { borderColor: color } : {};
 }
 
 function safeError(value: unknown): string {

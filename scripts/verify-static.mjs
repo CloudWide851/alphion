@@ -19,10 +19,17 @@ const fileOutput = execFileSync("git", ["ls-files", "--cached", "--others", "--e
   encoding: "utf8",
 });
 const files = fileOutput.split(/\r?\n/).filter(Boolean);
+const sizeExemptions = new Set(["package-lock.json"]);
 for (const file of files) {
   if (/(^|\/)(?:node_modules|dist|\.alphion)(?:\/|$)/.test(file)) continue;
   const absolute = resolve(root, file);
-  if (!existsSync(absolute) || ![".ts", ".js", ".mjs", ".json", ".md", ".bat"].includes(extname(file).toLowerCase())) continue;
+  if (!existsSync(absolute)) continue;
+  const extension = extname(file).toLowerCase();
+  const maintained = [".ts", ".tsx", ".js", ".cjs", ".mjs", ".json", ".md", ".bat", ".yml", ".yaml", ".css", ".html"].includes(extension);
+  if (maintained && !sizeExemptions.has(file.replaceAll("\\", "/"))) {
+    assert(Buffer.byteLength(readFileSync(absolute)) <= 32 * 1024, `maintained file exceeds 32 KiB: ${file}`);
+  }
+  if (![".ts", ".tsx", ".js", ".cjs", ".mjs", ".json", ".md", ".bat"].includes(extension)) continue;
   const content = readFileSync(absolute, "utf8");
   assert(!/\bsk-[A-Za-z0-9_-]{16,}\b/.test(content), `possible API key in ${file}`);
 }
