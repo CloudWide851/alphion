@@ -74,7 +74,7 @@ function App(): React.JSX.Element {
     const result = await api.execute({ kind: "surface.snapshot", ...(preferredId ? { selectedSessionId: preferredId } : {}) });
     const snapshot = result.result as UiSurfaceSnapshot;
     cursor.current = Math.max(cursor.current, snapshot.cursor);
-    const values = snapshot.sessions as SessionItem[];
+    const values: readonly SessionItem[] = snapshot.sessions;
     setSessions(values);
     const selected = values.find((item) => item.id === snapshot.selectedSessionId) ?? values[0];
     if (selected && snapshot.selectedView) { setActive(snapshot.selectedView.session as SessionItem); setMessages(sessionMessages(snapshot.selectedView)); }

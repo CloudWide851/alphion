@@ -69,7 +69,7 @@ function fakeSession(status: "idle" | "running", receipt: SessionForkReceipt): A
     id: "session_source_0001",
     get: () => Promise.resolve({ schemaVersion: 3, id: "session_source_0001", domainId: "domain_0001", title: "source", revision: 4, status, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), auditOnly: false, shapeStatus: "shaped", shapeRevision: 1, shapeDigest: "a".repeat(64) }),
     fork: () => Promise.resolve(receipt),
-  } as AgentSessionContract;
+  } as unknown as AgentSessionContract;
 }
 
 function forkReceipt(targetId: string): SessionForkReceipt {

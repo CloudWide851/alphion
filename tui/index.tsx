@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
 import { openLocalAlphionApplication } from "../adapters/local/local-application.js";
 import type {
@@ -15,10 +15,10 @@ import type {
 } from "../src/index.js";
 import { TuiApprovalPort } from "./approval-port.js";
 import { sanitizeTerminalText } from "./run-projection.js";
-import { ChatEntry, TextEntry } from "./input.js";
+import { TextEntry } from "./input.js";
 import { RunView } from "./run-view.js";
-import { accent, AppShell, borderColor, BRAND_PURPLE, ChatHome, SettingsCard, textColor, selectWorkbenchLayout, type ChatMessage, type WorkbenchLayout, type WorkbenchSection } from "./shell.js";
-import { parseMarkdown, renderMarkdownText } from "../ui/markdown.js";
+import { accent, AppShell, ChatHome, SettingsCard, textColor, selectWorkbenchLayout, type ChatMessage, type WorkbenchSection } from "./shell.js";
+import { EntryShell, LoadingView } from "./entry-shell.js";
 import { PlatformTerminalLauncher, type TerminalLauncher } from "./terminal-launcher.js";
 import { forkTuiSession } from "./session-fork.js";
 

@@ -31,7 +31,7 @@ export function RunView(props: Readonly<{ application: AgentApplication; approva
   return <Box flexDirection="column" marginTop={1}>
     <Text bold>状态 · {projection.status}</Text><Text>{projection.answer ? renderMarkdownText(parseMarkdown(projection.answer), 88) : "◌ 等待模型输出…"}</Text>
     <Text dimColor>tokens 输入={projection.inputTokens} 输出={projection.outputTokens} 缓存={projection.cachedInputTokens}</Text>
-    {projection.message ? <Text color={projection.status === "failed" && process.env.NO_COLOR === undefined ? "red" : undefined}>{projection.message}</Text> : null}
+    {projection.message ? <Text {...(projection.status === "failed" && process.env.NO_COLOR === undefined ? { color: "red" as const } : {})}>{projection.message}</Text> : null}
     {pendingApproval ? <Box flexDirection="column" borderStyle="round" borderColor={process.env.NO_COLOR === undefined ? "yellow" : undefined} paddingX={1}><Text bold>! 需要逐次审批：{sanitizeTerminalText(pendingApproval.request.toolName)}</Text><Text>{sanitizeTerminalText(pendingApproval.request.summary)}</Text><Text>y 批准此精确动作 · n 拒绝</Text></Box> : null}
     <Text dimColor>{projection.status === "running" ? "s steer · f follow-up · Ctrl+C 取消" : "f follow-up · Enter 返回对话"}</Text>
   </Box>;

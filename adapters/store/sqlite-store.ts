@@ -1,6 +1,6 @@
 import type {
   AgentMessage, AgentSessionRecord, AgentShape, AgentShapeReceipt, PendingMessageKind,
-  PendingSessionMessage, SessionForkReceipt, SessionForkRequest, SessionMessageReceipt, SessionMessageRequest, SessionView,
+  PendingSessionMessage, SessionEntry, SessionForkReceipt, SessionForkRequest, SessionMessageReceipt, SessionMessageRequest, SessionView,
   SessionWriteOptions, SessionWriteReceipt,
 } from "../../src/domain/contracts.js";
 import type { SessionStore } from "../../src/ports/index.js";

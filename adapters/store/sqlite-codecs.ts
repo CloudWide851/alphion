@@ -1,5 +1,4 @@
-import { createCipheriv, createDecipheriv, scryptSync } from "node:crypto";
-import { resolve } from "node:path";
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
 import type {
   AgentMessage, AgentSessionRecord, AgentShape, PendingSessionMessage,
   ProviderProfile, ProviderProfileInput, SessionEntry, SessionForkProvenance, SessionMessageReceipt, ShellRule,

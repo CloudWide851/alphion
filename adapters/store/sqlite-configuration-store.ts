@@ -1,17 +1,16 @@
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import type { ProviderProfile, ProviderProfileInput, ShellRule, VaultStatus } from "../../src/domain/contracts.js";
 import type { CacheEntry, CacheStats, CacheStore, ProviderProfileStore, SecretVault, ShellPolicyStore } from "../../src/ports/index.js";
-import { canonicalJson, createId } from "../../src/application/canonical.js";
+import { createId } from "../../src/application/canonical.js";
 import { AlphionError } from "../../src/application/errors.js";
 import { containsPotentialSecret } from "../../src/application/sensitive-data.js";
-import { resolveProviderEndpoint } from "../model/provider-catalog.js";
 import { SqliteStoreBase } from "./sqlite-store-base.js";
-import { SCRYPT_OPTIONS, VAULT_AUTO_LOCK_MS, VAULT_SCHEMA_VERSION, VAULT_VERIFIER } from "./sqlite-constants.js";
+import { SCRYPT_OPTIONS, VAULT_SCHEMA_VERSION, VAULT_VERIFIER } from "./sqlite-constants.js";
 import {
   decodeCacheEntry, decodeProviderProfile, decodeShellRule, decryptValue, deriveVaultKey, encryptValue,
-  optionalRow, pathKey, readBoolean, readBuffer, readNumber, readString, requiredRow, secretAad,
+  optionalRow, pathKey, readBuffer, readNumber, readString, requiredRow, secretAad,
   type VaultMetadata, validateMasterPassword, validateProviderProfile, vaultVerifierAad,
 } from "./sqlite-codecs.js";
 
@@ -74,7 +73,7 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
           now,
           now,
         );
-      return this.getProfile(input.id);
+      return this.requireProfile(input.id);
     });
     return profile;
   }
@@ -105,7 +104,7 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
       const id = readString(found, "id");
       this.database.exec("UPDATE provider_profiles SET active = 0");
       this.database.prepare("UPDATE provider_profiles SET active = 1, revision = revision + 1, updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
-      return this.getProfile(id);
+      return this.requireProfile(id);
     });
     return profile;
   }
@@ -256,7 +255,7 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
         .run(secretId, now, profile.id);
     });
     this.touchVault();
-    return this.getProfile(profile.id);
+    return this.requireProfile(profile.id);
   }
 
   async removeCredential(profileId: string): Promise<ProviderProfile> {
@@ -274,7 +273,7 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
         .run(new Date().toISOString(), profile.id);
     });
     this.touchVault();
-    return this.getProfile(profile.id);
+    return this.requireProfile(profile.id);
   }
 
   async rotateMasterPassword(currentPassword: string, nextPassword: string): Promise<void> {
@@ -500,7 +499,7 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
     return undefined;
   }
 
-  private getProfile(id: string): ProviderProfile {
+  private requireProfile(id: string): ProviderProfile {
     const row = optionalRow(this.database.prepare("SELECT * FROM provider_profiles WHERE id = ?").get(id));
     if (!row) throw new AlphionError("internal", "Provider profile disappeared during transaction.", { stage: "database" });
     return decodeProviderProfile(row);

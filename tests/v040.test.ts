@@ -41,7 +41,7 @@ test("ResourceLoader v2 merges four scopes with provenance and stable digest", a
 test("SystemPromptComposer keeps root sections and omits optional resources deterministically", () => {
   const resource = { id: "large", kind: "prompt" as const, source: "inline", content: "x".repeat(5000), digest: sha256("x".repeat(5000)), dependencies: [], tags: [], provenance: { scope: "project" as const, packageId: "test", manifestPath: "manifest.json", sourcePath: "inline" } };
   const composer = new SystemPromptComposer();
-  const input = { identity: { id: "alphion", name: "Alphion", description: "Agent" }, projectRevision: "revision", goal: "goal", sessionBehavior: { compaction: "hybrid", steering: true, followUps: true }, capabilities: ["project.read"], policies: ["default-deny"], resources: [resource], budgetTokens: 256 } as const;
+  const input = { sessionId: "session", identity: { id: "alphion", name: "Alphion", description: "Agent" }, projectRevision: "revision", goal: "goal", sessionBehavior: { compaction: "hybrid", steering: true, followUps: true }, capabilities: ["project.read"], policies: ["default-deny"], resources: [resource], budgetTokens: 256 } as const;
   const plan = composer.compose(input);
   assert.deepEqual(plan.sections.slice(0, 4).map((item) => item.id), ["core.identity", "workspace", "session", "capability-policy"]);
   assert.deepEqual(plan.omissions, ["resource.large:budget"]);

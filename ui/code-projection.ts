@@ -26,7 +26,8 @@ export function projectCode(value: string, language?: string, closed = true): Co
   const normalizedLanguage = normalizeLanguage(language);
   const truncated = code.length < normalized.length || lines.length > MAX_CODE_LINES;
   const preview = code.slice(0, 4_096);
-  return Object.freeze({ schemaVersion: 1, ...(normalizedLanguage ? { language: normalizedLanguage } : {}), code, preview, originalCharacters: normalized.length, originalLines: lines.length, digest: sha256Text(normalized), truncated, closed, tokens: Object.freeze(closed ? tokenize(code, normalizedLanguage) : [{ kind: "plain", value: preview }]) });
+  const tokens: readonly CodeToken[] = closed ? tokenize(code, normalizedLanguage) : [{ kind: "plain", value: preview }];
+  return Object.freeze({ schemaVersion: 1, ...(normalizedLanguage ? { language: normalizedLanguage } : {}), code, preview, originalCharacters: normalized.length, originalLines: lines.length, digest: sha256Text(normalized), truncated, closed, tokens: Object.freeze(tokens) });
 }
 
 export function renderTerminalCode(projection: CodeProjection, columns: number, color = process.env.NO_COLOR === undefined): string {

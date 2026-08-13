@@ -50,7 +50,7 @@ test("transactional fork clones one visible branch with independent identities a
     assert.equal(replay.replayed, true);
     assert.equal(replay.session.id, receipt.session.id);
     await assert.rejects(store.forkSession({ ...request, title: "changed" }), /different request/iu);
-    const partial = await store.forkSession({ sourceSessionId: created.id, sourceEntryId: first.entryId, expectedRevision: memoryReceipt.revision, idempotencyKey: "fork:v060:fork:0002" });
+    const partial = await store.forkSession({ sourceSessionId: created.id, ...(first.entryId ? { sourceEntryId: first.entryId } : {}), expectedRevision: memoryReceipt.revision, idempotencyKey: "fork:v060:fork:0002" });
     assert.equal(partial.entryMapping.length, 3);
     assert.equal((await store.getSessionView(partial.session.id))?.entries.length, 4);
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
@@ -98,7 +98,7 @@ test("SQLite v5 migrates through verified backup and enforces same-Session paren
 });
 
 function user(content: string): AgentMessage { return Object.freeze({ schemaVersion: 1, kind: "user", id: `message-${content}`, createdAt: new Date(0).toISOString(), content }); }
-function observation(): AgentMessage { return Object.freeze({ schemaVersion: 1, kind: "observation", id: "message-observation", createdAt: new Date(1).toISOString(), toolCallId: "call-v060", toolName: "read", content: "fact", evidence: { id: "evidence-v060", kind: "file", summary: "verified", digest: "a".repeat(64) }, isError: false }); }
+function observation(): AgentMessage { return Object.freeze({ schemaVersion: 1, kind: "observation", id: "message-observation", createdAt: new Date(1).toISOString(), toolCallId: "call-v060", toolName: "read", content: "fact", evidence: { id: "evidence-v060", kind: "file" as const, summary: "verified", digest: "a".repeat(64) }, isError: false }); }
 function memory(sourceEntryId: string): Extract<AgentMessage, { readonly kind: "memory" }> { const content = "remember"; const sourceEntryIds = [sourceEntryId]; return Object.freeze({ schemaVersion: 1, kind: "memory", id: "message-memory", createdAt: new Date(2).toISOString(), content, sourceEntryIds, digest: sha256(canonicalJson({ sourceEntryIds, summary: content })) }); }
 function shape(sessionId: string): AgentShape {
   const systemBase = { schemaVersion: 1 as const, sections: [{ id: "session", kind: "session" as const, authority: "session" as const, content: "goal", required: true, provenance: ["session-shape", `session:${sessionId}`], estimatedTokens: 1, digest: sha256("goal") }], omissions: [], budgetTokens: 2048, estimatedTokens: 1, rendered: "goal" };

@@ -2,6 +2,22 @@ import type { AgentBudgets, AgentRunRequest, AgentToolCall, EvidenceRef, Groundi
 import { emptyProviderUsage } from "../protocol/events.js";
 import { AlphionError } from "./errors.js";
 
+export const DEFAULT_BUDGETS: AgentBudgets = Object.freeze({
+  maxTurns: 12,
+  maxToolCalls: 32,
+  maxOutputTokens: 4096,
+  maxOutputBytes: 1024 * 1024,
+  runTimeoutMs: 300_000,
+  modelTimeoutMs: 60_000,
+});
+
+export interface TurnOutcome {
+  readonly text: string;
+  readonly reasoningContent: string;
+  readonly toolCalls: readonly AgentToolCall[];
+  readonly usage: ProviderUsage;
+}
+
 export function validateRunRequest(request: AgentRunRequest): void {
   if (request.prompt.trim().length === 0) {
     throw new AlphionError("validation", "Prompt must not be empty.", { stage: "request" });

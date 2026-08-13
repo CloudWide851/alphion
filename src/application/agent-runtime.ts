@@ -5,10 +5,8 @@ import type {
   AgentRunResult,
   AgentToolCall,
   EvidenceRef,
-  GroundingReport,
   ProviderEvent,
   ProviderRequest,
-  ProviderUsage,
   ToolResult,
   WorkingMemorySnapshot,
 } from "../domain/contracts.js";
@@ -36,15 +34,7 @@ import {
   buildGroundingReport, decodeProviderEvents, decodeToolResult, formatToolObservation, mergeBudgets,
   summarizeProviderEvents, validateRunRequest,
 } from "./agent-runtime-codecs.js";
-
-const DEFAULT_BUDGETS: AgentBudgets = Object.freeze({
-  maxTurns: 12,
-  maxToolCalls: 32,
-  maxOutputTokens: 4096,
-  maxOutputBytes: 1024 * 1024,
-  runTimeoutMs: 300_000,
-  modelTimeoutMs: 60_000,
-});
+import type { TurnOutcome } from "./agent-runtime-codecs.js";
 
 export interface AgentLoopOptions {
   readonly provider: AgentProvider;
@@ -68,13 +58,6 @@ interface RuntimeContext {
   readonly budgets: AgentBudgets;
   mutationRevision: number;
   workingMemory: WorkingMemorySnapshot;
-}
-
-interface TurnOutcome {
-  readonly text: string;
-  readonly reasoningContent: string;
-  readonly toolCalls: readonly AgentToolCall[];
-  readonly usage: ProviderUsage;
 }
 
 interface ToolPipelineResult {

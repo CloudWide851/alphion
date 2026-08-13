@@ -1,11 +1,11 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { openSqliteDatabase, type SqliteDatabase } from "./database.js";
-import { canonicalJson, createId, sha256 } from "../../src/application/canonical.js";
+import { createId, sha256 } from "../../src/application/canonical.js";
 import { AlphionError } from "../../src/application/errors.js";
 import {
-  assertDatabaseHealthy, decodeProviderProfile, logicalDatabaseDigest, optionalRow, readNumber,
-  pathKey, readString, requiredRow, tableColumns, validateProviderProfile,
+  assertDatabaseHealthy, logicalDatabaseDigest, optionalRow, parseRecord, pathKey, readBoolean,
+  readNullableString, readNumber, readString, requiredRow, tableColumns,
 } from "./sqlite-codecs.js";
 import { SQLITE_SCHEMA_VERSION, VAULT_AUTO_LOCK_MS } from "./sqlite-constants.js";
 import { createSessionForkSchemaV6 } from "./sqlite-fork-schema.js";
