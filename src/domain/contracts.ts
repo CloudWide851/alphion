@@ -7,6 +7,8 @@ export interface ProviderCapabilities {
   readonly tools: boolean;
   readonly promptCaching: boolean;
   readonly reasoning: boolean;
+  /** Explicit operator acknowledgement for a model absent from a built-in catalog. */
+  readonly unlistedModel?: boolean;
 }
 
 export type ProviderAuth = Readonly<

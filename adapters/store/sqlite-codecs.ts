@@ -69,7 +69,8 @@ export function validateProviderProfile(
     typeof input.capabilities.streaming !== "boolean" ||
     typeof input.capabilities.tools !== "boolean" ||
     typeof input.capabilities.promptCaching !== "boolean" ||
-    typeof input.capabilities.reasoning !== "boolean"
+    typeof input.capabilities.reasoning !== "boolean" ||
+    (input.capabilities.unlistedModel !== undefined && typeof input.capabilities.unlistedModel !== "boolean")
   ) {
     throw new AlphionError("validation", "Provider capabilities must be booleans.", { stage: "config" });
   }
@@ -101,6 +102,7 @@ export function decodeProviderProfile(row: Readonly<Record<string, unknown>>): P
   const tools = readBoolean(capabilities, "tools");
   const promptCaching = readBoolean(capabilities, "promptCaching");
   const reasoning = readBoolean(capabilities, "reasoning");
+  const unlistedModel = capabilities.unlistedModel === undefined ? undefined : readBoolean(capabilities, "unlistedModel");
   const auth = authMode === "none"
     ? ({ mode: "none" } as const)
     : authMode === "bearer-env"
@@ -117,14 +119,14 @@ export function decodeProviderProfile(row: Readonly<Record<string, unknown>>): P
     model: readString(row, "model"),
     protocol,
     auth,
-    capabilities: { streaming, tools, promptCaching, reasoning },
+    capabilities: { streaming, tools, promptCaching, reasoning, ...(unlistedModel === true ? { unlistedModel: true } : {}) },
     revision: readNumber(row, "revision"),
     active: readNumber(row, "active") === 1,
   } as const;
   if (kind === "custom-openai-compatible") return { ...base, kind, baseUrl: storedEndpoint };
   if (kind === "deepseek" || kind === "kimi" || kind === "qwen" || kind === "glm") {
     const profile: ProviderProfile = { ...base, kind, presetId: storedEndpoint };
-    validateProviderPreset(profile);
+    validateProviderPreset(profile, true);
     return profile;
   }
   throw new AlphionError("integrity-failed", `Invalid provider kind: ${kind}`, { stage: "database" });

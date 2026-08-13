@@ -112,7 +112,7 @@ test("provider list keyboard navigation dispatches adapter intents", async () =>
 test("built-in Provider form saves without asking for a Base URL", async () => {
   let saved: unknown;
   const view = render(React.createElement(ProviderForm, {
-    draft: { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "moonshot-v1-8k" },
+    draft: { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "moonshot-v1-8k", catalogModels: ["moonshot-v1-8k", "kimi-k2-0711-preview"] },
     presets: [],
     onSave: (value: unknown) => { saved = value; },
     onCancel: () => undefined,
@@ -120,9 +120,10 @@ test("built-in Provider form saves without asking for a Base URL", async () => {
   assert.doesNotMatch(view.lastFrame() ?? "", /Base URL/u);
   view.stdin.write("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.match(view.lastFrame() ?? "", /catalog|moonshot-v1-8k/u);
   view.stdin.write("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(saved, { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "moonshot-v1-8k" });
+  assert.deepEqual(saved, { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "moonshot-v1-8k", catalogModels: ["moonshot-v1-8k", "kimi-k2-0711-preview"] });
   assert.doesNotMatch(view.lastFrame() ?? "", /Base URL/u);
   view.unmount();
 });

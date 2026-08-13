@@ -168,8 +168,7 @@ export class AgentLoop {
         ...(context.request.contextPack
           ? [{ role: "system" as const, content: context.request.contextPack.rendered }]
           : []),
-        ...(context.request.modelContextMessages ?? []),
-        { role: "user", content: context.request.prompt },
+        ...(context.request.modelContextMessages ?? [{ role: "user" as const, content: context.request.prompt }]),
       ];
 
       while (turns < context.budgets.maxTurns) {
@@ -234,6 +233,7 @@ export class AgentLoop {
           code: normalized.code,
           stage: normalized.stage,
           retryable: normalized.retryable,
+          ...(normalized.reason ? { reason: normalized.reason } : {}),
           message: normalized.message,
         });
       } catch {
@@ -413,10 +413,14 @@ export class AgentLoop {
       const settled = group.length === 1
         ? [await this.#executeTool(group[0] as AgentToolCall, context)]
         : await Promise.all(group.map((call) => {
+            const requests: Readonly<Record<string, unknown>>[] = [];
             const updates: string[] = [];
             const completions: Readonly<Record<string, unknown>>[] = [];
-            return this.#executeTool(call, context, updates, completions).then((result) => ({ result, updates, completions }));
+            return this.#executeTool(call, context, updates, completions, requests).then((result) => ({ result, requests, updates, completions }));
           })).then(async (items) => {
+            for (const item of items) {
+              for (const payload of item.requests) await this.#emit(context, "tool.requested", payload);
+            }
             for (const item of items) {
               for (const content of item.updates) await this.#emit(context, "tool.updated", { toolCallId: item.result.call.id, toolName: item.result.call.name, content });
             }
@@ -445,6 +449,7 @@ export class AgentLoop {
     context: RuntimeContext,
     bufferedUpdates?: string[],
     bufferedCompletions?: Readonly<Record<string, unknown>>[],
+    bufferedRequests?: Readonly<Record<string, unknown>>[],
   ): Promise<ToolPipelineResult> {
     const complete = async (payload: Readonly<Record<string, unknown>>): Promise<void> => {
       if (bufferedCompletions) bufferedCompletions.push(payload);
@@ -460,7 +465,9 @@ export class AgentLoop {
     let requestedPersisted = false;
     const persistRequested = async (argumentsValue: Readonly<Record<string, unknown>>) => {
       if (requestedPersisted) return;
-      await this.#emit(context, "tool.requested", { toolCallId: call.id, toolName: call.name, arguments: argumentsValue, final: true });
+      const payload = { toolCallId: call.id, toolName: call.name, arguments: argumentsValue, final: true } as const;
+      if (bufferedRequests) bufferedRequests.push(payload);
+      else await this.#emit(context, "tool.requested", payload);
       requestedPersisted = true;
     };
     try {

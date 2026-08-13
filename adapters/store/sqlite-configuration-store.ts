@@ -195,8 +195,9 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
         .get(reference),
     );
     if (!row) return undefined;
+    let plaintext: Buffer | undefined;
     try {
-      const plaintext = decryptValue(
+      plaintext = decryptValue(
         key,
         readBuffer(row, "nonce"),
         readBuffer(row, "ciphertext"),
@@ -208,8 +209,11 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
     } catch (error) {
       throw new AlphionError("integrity-failed", "Encrypted credential failed authentication.", {
         stage: "vault",
+        reason: "credential-authentication-failed",
         cause: error,
       });
+    } finally {
+      plaintext?.fill(0);
     }
   }
 
@@ -225,11 +229,10 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
     );
     const secretId = existing ? readString(existing, "secret_id") : createId("vault");
     const secretRevision = existing ? readNumber(existing, "revision") + 1 : 1;
-    const encrypted = encryptValue(
-      key,
-      Buffer.from(secret, "utf8"),
-      secretAad(secretId, profile.id, secretRevision),
-    );
+    const plaintext = Buffer.from(secret, "utf8");
+    let encrypted: ReturnType<typeof encryptValue>;
+    try { encrypted = encryptValue(key, plaintext, secretAad(secretId, profile.id, secretRevision)); }
+    finally { plaintext.fill(0); }
     this.transaction(() => {
       const now = new Date().toISOString();
       this.database
@@ -528,7 +531,7 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
   private requireVaultKey(): Buffer {
     this.expireVaultIfNeeded();
     if (!this.vaultKey) {
-      throw new AlphionError("forbidden", "Credential vault is locked.", { stage: "vault" });
+      throw new AlphionError("forbidden", "Credential vault is locked.", { stage: "vault", reason: "vault-locked" });
     }
     this.touchVault();
     return this.vaultKey;

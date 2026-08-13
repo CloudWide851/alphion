@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { DeepSeekProvider } from "../adapters/model/deepseek.js";
+import { AlphionError } from "../src/application/errors.js";
 import type { ProviderEvent, ProviderProfile, ProviderRequest } from "../src/domain/contracts.js";
 
 const REQUEST: ProviderRequest = {
@@ -111,6 +112,27 @@ test("DeepSeek normalizes an AbortSignal timeout", async () => {
       collect(deepSeekProvider(baseUrl, false).generate(REQUEST, signal)),
       /timeout/i,
     );
+  });
+});
+
+test("DeepSeek resolves credentials for each request and safely classifies rejection", async () => {
+  let resolutions = 0;
+  await withServer(async (request, response) => {
+    await readBody(request);
+    response.writeHead(401, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: { message: "sensitive remote credential detail", type: "authentication_error" } }));
+  }, async (baseUrl) => {
+    const base = profile(false);
+    const provider = new DeepSeekProvider({ ...base, capabilities: { ...base.capabilities, streaming: false } }, { resolve: () => { resolutions += 1; return Promise.resolve(TEST_KEY); } }, endpoint(baseUrl));
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await assert.rejects(collect(provider.generate(REQUEST, new AbortController().signal)), (error) => {
+        assert.ok(error instanceof AlphionError);
+        assert.equal(error.reason, "credential-rejected");
+        assert.doesNotMatch(error.message, /sensitive remote/u);
+        return true;
+      });
+    }
+    assert.equal(resolutions, 2);
   });
 });
 

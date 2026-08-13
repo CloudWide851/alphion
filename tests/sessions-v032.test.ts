@@ -204,6 +204,7 @@ test("session injects steering at the next model boundary and launches terminal 
     session = testSession(record.id, store, agent);
     const activeSession = session;
     const first = await activeSession.send("initial", { expectedRevision: record.revision, idempotencyKey: "send:flow:0001" }, approval);
+    assert.deepEqual(agent.requests[0]?.history, []);
     const running = await activeSession.get();
     await activeSession.steer("redirect", { expectedRevision: running.revision, idempotencyKey: "steer:flow:0001" });
     const hooks = agent.hooks[0];
@@ -216,6 +217,7 @@ test("session injects steering at the next model boundary and launches terminal 
     await waitUntil(() => agent.requests.length === 2);
     assert.equal(agent.maxActive, 1);
     assert.equal(agent.requests[1]?.prompt, "after terminal");
+    assert.deepEqual(agent.requests[1]?.history.filter((message) => message.kind === "user").map((message) => "content" in message ? message.content : ""), ["initial"]);
     agent.complete(1, "follow done");
     await waitUntil(async () => (await activeSession.get()).status === "idle");
     const idleRevision = (await activeSession.get()).revision;
@@ -255,6 +257,7 @@ test("session branch replay retains tool, evidence, approval and failure events 
     const handle = await session.send("inspect", { expectedRevision: record.revision, idempotencyKey: "send:replay:0001" }, allowApproval());
     await agent.emit(0, { delivery: "transient", runId: handle.runId, sessionId: record.id, correlationId: handle.runId, timestamp: new Date(0).toISOString(), kind: "model.reasoning.delta", payload: { delta: "private chain" } });
     await agent.emit(0, sessionEvent(handle.runId, record.id, 2, "tool.requested", { toolCallId: "call-1", toolName: "project.read", arguments: { path: "README.md" }, final: true }));
+    await agent.emit(0, sessionEvent(handle.runId, record.id, 2, "tool.updated", { toolCallId: "call-1", toolName: "project.read", content: "halfway" }));
     await agent.emit(0, sessionEvent(handle.runId, record.id, 3, "approval.requested", { requestId: "approval-1", toolName: "project.read", actionDigest: "a".repeat(64) }));
     await agent.emit(0, sessionEvent(handle.runId, record.id, 4, "approval.resolved", { requestId: "approval-1", approved: true, reason: "operator approved" }));
     await agent.emit(0, sessionEvent(handle.runId, record.id, 5, "tool.completed", { toolCallId: "call-1", toolName: "project.read", content: "observed", isError: false, evidence: { id: "evidence-1", kind: "file", digest: "b".repeat(64), summary: "README" } }));
@@ -296,14 +299,14 @@ test("a stalled Session subscriber receives resync without delaying Run completi
 });
 
 class SessionAgentDouble implements AgentContract {
-  readonly requests: Array<{ readonly prompt: string }> = [];
+  readonly requests: Array<{ readonly prompt: string; readonly history: readonly AgentMessage[] }> = [];
   readonly hooks: AgentExecutionHooks[] = [];
   readonly #runs: Array<{ readonly channel: BoundedEventChannel<AgentStreamEvent>; readonly resolve: (result: AgentRunResult) => void; readonly runId: string; readonly sessionId: string }> = [];
   active = 0;
   maxActive = 0;
 
   execute(request: Parameters<AgentContract["execute"]>[0], _approval: ApprovalPort, hooks?: AgentExecutionHooks): Promise<AgentRunHandle> {
-    this.requests.push({ prompt: request.prompt });
+    this.requests.push({ prompt: request.prompt, history: request.history });
     if (hooks) this.hooks.push(hooks);
     this.active += 1;
     this.maxActive = Math.max(this.maxActive, this.active);

@@ -18,6 +18,7 @@ import type {
 } from "../../src/domain/contracts.js";
 import type { AgentProvider, SecretResolver } from "../../src/ports/index.js";
 import { resolveProviderEndpoint } from "./provider-catalog.js";
+import { validateProviderPreset } from "./provider-catalog.js";
 
 export const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com";
 export const DEEPSEEK_MODELS = Object.freeze(["deepseek-chat", "deepseek-reasoner"] as const);
@@ -64,6 +65,7 @@ export class DeepSeekProvider implements AgentProvider {
     if (this.profile.auth.mode === "none") {
       throw new AlphionError("dependency-unavailable", "DeepSeek requires a configured API credential.", {
         stage: "provider",
+        reason: "credential-unavailable",
       });
     }
     const reference = this.profile.auth.mode === "bearer-env"
@@ -73,6 +75,7 @@ export class DeepSeekProvider implements AgentProvider {
     if (!apiKey) {
       throw new AlphionError("dependency-unavailable", "The DeepSeek credential is unavailable or the vault is locked.", {
         stage: "provider",
+        reason: "credential-unavailable",
       });
     }
     return new OpenAI({ apiKey, baseURL: this.#endpoint(this.profile), maxRetries: 0 });
@@ -146,6 +149,7 @@ function validateProfile(profile: ProviderProfile, endpoint: (profile: ProviderP
       stage: "provider",
     });
   }
+  validateProviderPreset(profile);
   let url: URL;
   try {
     url = new URL(endpoint(profile));
@@ -318,15 +322,24 @@ function normalizeDeepSeekError(error: unknown): AlphionError {
     });
   }
   if (error instanceof OpenAI.APIError) {
-    return new AlphionError("dependency-unavailable", `DeepSeek request failed with HTTP ${error.status}.`, {
+    const credentialRejected = error.status === 401 || error.status === 403;
+    const requestRejected = error.status === 400 || error.status === 404 || error.status === 422;
+    const message = credentialRejected
+      ? "DeepSeek rejected the configured credential."
+      : requestRejected
+        ? "DeepSeek rejected the configured model or request."
+        : `DeepSeek request failed with HTTP ${error.status}.`;
+    return new AlphionError("dependency-unavailable", message, {
       stage: "provider",
       retryable: isRetryable(error),
+      reason: credentialRejected ? "credential-rejected" : requestRejected ? "model-or-request-rejected" : "provider-failure",
       cause: error,
     });
   }
   return new AlphionError("dependency-unavailable", "DeepSeek request failed.", {
     stage: "provider",
     retryable: isRetryable(error),
+    reason: "provider-unavailable",
     cause: error,
   });
 }

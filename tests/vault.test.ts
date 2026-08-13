@@ -32,11 +32,12 @@ test("encrypted SQLite vault imports, locks, rotates, removes, and never stores 
     assert.equal(imported.auth.mode, "encrypted-sqlite");
     if (imported.auth.mode !== "encrypted-sqlite") assert.fail("Expected encrypted auth.");
     assert.equal(await store.resolve(imported.auth.secretId), secret);
+    assert.equal(await store.resolve(imported.auth.secretId), secret);
     assert.equal((await store.status()).secretCount, 1);
     const initialNonce = readVaultNonce(path, imported.auth.secretId);
 
     store.lock();
-    await assert.rejects(store.resolve(imported.auth.secretId), /locked/i);
+    await assert.rejects(store.resolve(imported.auth.secretId), (error) => error instanceof Error && "reason" in error && error.reason === "vault-locked");
     await assert.rejects(store.unlock("wrong password value"), /could not be unlocked/i);
     await store.unlock(MASTER_ONE);
     await store.rotateMasterPassword(MASTER_ONE, MASTER_TWO);
@@ -129,7 +130,7 @@ test("vault detects ciphertext tampering and reset preserves profiles", async ()
 
     const reopened = new SqliteStore({ path });
     await reopened.unlock(MASTER_ONE);
-    await assert.rejects(reopened.resolve(secretId), /failed authentication/i);
+    await assert.rejects(reopened.resolve(secretId), (error) => error instanceof Error && "reason" in error && error.reason === "credential-authentication-failed");
     assert.equal(await reopened.reset(), 1);
     assert.equal((await reopened.getProfile("deepseek"))?.auth.mode, "none");
     assert.deepEqual(await reopened.status(), { initialized: false, locked: true, secretCount: 0, autoLockMs: 900_000 });

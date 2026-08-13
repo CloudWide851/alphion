@@ -25,7 +25,7 @@ import type {
 } from "../../src/domain/contracts.js";
 import type { AgentProvider, SecretResolver } from "../../src/ports/index.js";
 import { AlphionError } from "../../src/application/errors.js";
-import { resolveProviderEndpoint } from "./provider-catalog.js";
+import { resolveProviderEndpoint, validateProviderPreset } from "./provider-catalog.js";
 
 export class OpenAICompatibleProvider implements AgentProvider {
   readonly profile: ProviderProfile;
@@ -73,7 +73,7 @@ export class OpenAICompatibleProvider implements AgentProvider {
         throw new AlphionError(
           "dependency-unavailable",
           "The configured provider credential is unavailable or the vault is locked.",
-          { stage: "provider" },
+          { stage: "provider", reason: "credential-unavailable" },
         );
       }
       apiKey = resolved;
@@ -201,6 +201,7 @@ function validateProviderProfile(profile: ProviderProfile): void {
       stage: "provider",
     });
   }
+  validateProviderPreset(profile);
   let url: URL;
   try {
     url = new URL(resolveProviderEndpoint(profile));
@@ -423,15 +424,24 @@ function normalizeProviderError(error: unknown): AlphionError {
     });
   }
   if (error instanceof OpenAI.APIError) {
-    return new AlphionError("dependency-unavailable", `Compatible provider request failed with HTTP ${error.status}.`, {
+    const credentialRejected = error.status === 401 || error.status === 403;
+    const requestRejected = error.status === 400 || error.status === 404 || error.status === 422;
+    const message = credentialRejected
+      ? "Compatible provider rejected the configured credential."
+      : requestRejected
+        ? "Compatible provider rejected the configured model or request."
+        : `Compatible provider request failed with HTTP ${error.status}.`;
+    return new AlphionError("dependency-unavailable", message, {
       stage: "provider",
       retryable: isRetryableProviderError(error),
+      reason: credentialRejected ? "credential-rejected" : requestRejected ? "model-or-request-rejected" : "provider-failure",
       cause: error,
     });
   }
-  return new AlphionError("dependency-unavailable", error instanceof Error ? error.message : "Compatible provider request failed.", {
+  return new AlphionError("dependency-unavailable", "Compatible provider request failed.", {
     stage: "provider",
     retryable: isRetryableProviderError(error),
+    reason: "provider-unavailable",
     cause: error,
   });
 }

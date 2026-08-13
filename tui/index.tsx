@@ -22,6 +22,7 @@ import { EntryShell, LoadingView } from "./entry-shell.js";
 import { PlatformTerminalLauncher, type TerminalLauncher } from "./terminal-launcher.js";
 import { forkTuiSession } from "./session-fork.js";
 import { AlternateScreenSurface, type TerminalSurface } from "./terminal-surface.js";
+import { ProviderModelPicker } from "./provider-model-picker.js";
 
 export interface RunTuiOptions {
   readonly projectRoot: string;
@@ -45,6 +46,8 @@ interface ProviderDraft {
   readonly protocol: ProviderProfile["protocol"];
   readonly model: string;
   readonly baseUrl?: string;
+  readonly catalogModels?: readonly string[];
+  readonly unlistedModel?: boolean;
 }
 
 interface WorkbenchSnapshot {
@@ -239,7 +242,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
       selected={selected}
       onSelected={setSelected}
       onNew={() => { setDraft(presetDraft(presets[0])); setScreen("provider-form"); }}
-      onEdit={() => { if (current) { setDraft(profileDraft(current)); setScreen("provider-form"); } }}
+      onEdit={() => { if (current) { setDraft(profileDraft(current, presets)); setScreen("provider-form"); } }}
       onActivate={() => current && void application.configuration.activateProfile(current.id).then(async () => { await refreshProfiles(); await refreshSnapshot(); }).catch((cause: unknown) => setError(safeError(cause)))}
       onCredential={() => current && setScreen("credential")}
       onRemoveCredential={() => current && void application.configuration.removeCredential(current.id).then(async () => { await refreshProfiles(); await refreshSnapshot(); }).catch((cause: unknown) => setError(safeError(cause)))}
@@ -422,7 +425,10 @@ export function ProviderForm(props: Readonly<{ draft: ProviderDraft; presets: re
     return <PresetPicker presets={props.presets} selectedId={value.presetId} onSelect={(preset) => { setValue(presetDraft(preset)); setStep(1); }} onCancel={props.onCancel} />;
   }
   if (step <= 1) return <TextEntry label="配置名称" initialValue={value.name} onSubmit={(name) => { setValue({ ...value, name }); setStep(2); }} onCancel={props.onCancel} />;
-  if (step === 2) return <TextEntry label="模型" initialValue={value.model} onSubmit={(model) => {
+  if (step === 2 && value.kind !== "custom-openai-compatible" && value.catalogModels && !value.unlistedModel) {
+    return <ProviderModelPicker models={value.catalogModels} selectedModel={value.model} onSelect={(model) => props.onSave({ ...value, model })} onAdvanced={() => { setValue({ ...value, unlistedModel: true }); }} onCancel={() => setStep(1)} />;
+  }
+  if (step === 2) return <TextEntry label={value.unlistedModel ? "高级自定义模型（不受 catalog 保证）" : "模型"} initialValue={value.model} onSubmit={(model) => {
     const next = { ...value, model };
     if (next.kind === "custom-openai-compatible") { setValue(next); setStep(3); }
     else props.onSave(next);
@@ -445,11 +451,12 @@ function PresetPicker(props: Readonly<{ presets: readonly ProviderPreset[]; sele
 function presetDraft(preset: ProviderPreset | undefined): ProviderDraft {
   const fallback: ProviderPreset = { id: "deepseek", label: "DeepSeek（中国大陆）", kind: "deepseek", region: "mainland", requiresBaseUrl: false, models: ["deepseek-chat"], protocol: "chat-completions" };
   const value = preset ?? fallback;
-  return { presetId: value.id, name: value.label, kind: value.kind, protocol: value.protocol, model: value.models[0] ?? "", ...(value.requiresBaseUrl ? { baseUrl: "" } : {}) };
+  return { presetId: value.id, name: value.label, kind: value.kind, protocol: value.protocol, model: value.models[0] ?? "", catalogModels: value.models, ...(value.requiresBaseUrl ? { baseUrl: "" } : {}) };
 }
 
-function profileDraft(profile: ProviderProfile): ProviderDraft {
-  return { existing: profile, presetId: profile.kind === "custom-openai-compatible" ? profile.kind : profile.presetId, name: profile.name, kind: profile.kind, protocol: profile.protocol, model: profile.model, ...(profile.kind === "custom-openai-compatible" ? { baseUrl: profile.baseUrl } : {}) };
+function profileDraft(profile: ProviderProfile, presets: readonly ProviderPreset[]): ProviderDraft {
+  const catalogModels = profile.kind === "custom-openai-compatible" ? undefined : presets.find((preset) => preset.id === profile.presetId)?.models;
+  return { existing: profile, presetId: profile.kind === "custom-openai-compatible" ? profile.kind : profile.presetId, name: profile.name, kind: profile.kind, protocol: profile.protocol, model: profile.model, ...(catalogModels ? { catalogModels } : {}), ...(profile.capabilities.unlistedModel ? { unlistedModel: true } : {}), ...(profile.kind === "custom-openai-compatible" ? { baseUrl: profile.baseUrl } : {}) };
 }
 
 function toProfileInput(draft: ProviderDraft, firstProfile: boolean): ProviderProfileInput {
@@ -466,6 +473,7 @@ function toProfileInput(draft: ProviderDraft, firstProfile: boolean): ProviderPr
       tools: draft.existing?.capabilities.tools ?? true,
       promptCaching: draft.existing?.capabilities.promptCaching ?? false,
       reasoning: draft.kind === "deepseek" && draft.model.trim() === "deepseek-reasoner",
+      ...(draft.unlistedModel ? { unlistedModel: true } : {}),
     },
     active: draft.existing?.active ?? firstProfile,
   };

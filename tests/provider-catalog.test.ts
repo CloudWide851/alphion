@@ -34,6 +34,9 @@ test("Provider profiles reject mismatched presets and unsafe custom URLs", async
   const store = new SqliteStore({ path: join(directory, "state.sqlite3") });
   try {
     await assert.rejects(store.upsertProfile(builtIn("qwen", "kimi")), /does not match/iu);
+    await assert.rejects(store.upsertProfile({ ...builtIn("deepseek", "deepseek"), model: "deepseek-v4-flash" }), /not in the catalog/iu);
+    const advanced = await store.upsertProfile({ ...builtIn("deepseek", "deepseek"), id: "deepseek-advanced", model: "deepseek-v4-flash", capabilities: { ...builtIn("deepseek", "deepseek").capabilities, unlistedModel: true } });
+    assert.equal(advanced.capabilities.unlistedModel, true);
     await assert.rejects(store.upsertProfile(custom("http://example.com/v1")), /HTTPS or loopback/iu);
     await assert.rejects(store.upsertProfile(custom("https://user:pass@example.com/v1")), /credentials/iu);
     const saved = await store.upsertProfile(custom("http://127.0.0.1:1234/v1/"));
@@ -53,7 +56,7 @@ function builtIn(kind: BuiltInProviderKind, presetId: string): ProviderProfileIn
     name: `${kind}-${presetId}`,
     kind,
     presetId,
-    model: `${kind}-model`,
+    model: kind === "deepseek" ? "deepseek-chat" : kind === "kimi" ? "moonshot-v1-8k" : kind === "qwen" ? "qwen-plus" : "glm-4.5",
     protocol: "chat-completions",
     auth: { mode: "none" },
     capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false },

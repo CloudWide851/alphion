@@ -34,11 +34,14 @@ export function resolveProviderEndpoint(profile: ProviderProfile | ProviderProfi
   return profile.kind === "custom-openai-compatible" ? validateCustomEndpoint(profile.baseUrl) : providerCatalogEntry(profile.presetId).endpoint;
 }
 
-export function validateProviderPreset(profile: ProviderProfile | ProviderProfileInput): void {
+export function validateProviderPreset(profile: ProviderProfile | ProviderProfileInput, allowStoredUnlistedModel = false): void {
   if (profile.kind === "custom-openai-compatible") { validateCustomEndpoint(profile.baseUrl); return; }
   const preset = providerCatalogEntry(profile.presetId);
   if (preset.kind !== profile.kind) throw new AlphionError("validation", "Provider kind does not match its catalog preset.", { stage: "config" });
   if (preset.protocol !== profile.protocol) throw new AlphionError("validation", "Built-in Provider protocol does not match its catalog preset.", { stage: "config" });
+  if (!allowStoredUnlistedModel && !preset.models.includes(profile.model) && profile.capabilities.unlistedModel !== true) {
+    throw new AlphionError("validation", "Built-in Provider model is not in the catalog; use the explicit advanced unlisted-model flow.", { stage: "config", reason: "unlisted-model-confirmation-required" });
+  }
 }
 
 function entry(id: string, label: string, kind: BuiltInProviderKind, region: "mainland" | "international", endpoint: string, models: readonly string[]): CatalogEntry {

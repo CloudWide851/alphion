@@ -94,6 +94,7 @@ async function providerCommand(store: SqliteStore, command: string | undefined, 
         tools: booleanFlag(parsed, "tools", true),
         promptCaching: booleanFlag(parsed, "prompt-caching", false),
         reasoning: booleanFlag(parsed, "reasoning", kindValue === "deepseek" && requiredFlag(parsed, "model") === "deepseek-reasoner"),
+        ...(hasFlag(parsed, "allow-unlisted-model") ? { unlistedModel: true } : {}),
       },
       active: hasFlag(parsed, "active"),
     } as const;
@@ -350,7 +351,7 @@ function safeEventMessage(payload: Readonly<Record<string, unknown>>): string {
 function printHelp(): void {
   process.stdout.write(`Alphion v0.6.0\n\n`);
   process.stdout.write(`Commands:\n`);
-  process.stdout.write(`  provider set --id ID --preset deepseek|deepseek-international|kimi|kimi-international|qwen|qwen-international|glm|glm-international|custom-openai-compatible --model MODEL [--base-url URL for custom only] [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
+  process.stdout.write(`  provider set --id ID --preset deepseek|deepseek-international|kimi|kimi-international|qwen|qwen-international|glm|glm-international|custom-openai-compatible --model MODEL [--allow-unlisted-model] [--base-url URL for custom only] [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
   process.stdout.write(`  provider list\n  provider activate ID\n`);
   process.stdout.write(`  policy shell allow --executable ABSOLUTE_PATH [--arg-prefix VALUE ...]\n`);
   process.stdout.write(`  policy shell list\n  policy shell remove ID\n`);

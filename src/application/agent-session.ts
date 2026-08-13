@@ -214,9 +214,10 @@ export class AgentSession implements AgentSessionContract {
     const compactionProvider = this.options.models
       ? await this.options.models.resolveModel({ sessionId: this.id, ...(selectedProviderId ? { providerId: selectedProviderId } : {}), requiredCapabilities: shape.requiredProviderCapabilities })
       : undefined;
+    const priorEntries = branch.entries.filter((entry) => entry.runId !== runId && entry.message.kind !== "system-event" && entry.message.kind !== "human-approval");
     const history = compactionProvider
-      ? await compactSessionEntriesWithProvider(branch.entries, compactionProvider, AbortSignal.timeout(15_000))
-      : compactSessionEntries(branch.entries);
+      ? await compactSessionEntriesWithProvider(priorEntries, compactionProvider, AbortSignal.timeout(15_000))
+      : compactSessionEntries(priorEntries);
     const effectiveProviderId = selectedProviderId ?? compactionProvider?.profile.id;
     return this.options.agent.execute({ prompt, runId, sessionId: this.id, projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}), projectProfile: profile, history, environment, harnessPlan: shape.harnessPlan, shape, collaboration, ...(recall ? { recall } : {}) }, approval, {
       drainSteering: async (activeRunId, signal) => {
@@ -330,12 +331,7 @@ function projectEvent(event: AgentStreamEvent): AgentMessage | undefined {
       if (!callId || !name || !args || typeof args !== "object" || Array.isArray(args)) return undefined;
       return Object.freeze({ ...base, kind: "tool-call", call: Object.freeze({ id: callId, name, arguments: args as Readonly<Record<string, unknown>> }) });
     }
-    case "tool.updated": {
-      const callId = payloadString(event, "toolCallId");
-      const name = payloadString(event, "toolName");
-      if (!callId || !name) return undefined;
-      return Object.freeze({ ...base, kind: "observation", toolCallId: callId, toolName: name, content: payloadString(event, "content") ?? "Tool progress update.", isError: false });
-    }
+    case "tool.updated": return undefined;
     case "tool.completed": {
       const callId = payloadString(event, "toolCallId");
       const name = payloadString(event, "toolName");

@@ -14,17 +14,19 @@ export class AlphionError extends Error {
   readonly code: AlphionErrorCode;
   readonly retryable: boolean;
   readonly stage: string;
+  readonly reason: string | undefined;
 
   constructor(
     code: AlphionErrorCode,
     message: string,
-    options: Readonly<{ retryable?: boolean; stage?: string; cause?: unknown }> = {},
+    options: Readonly<{ retryable?: boolean; stage?: string; reason?: string; cause?: unknown }> = {},
   ) {
     super(message, { cause: options.cause });
     this.name = "AlphionError";
     this.code = code;
     this.retryable = options.retryable ?? false;
     this.stage = options.stage ?? "unknown";
+    this.reason = options.reason;
   }
 }
 

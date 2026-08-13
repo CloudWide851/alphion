@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import test from "node:test";
 import type { AddressInfo } from "node:net";
 import { OpenAICompatibleProvider } from "../adapters/model/openai-compatible.js";
+import { AlphionError } from "../src/application/errors.js";
 import type { OpenAICompatibleProtocol, ProviderEvent, ProviderProfile, ProviderRequest } from "../src/domain/contracts.js";
 
 const REQUEST: ProviderRequest = {
@@ -87,6 +88,30 @@ test("rate limiting retries once before output", async () => {
     assert.equal(requests, 2);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test("provider errors classify credentials and model requests without exposing remote bodies", async () => {
+  for (const [status, reason] of [[401, "credential-rejected"], [403, "credential-rejected"], [400, "model-or-request-rejected"], [404, "model-or-request-rejected"], [422, "model-or-request-rejected"]] as const) {
+    const server = createServer(async (request, response) => {
+      await readBody(request);
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "remote secret diagnostic must stay hidden", type: "request_error" } }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    try {
+      const base = profile(`http://127.0.0.1:${address.port}/v1`, "chat-completions");
+      const provider = new OpenAICompatibleProvider({ ...base, capabilities: { ...base.capabilities, streaming: false } }, noSecrets());
+      await assert.rejects(collect(provider.generate(REQUEST, new AbortController().signal)), (error) => {
+        assert.ok(error instanceof AlphionError);
+        assert.equal(error.reason, reason);
+        assert.doesNotMatch(error.message, /remote secret diagnostic/u);
+        return true;
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   }
 });
 
