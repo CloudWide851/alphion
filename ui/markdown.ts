@@ -1,3 +1,5 @@
+import { projectCode, renderTerminalCode, type CodeProjection } from "./code-projection.js";
+
 export type MarkdownInline =
   | Readonly<{ readonly kind: "text"; readonly value: string }>
   | Readonly<{ readonly kind: "strong" | "emphasis"; readonly children: readonly MarkdownInline[] }>
@@ -8,7 +10,7 @@ export type MarkdownInline =
 export type MarkdownBlock =
   | Readonly<{ readonly kind: "paragraph"; readonly children: readonly MarkdownInline[] }>
   | Readonly<{ readonly kind: "heading"; readonly level: 1 | 2 | 3 | 4 | 5 | 6; readonly children: readonly MarkdownInline[] }>
-  | Readonly<{ readonly kind: "code"; readonly language?: string; readonly value: string }>
+  | Readonly<{ readonly kind: "code"; readonly projection: CodeProjection }>
   | Readonly<{ readonly kind: "math"; readonly value: string }>
   | Readonly<{ readonly kind: "quote"; readonly children: readonly MarkdownBlock[] }>
   | Readonly<{ readonly kind: "list"; readonly ordered: boolean; readonly items: readonly Readonly<{ readonly checked?: boolean; readonly children: readonly MarkdownInline[] }>[] }>
@@ -41,9 +43,10 @@ export function parseMarkdown(source: string): MarkdownDocument {
       const marker = fence.groups.marker ?? "```";
       index += 1;
       while (index < lines.length && !(lines[index] ?? "").startsWith(marker)) content.push(lines[index++] ?? "");
-      if (index < lines.length) index += 1;
+      const closed = index < lines.length;
+      if (closed) index += 1;
       const language = fence.groups.language?.trim();
-      blocks.push(Object.freeze({ kind: "code", ...(language ? { language } : {}), value: content.join("\n") }));
+      blocks.push(Object.freeze({ kind: "code", projection: projectCode(content.join("\n"), language, closed) }));
       continue;
     }
     if (line.trim() === "$$") {
@@ -160,7 +163,7 @@ function renderBlock(block: MarkdownBlock, columns: number): string {
   switch (block.kind) {
     case "paragraph": return renderInline(block.children);
     case "heading": return `${"#".repeat(block.level)} ${renderInline(block.children)}`;
-    case "code": return `${block.language ? `[${block.language}]\n` : ""}${block.value}`;
+    case "code": return renderTerminalCode(block.projection, columns);
     case "math": return renderTexForTerminal(block.value);
     case "quote": return renderMarkdownText({ schemaVersion: 1, blocks: block.children }, columns - 2).split("\n").map((line) => `│ ${line}`).join("\n");
     case "list": return block.items.map((item, index) => `${block.ordered ? `${index + 1}.` : item.checked === undefined ? "•" : item.checked ? "☑" : "☐"} ${renderInline(item.children)}`).join("\n");
