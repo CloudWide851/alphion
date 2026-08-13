@@ -10,7 +10,7 @@ files:
   - alphion-icon.svg
 directories:
   app: .desktop-runtime
-  output: release
+  output: release/v0.6.0
 win:
   target:
     - target: nsis

@@ -5,7 +5,7 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
-assert(packageJson.version === "0.5.0", "package.json must be version 0.5.0");
+assert(packageJson.version === "0.6.0", "package.json must be version 0.6.0");
 assert(lock.version === packageJson.version, "package-lock top-level version must match package.json");
 assert(lock.packages?.[""]?.version === packageJson.version, "package-lock root package version must match package.json");
 assert(packageJson.engines?.node === ">=22.13", "Node engine must be >=22.13");
@@ -65,12 +65,14 @@ assert(adapterImports.every(({ target }) => !target?.includes("desktop") && !tar
 for (const desktopPath of ["desktop/main.ts", "desktop/preload.cts", "desktop/contracts.ts", "electron-builder.yml", "scripts/electron-abi-smoke.cjs", "scripts/node-abi-smoke.mjs", "scripts/prepare-desktop-runtime.mjs"]) assert(existsSync(resolve(root, desktopPath)), `Desktop Electron file must exist: ${desktopPath}`);
 const electronBuilder = readFileSync(resolve(root, "electron-builder.yml"), "utf8");
 assert(/app:\s*\.desktop-runtime/u.test(electronBuilder), "Electron packaging must use the isolated Desktop runtime tree");
+assert(/output:\s*release\/v0\.6\.0/u.test(electronBuilder), "Electron packaging must use a versioned ignored output directory");
 assert(/nsis:\s*[\s\S]*?artifactName:\s*Alphion-\$\{version\}-\$\{arch\}-setup\.\$\{ext\}/u.test(electronBuilder), "NSIS artifact must have a setup-specific name");
 assert(/portable:\s*[\s\S]*?artifactName:\s*Alphion-\$\{version\}-\$\{arch\}-portable\.\$\{ext\}/u.test(electronBuilder), "portable artifact must have a portable-specific name");
 for (const removedRpc of ["desktop/host.ts", "desktop/protocol.ts", "desktop/stdio.ts", "tests/desktop-rpc.test.ts"]) assert(!existsSync(resolve(root, removedRpc)), `removed Desktop JSONL file remains: ${removedRpc}`);
 assert(packageJson.scripts?.["desktop:deps"]?.includes("prepare-desktop-runtime.mjs --install"), "Desktop native dependencies must be installed in the isolated runtime tree");
 assert(!packageJson.scripts?.["desktop:deps"]?.startsWith("electron-builder"), "Desktop dependency preparation must not rebuild root node_modules");
 for (const script of ["clean-dist.mjs", "verify-built.mjs"]) assert(existsSync(resolve(root, "scripts", script)), `build verification script must exist: ${script}`);
+for (const file of files.filter((value) => value.startsWith("scripts/") && /\.(?:cjs|mjs)$/u.test(value))) execFileSync(process.execPath, ["--check", resolve(root, file)], { cwd: root, stdio: "ignore" });
 
 const markdownFiles = [...files.filter((file) => file.endsWith(".md")), ...listMarkdown(resolve(root, "docs"))];
 const linkPattern = /\[[^\]]*\]\(([^)]+)\)/g;
