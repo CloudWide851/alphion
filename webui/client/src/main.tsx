@@ -7,6 +7,8 @@ import type { CodeProjection } from "../../../ui/code-projection.js";
 import type { UiCommand, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiSurfaceSnapshot } from "../../../ui/contracts.js";
 import type { DesktopApprovalDecision, DesktopRendererBridge } from "../../../desktop/contracts.js";
 import { forkAndSelectSession } from "../../../ui/session-actions.js";
+import { parseSlashCommand } from "../../../ui/slash-commands.js";
+import { SlashComposer } from "./slash-palette.js";
 import "./style.css";
 import "./enhancements.css";
 
@@ -30,6 +32,7 @@ function App(): React.JSX.Element {
   const [status, setStatus] = useState("正在连接");
   const [settings, setSettings] = useState(false);
   const [approval, setApproval] = useState<ApprovalChallenge>();
+  const [activeRunId, setActiveRunId] = useState<string>();
   const cursor = useRef(0);
 
   const desktop = window.alphionDesktop;
@@ -92,7 +95,7 @@ function App(): React.JSX.Element {
       cursor.current = globalThis.Math.max(cursor.current, event.cursor);
       const payload = event.payload;
       if (payload.kind === "run.delta") setMessages((items) => appendAssistantDelta(items, payload.runId, payload.delta));
-      else if (payload.kind === "run.finished") { setStatus(payload.status); setMessages((items) => finalizeAssistant(items, payload.runId, payload.finalText)); void reloadSessions(payload.sessionId); }
+      else if (payload.kind === "run.finished") { setStatus(payload.status); setActiveRunId((value) => value === payload.runId ? undefined : value); setMessages((items) => finalizeAssistant(items, payload.runId, payload.finalText)); void reloadSessions(payload.sessionId); }
       else if (payload.kind === "stream.resync-required") { setStatus("正在重新同步"); void reloadSessions().then(() => setStatus("已同步")); }
       else if (payload.kind === "surface.invalidate") { const preferred = payload.sessionIds.includes(active?.id ?? "") ? active?.id : undefined; void reloadSessions(preferred); }
       else if (payload.kind === "approval.challenge") setApproval(payload);
@@ -109,7 +112,7 @@ function App(): React.JSX.Element {
     try {
       const result = await api.execute({ kind: "session.send", sessionId: session.id, message: content, expectedRevision: session.revision, idempotencyKey: requestId() });
       const runId = (result.result as { runId: string }).runId;
-      setDraft(""); setStatus("运行中");
+      setDraft(""); setStatus("运行中"); setActiveRunId(runId);
       setMessages((items) => [...items, { id: requestId(), role: "user", content }, { id: runId, role: "assistant", content: "" }]);
     } catch (error) {
       setStatus(error instanceof UiApiError && error.status === 409 ? "修订冲突，已刷新" : "发送失败");
@@ -130,6 +133,33 @@ function App(): React.JSX.Element {
       setStatus("已切换到 Fork");
     } catch (error) { setStatus(error instanceof UiApiError && error.status === 409 ? "Session 已变化，请重试" : "Fork 失败"); }
   };
+  const executeSlash = async (input: string): Promise<void> => {
+    const parsed = parseSlashCommand(input, { hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) });
+    if (parsed.kind !== "command") { setStatus("未知快捷命令"); return; }
+    if (!parsed.availability.available) { setStatus(parsed.availability.reason ?? "命令当前不可用"); return; }
+    const name = parsed.descriptor.name;
+    if (name === "new") { setActive(undefined); setMessages([]); setDraft(""); setStatus("新对话"); return; }
+    if (name === "settings") { setSettings((value) => !value); setDraft(""); return; }
+    if (name === "fork") { setDraft(""); await forkActive(); return; }
+    if (name === "cancel" && activeRunId) { await api.execute({ kind: "run.cancel", runId: activeRunId, reason: "Cancelled from slash command." }); setDraft(""); return; }
+    if ((name === "steer" || name === "follow-up") && active) {
+      if (!parsed.argument) { setStatus(`/${name} 需要消息参数`); return; }
+      const shown = await api.execute({ kind: "session.show", sessionId: active.id }); const current = (shown.result as { session: SessionItem }).session;
+      await api.execute({ kind: name === "steer" ? "session.steer" : "session.follow-up", sessionId: active.id, message: parsed.argument, expectedRevision: current.revision, idempotencyKey: requestId() });
+      setDraft(""); setStatus(name === "steer" ? "已注入下一模型边界" : "后续消息已排队"); return;
+    }
+    const command: UiCommand | undefined = name === "profile" ? { kind: "project.inspect" }
+      : name === "doctor" ? { kind: "doctor" }
+      : name === "resources" ? { kind: "resource.list" }
+      : name === "providers" ? { kind: "provider.list" }
+      : name === "projects" ? { kind: "project.list" }
+      : name === "sessions" ? { kind: "session.list" }
+      : name === "harness" ? { kind: "harness.plan", prompt: parsed.argument || "检查当前任务" }
+      : undefined;
+    if (name === "help") { setSettings(true); setStatus("命令面板可直接通过 / 打开"); setDraft(""); return; }
+    if (!command) { setStatus(`/${name} 暂无可执行动作`); return; }
+    setSettings(true); setStatus("正在执行命令"); await api.execute(command); setDraft(""); setStatus(`/${name} 已完成`);
+  };
 
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><span className="brand-mark">A</span><span>Alphion</span></div><nav><button className="quiet" onClick={() => setSettings((value) => !value)}>设置</button><Info text="Alphion 只在本机 127.0.0.1 提供服务；修改依赖 revision 与幂等键。" /></nav></header>
@@ -139,7 +169,7 @@ function App(): React.JSX.Element {
       {settings ? <SettingsPanel client={api} onProjectActivated={() => void reloadSessions()} /> : null}
       {approval ? <ApprovalCard challenge={approval} onDecide={(approved) => void decideApproval(approved)} /> : null}
       <section className="messages" aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span className="speaker">{message.role === "assistant" ? "Alphion" : "你"}</span><Markdown content={message.content || "…"} /></article>)}</section>
-      <div className="composer"><textarea aria-label="消息" placeholder="输入消息…" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.altKey && !event.shiftKey) { event.preventDefault(); void send(); } }} /><button onClick={() => void send()} aria-label="发送">↑</button><span>Enter 发送 · Alt+Enter 换行</span></div>
+      <SlashComposer value={draft} context={{ hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) }} disabled={!api.ready} onChange={setDraft} onSubmitMessage={() => void send()} onCommand={(command) => void executeSlash(command).catch(() => setStatus("命令执行失败"))} />
     </main>
   </div>;
 }

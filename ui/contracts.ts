@@ -3,6 +3,7 @@ import type { AgentEvent, AgentSessionRecord, AgentStreamControlEvent, ProjectRe
 export type UiCommand =
   | Readonly<{ readonly kind: "surface.snapshot"; readonly selectedSessionId?: string }>
   | Readonly<{ readonly kind: "project.list" }>
+  | Readonly<{ readonly kind: "project.inspect"; readonly refresh?: boolean }>
   | Readonly<{ readonly kind: "project.activate"; readonly projectId: string }>
   | Readonly<{ readonly kind: "session.list" }>
   | Readonly<{ readonly kind: "session.create"; readonly title: string; readonly idempotencyKey: string }>
@@ -85,6 +86,7 @@ function decodeCommand(value: unknown): UiCommand {
   switch (input.kind) {
     case "project.list": case "session.list": case "provider.list": case "resource.list": case "doctor":
       exact(input, ["kind"]); return Object.freeze({ kind: input.kind });
+    case "project.inspect": { exact(input, ["kind", "refresh"]); const refresh = optionalBoolean(input.refresh); return Object.freeze({ kind: input.kind, ...(refresh === undefined ? {} : { refresh }) }); }
     case "surface.snapshot": { exact(input, ["kind", "selectedSessionId"]); const selectedSessionId = input.selectedSessionId === undefined ? undefined : requiredText(input.selectedSessionId); return Object.freeze({ kind: input.kind, ...(selectedSessionId ? { selectedSessionId } : {}) }); }
     case "project.activate": exact(input, ["kind", "projectId"]); return Object.freeze({ kind: input.kind, projectId: requiredText(input.projectId) });
     case "session.create": exact(input, ["kind", "title", "idempotencyKey"]); return Object.freeze({ kind: input.kind, title: requiredText(input.title), idempotencyKey: commandKey(input.idempotencyKey) });
@@ -114,3 +116,4 @@ function requiredText(value: unknown): string { if (typeof value !== "string" ||
 function validId(value: unknown): value is string { return typeof value === "string" && /^[A-Za-z0-9:_-]{8,200}$/u.test(value); }
 function commandKey(value: unknown): string { if (!validId(value)) throw new Error("A valid idempotency key is required."); return value; }
 function revision(value: unknown): number { if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error("A non-negative expected revision is required."); return value as number; }
+function optionalBoolean(value: unknown): boolean | undefined { if (value === undefined) return undefined; if (typeof value !== "boolean") throw new Error("A boolean is required."); return value; }

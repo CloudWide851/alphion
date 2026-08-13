@@ -4,6 +4,7 @@ import type { ProviderProfile } from "../src/index.js";
 import { parseMarkdown, renderMarkdownText } from "../ui/markdown.js";
 import { ChatEntry } from "./input.js";
 import { sanitizeTerminalText } from "./run-projection.js";
+import type { SlashCommandContext } from "../ui/slash-commands.js";
 
 export type WorkbenchSection = "home" | "settings" | "projects" | "profile" | "providers" | "sessions" | "resources" | "harness" | "doctor" | "help";
 export type WorkbenchLayout = "wide" | "narrow" | "compact";
@@ -28,11 +29,11 @@ export function AppShell(props: Readonly<{ section: WorkbenchSection; layout: Wo
     {props.section === "home" ? null : <Text dimColor>Esc 返回对话 · ↑/↓ 选择 · Enter 确认 · ? 帮助 · q 退出</Text>}
   </Box>;
 }
-export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; messages?: readonly ChatMessage[]; compact: boolean; onSubmit: (value: string) => void }>): React.JSX.Element {
+export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; messages?: readonly ChatMessage[]; compact: boolean; slashContext?: SlashCommandContext; onSubmit: (value: string) => void }>): React.JSX.Element {
   const messages = props.messages ?? [];
   return <Box flexDirection="column" minHeight={props.compact ? 10 : 18} justifyContent="space-between">
     {messages.length === 0 ? <Box flexDirection="column" alignItems="center" marginTop={props.compact ? 0 : 2}>{props.compact ? null : LOGO.map((line) => <Text key={line} bold {...accent()}>{line}</Text>)}<Text bold {...accent()}>ALPHION</Text><Text dimColor>{props.activeProfile ? `${props.activeProfile.name} · ${props.activeProfile.model}` : "请先使用 /providers 配置 Provider"}</Text></Box> : <Box flexDirection="column">{messages.slice(props.compact ? -4 : -10).map((message) => <Box key={message.id} flexDirection="column" marginBottom={1}><Text bold {...(message.role === "assistant" ? accent() : {})}>{message.role === "assistant" ? "Alphion" : "你"}</Text><Text>{renderMarkdownText(parseMarkdown(message.content), 88)}</Text></Box>)}</Box>}
-    <ChatEntry disabled={!props.activeProfile} onSubmit={props.onSubmit} />
+    <ChatEntry disabled={!props.activeProfile} {...(props.slashContext ? { slashContext: props.slashContext } : {})} onSubmit={props.onSubmit} />
   </Box>;
 }
 export function SettingsCard(props: Readonly<{ onSelect: (section: WorkbenchSection) => void }>): React.JSX.Element {

@@ -62,6 +62,7 @@ export class LocalUiCommandClient implements UiCommandClient {
   async #dispatch(command: UiCommand): Promise<unknown> {
     if (command.kind === "surface.snapshot") return this.#snapshot(command.selectedSessionId);
     if (command.kind === "project.list") return this.options.projects?.list() ?? [];
+    if (command.kind === "project.inspect") return this.options.application().inspectProject({ ...(command.refresh === undefined ? {} : { refresh: command.refresh }) });
     if (command.kind === "project.activate") {
       if (!this.options.activateProject) throw new AlphionError("forbidden", "Project activation is unavailable.", { stage: "ui" });
       for (const run of this.#runs.values()) run.cancel("Project is switching.");

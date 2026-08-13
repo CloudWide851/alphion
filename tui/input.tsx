@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { sanitizeTerminalText } from "./run-projection.js";
+import { formatSlashCommand, matchSlashCommands, parseSlashCommand, type SlashCommandContext } from "../ui/slash-commands.js";
 
 const BRAND_PURPLE = "#A377F6";
 
@@ -28,21 +29,42 @@ export function TextEntry(props: Readonly<{ label: string; initialValue?: string
   return <Box flexDirection="column" marginTop={1}><Text>{props.label}</Text><Text {...accent()}>› {props.masked ? "•".repeat(value.length) : sanitizeTerminalText(value)}</Text><Text dimColor>Enter 确认 · Esc 返回</Text></Box>;
 }
 
-export function ChatEntry(props: Readonly<{ disabled?: boolean; onSubmit: (value: string) => void }>): React.JSX.Element {
+export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: SlashCommandContext; onSubmit: (value: string) => void }>): React.JSX.Element {
   const [value, setValue] = useState("");
+  const [selected, setSelected] = useState(0);
+  const [paletteDismissed, setPaletteDismissed] = useState(false);
   const valueRef = useRef("");
-  const replaceValue = (next: string) => { valueRef.current = next; setValue(next); };
+  const selectedRef = useRef(0);
+  const replaceValue = (next: string) => { valueRef.current = next; setValue(next); setPaletteDismissed(false); setSelected(0); selectedRef.current = 0; };
+  const matches = value.startsWith("/") && !paletteDismissed ? matchSlashCommands(value, props.slashContext) : [];
+  const move = (next: number) => { const bounded = matches.length ? (next + matches.length) % matches.length : 0; selectedRef.current = bounded; setSelected(bounded); };
   useEffect(() => () => { valueRef.current = ""; }, []);
   useInput((input, key) => {
-    if (props.disabled) return;
+    if (matches.length && (key.upArrow || key.downArrow || key.tab)) { move(selectedRef.current + (key.upArrow ? -1 : 1)); return; }
+    if (matches.length && key.escape) { setPaletteDismissed(true); return; }
     if ((key.meta && key.return) || (key.ctrl && input === "j")) { replaceValue(`${valueRef.current}\n`); return; }
-    if (key.return) { if (valueRef.current.trim()) { const submitted = valueRef.current; replaceValue(""); props.onSubmit(submitted); } return; }
+    if (key.return) {
+      if (!valueRef.current.trim()) return;
+      if (props.disabled && !valueRef.current.trimStart().startsWith("/")) return;
+      const match = matches[selectedRef.current];
+      if (match) {
+        if (!match.availability.available) return;
+        const parsed = parseSlashCommand(valueRef.current, props.slashContext);
+        const argument = parsed.kind === "command" && parsed.descriptor.name === match.descriptor.name ? parsed.argument : "";
+        const submitted = formatSlashCommand(match.descriptor, argument);
+        replaceValue(""); props.onSubmit(submitted); return;
+      }
+      const submitted = valueRef.current; replaceValue(""); props.onSubmit(submitted); return;
+    }
     if (key.backspace || key.delete) { replaceValue(valueRef.current.slice(0, -1)); return; }
     if (!key.ctrl && !key.meta && input) replaceValue(valueRef.current + input);
   });
-  return <Box flexDirection="column" marginTop={1} borderStyle="round" paddingX={1} {...border()}>
-    <Text {...accent()}>› {props.disabled ? "先使用 /providers 配置并激活 Provider" : sanitizeTerminalText(value) || "输入消息，或使用 /settings"}</Text>
-    <Text dimColor>Enter 发送 · Alt+Enter / Ctrl+J 换行</Text>
+  return <Box flexDirection="column" marginTop={1}>
+    {matches.length ? <Box flexDirection="column" borderStyle="round" paddingX={1} {...border()}>{matches.slice(0, 8).map((match, index) => <Text key={match.descriptor.name} dimColor={!match.availability.available} {...(index === selected ? accent() : {})}>{index === selected ? "◆" : "◇"} /{match.descriptor.name}{match.descriptor.argumentHint ? ` ${match.descriptor.argumentHint}` : ""} · {match.availability.reason ?? match.descriptor.description}</Text>)}</Box> : null}
+    <Box flexDirection="column" borderStyle="round" paddingX={1} {...border()}>
+    <Text {...accent()}>› {sanitizeTerminalText(value) || (props.disabled ? "先使用 /providers 配置并激活 Provider" : "输入消息，或使用 /settings")}</Text>
+    <Text dimColor>{matches.length ? "↑/↓ 或 Tab 选择 · Enter 执行 · Esc 收起" : "Enter 发送 · Alt+Enter / Ctrl+J 换行"}</Text>
+    </Box>
   </Box>;
 }
 

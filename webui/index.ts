@@ -4,3 +4,5 @@ export type { WebUiServer } from "./server.js";
 export type { UiCommand, UiCommandClient, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiEventPayload, UiSurfaceSnapshot } from "../ui/contracts.js";
 export { decodeUiCommandEnvelope } from "../ui/contracts.js";
 export { LocalUiCommandClient } from "../ui/local-command-client.js";
+export { SLASH_COMMANDS, formatSlashCommand, matchSlashCommands, parseSlashCommand } from "../ui/slash-commands.js";
+export type { SlashCommandAvailability, SlashCommandContext, SlashCommandDescriptor, SlashCommandMatch, SlashCommandName, SlashCommandParseResult } from "../ui/slash-commands.js";

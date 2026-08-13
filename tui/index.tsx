@@ -23,6 +23,8 @@ import { PlatformTerminalLauncher, type TerminalLauncher } from "./terminal-laun
 import { forkTuiSession } from "./session-fork.js";
 import { AlternateScreenSurface, type TerminalSurface } from "./terminal-surface.js";
 import { ProviderModelPicker } from "./provider-model-picker.js";
+import { resolveTuiInput } from "./slash-dispatch.js";
+import { HelpCard, ProjectCard } from "./workbench-cards.js";
 
 export interface RunTuiOptions {
   readonly projectRoot: string;
@@ -148,22 +150,20 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     setScreen("run");
   };
   const submitChat = (value: string) => {
-    const input = value.trim();
-    if (!input.startsWith("/")) { beginRun(input); return; }
-    if (/^\/fork(?:\s|$)/iu.test(input)) {
+    const action = resolveTuiInput(value, { hasSession: chatSession !== undefined, sessionIdle: screen !== "run" });
+    if (action.kind === "message") { beginRun(action.content); return; }
+    if (action.kind === "fork") {
       if (!chatSession) { setError("/fork 需要当前会话；可使用 alphion tui --session <ID> 打开。"); return; }
-      const title = input.slice("/fork".length).trim();
-      void forkTuiSession(chatSession, title || undefined, terminalLauncher).then((outcome) => setError(outcome.message)).catch((cause: unknown) => setError(safeError(cause)));
+      void forkTuiSession(chatSession, action.title, terminalLauncher).then((outcome) => setError(outcome.message)).catch((cause: unknown) => setError(safeError(cause)));
       return;
     }
-    const alias: Readonly<Record<string, WorkbenchSection>> = {
-      "/settings": "settings", "/projects": "projects", "/sessions": "sessions", "/providers": "providers",
-      "/resources": "resources", "/doctor": "doctor", "/help": "help", "/profile": "profile", "/harness": "harness",
-    };
-    const next = alias[input.toLowerCase()];
-    if (!next) { setError(`未知快捷命令：${input}`); return; }
-    setError("");
-    setSection(next);
+    if (action.kind === "new") { setChatSession(undefined); setChatMessages([]); setError(""); return; }
+    if (action.kind === "navigate") { setError(""); setSection(action.section); return; }
+    if (action.kind === "follow-up" && chatSession) {
+      void chatSession.get().then((record) => chatSession.followUp(action.content, { expectedRevision: record.revision, idempotencyKey: `tui:follow-up:${Date.now()}` }, approval)).then(() => setError("后续消息已排队。")).catch((cause: unknown) => setError(safeError(cause)));
+      return;
+    }
+    setError(action.kind === "error" ? action.message : "命令需要活动 Run。");
   };
   const completeVault = async (password: string) => {
     await application.configuration.initializeVault(password);
@@ -233,7 +233,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
   }
 
   return <AppShell section={section} layout={layout} colorEnabled={colorEnabled} projectRoot={projectRoot} error={error} help={help}>
-    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} compact={layout === "compact"} onSubmit={submitChat} /> : null}
+    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} compact={layout === "compact"} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: screen !== "run" }} onSubmit={submitChat} /> : null}
     {section === "settings" ? <SettingsCard onSelect={setSection} /> : null}
     {section === "projects" ? <ProjectCard projectRoot={projectRoot} /> : null}
     {section === "profile" ? <ProjectProfileView {...(snapshot.profile ? { profile: snapshot.profile } : {})} onRefresh={() => void refreshSnapshot(true).catch((cause: unknown) => setError(safeError(cause)))} /> : null}
@@ -256,14 +256,6 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     {section === "doctor" ? <DoctorView {...(snapshot.diagnostics ? { report: snapshot.diagnostics } : {})} onRefresh={() => void refreshSnapshot().catch((cause: unknown) => setError(safeError(cause)))} /> : null}
     {section === "help" ? <HelpCard /> : null}
   </AppShell>;
-}
-
-function ProjectCard({ projectRoot }: Readonly<{ projectRoot: string }>): React.JSX.Element {
-  return <Box flexDirection="column"><Text>当前项目</Text><Text dimColor>{sanitizeTerminalText(projectRoot)}</Text><Text>项目注册与切换可使用 CLI / 后续 WebUI 项目选择器。</Text></Box>;
-}
-
-function HelpCard(): React.JSX.Element {
-  return <Box flexDirection="column"><Text>/fork [标题] · /settings · /projects · /sessions · /providers · /resources · /doctor · /profile · /harness · /help</Text><Text>Enter 发送 · Alt+Enter / Ctrl+J 换行 · Esc 返回 · Ctrl+C 取消/退出</Text></Box>;
 }
 
 function ProjectProfileView(props: Readonly<{ profile?: ProjectProfile; onRefresh: () => void }>): React.JSX.Element {
