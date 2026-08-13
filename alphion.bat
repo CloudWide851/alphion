@@ -22,6 +22,7 @@ if errorlevel 1 goto menu_tui
 goto menu
 
 :menu_tui
+cls
 node "%ALPHION_ROOT%dist\cli\index.js" tui --project-root "%ALPHION_ROOT%."
 set "ALPHION_CODE=%ERRORLEVEL%"
 if not "%ALPHION_CODE%"=="0" node "%ALPHION_ROOT%dist\cli\index.js" _launcher result --action TUI --code %ALPHION_CODE%

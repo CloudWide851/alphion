@@ -21,12 +21,14 @@ import { accent, AppShell, ChatHome, SettingsCard, textColor, selectWorkbenchLay
 import { EntryShell, LoadingView } from "./entry-shell.js";
 import { PlatformTerminalLauncher, type TerminalLauncher } from "./terminal-launcher.js";
 import { forkTuiSession } from "./session-fork.js";
+import { AlternateScreenSurface, type TerminalSurface } from "./terminal-surface.js";
 
 export interface RunTuiOptions {
   readonly projectRoot: string;
   readonly statePath?: string;
   readonly sessionId?: string;
   readonly terminalLauncher?: TerminalLauncher;
+  readonly terminalSurface?: TerminalSurface;
 }
 
 export { AppShell, ChatHome, SettingsCard, selectWorkbenchLayout } from "./shell.js";
@@ -53,14 +55,21 @@ interface WorkbenchSnapshot {
 
 export async function runTui(options: RunTuiOptions): Promise<number> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return 1;
-  const application = await openLocalAlphionApplication(options);
+  const terminalSurface = options.terminalSurface ?? new AlternateScreenSurface();
+  terminalSurface.enter();
+  let application: AgentApplication | undefined;
   try {
+    application = await openLocalAlphionApplication(options);
     const initialSession = options.sessionId ? await application.sessions.get(options.sessionId) : undefined;
     const instance = render(<AlphionTui application={application} projectRoot={options.projectRoot} terminalLauncher={options.terminalLauncher ?? new PlatformTerminalLauncher()} {...(initialSession ? { initialSession } : {})} />, { exitOnCtrlC: false });
     await instance.waitUntilExit();
     return 0;
   } finally {
-    await application.close();
+    try {
+      await application?.close();
+    } finally {
+      terminalSurface.restore();
+    }
   }
 }
 

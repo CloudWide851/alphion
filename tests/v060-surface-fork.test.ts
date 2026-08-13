@@ -5,6 +5,7 @@ import { render } from "ink-testing-library";
 import type { AgentApplication, AgentRunHandle, AgentSessionContract, SessionForkReceipt } from "../src/index.js";
 import { forkTuiSession } from "../tui/session-fork.js";
 import { PlatformTerminalLauncher, terminalCandidates, type TerminalCandidate, type TerminalLauncher } from "../tui/terminal-launcher.js";
+import { AlternateScreenSurface } from "../tui/terminal-surface.js";
 import { RunView } from "../tui/run-view.js";
 import { TuiApprovalPort } from "../tui/approval-port.js";
 import { decodeUiCommandEnvelope, type UiCommandResult } from "../ui/contracts.js";
@@ -27,6 +28,17 @@ test("TUI terminal launcher uses argv candidates and falls back without a shell 
   assert.equal(receipt.terminal, "cmd.exe");
   assert.deepEqual(receipt.manualCommand, ["alphion.cmd", "tui", "--session", "session_0001"]);
   assert.deepEqual(calls, terminalCandidates("win32", receipt.manualCommand));
+});
+
+test("TUI alternate screen clears on entry and restores exactly once", () => {
+  let output = "";
+  const surface = new AlternateScreenSurface({ write: (value) => { output += String(value); return true; } });
+  surface.enter();
+  surface.enter();
+  assert.equal(output, "\u001b[?1049h\u001b[2J\u001b[H\u001b[?25h");
+  surface.restore();
+  surface.restore();
+  assert.equal(output, "\u001b[?1049h\u001b[2J\u001b[H\u001b[?25h\u001b[?25h\u001b[?1049l");
 });
 
 test("TUI fork remains durable when terminal launch fails", async () => {

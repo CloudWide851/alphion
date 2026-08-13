@@ -93,6 +93,7 @@ test("compiled live smoke is guarded and Windows batch launcher shows help", asy
   assert.doesNotMatch(launcherMenu.stdout, /工程工作台|只读诊断/u);
   const batch = await readFile(resolve("alphion.bat"), "utf8");
   assert.match(batch, /:menu[\s\S]*choice \/c 1234/iu);
+  assert.match(batch, /:menu_tui\s+cls\s+node/iu);
   assert.match(batch, /_launcher menu/iu);
   assert.match(batch, /if not "%~1"=="" goto explicit/iu);
 });
