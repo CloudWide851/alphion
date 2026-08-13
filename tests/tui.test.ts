@@ -173,13 +173,21 @@ test("TUI exposes session create/show/send/checkout and HarnessPlan workflows", 
   const session = { id: record.id, get: () => Promise.resolve(record), view: () => Promise.resolve({ session: record, entries: [] }), getShape: () => Promise.resolve(undefined), reshape: async () => ({ sessionId: record.id, revision: 4, shapeRevision: 1, shapeDigest: "a".repeat(64), replayed: false }), fork: async () => { throw new Error("unused"); }, checkout: () => { calls.push("checkout"); return Promise.resolve({ sessionId: record.id, revision: 4, replayed: false }); }, send: async () => { throw new Error("unused"); }, steer: async () => { throw new Error("unused"); }, followUp: async () => { throw new Error("unused"); }, resumePending: () => undefined, subscribe: async function* () { /* empty */ }, close: () => Promise.resolve() } satisfies AgentSessionContract;
   const app = { sessions: { list: () => Promise.resolve([record]), get: () => Promise.resolve(session), create: () => { calls.push("create"); return Promise.resolve(session); } }, planHarness: () => Promise.resolve({ schemaVersion: 1 as const, task: "diagnose" as const, taskLabels: ["diagnose" as const], risk: "low" as const, capabilities: ["project.read"], reasons: [], permissions: ["project:read"], budgets: { operations: 1 }, evaluator: "quality-gate", omissions: [], digest: "digest" }) } as unknown as AgentApplication;
   const sessions = render(React.createElement(SessionWorkbenchView, { application: app, approval: { revision: "test", requestApproval: () => Promise.resolve({ approved: false, reason: "test" }) }, onSend: () => calls.push("send"), onError: (cause: unknown) => { throw cause; } }));
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitUntil(() => /共享工作/u.test(sessions.lastFrame() ?? ""));
   assert.match(sessions.lastFrame() ?? "", /共享工作/u);
   assert.match(sessions.lastFrame() ?? "", /创建.*查看.*checkout.*发送/u);
   sessions.unmount();
   const harness = render(React.createElement(HarnessPlanView, { application: app, onError: (cause: unknown) => { throw cause; } }));
   harness.stdin.write("diagnose\r");
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitUntil(() => /HarnessPlan|任务 diagnose|project\.read/u.test(harness.lastFrame() ?? ""));
   assert.match(harness.lastFrame() ?? "", /HarnessPlan|任务 diagnose|project\.read/u);
   harness.unmount();
 });
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition timed out");
+}
