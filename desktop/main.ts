@@ -62,7 +62,7 @@ function registerDesktopIpc(client: LocalUiCommandClient, allowedRendererUrl: st
 }
 
 async function pumpEvents(client: LocalUiCommandClient, window: BrowserWindow, signal: AbortSignal): Promise<void> {
-  for await (const event of client.subscribe()) { if (signal.aborted) break; if (!window.isDestroyed()) window.webContents.send(DESKTOP_IPC_CHANNELS.event, event); }
+  for await (const frame of client.subscribe()) { if (signal.aborted) break; if (!window.isDestroyed()) window.webContents.send(DESKTOP_IPC_CHANNELS.event, frame); }
 }
 
 function assertTrustedSender(event: IpcMainInvokeEvent, expected: string): void {

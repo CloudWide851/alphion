@@ -1,6 +1,7 @@
-import type { AgentEvent, AgentStreamControlEvent } from "../src/index.js";
+import type { AgentEvent, AgentSessionRecord, AgentStreamControlEvent, ProjectRecord, SessionView } from "../src/index.js";
 
 export type UiCommand =
+  | Readonly<{ readonly kind: "surface.snapshot"; readonly selectedSessionId?: string }>
   | Readonly<{ readonly kind: "project.list" }>
   | Readonly<{ readonly kind: "project.activate"; readonly projectId: string }>
   | Readonly<{ readonly kind: "session.list" }>
@@ -10,6 +11,7 @@ export type UiCommand =
   | Readonly<{ readonly kind: "session.steer" | "session.follow-up"; readonly sessionId: string; readonly message: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
   | Readonly<{ readonly kind: "session.checkout"; readonly sessionId: string; readonly entryId?: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
   | Readonly<{ readonly kind: "session.reshape"; readonly sessionId: string; readonly goal: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
+  | Readonly<{ readonly kind: "session.fork"; readonly sessionId: string; readonly entryId?: string; readonly title?: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
   | Readonly<{ readonly kind: "provider.list" }>
   | Readonly<{ readonly kind: "resource.list" }>
   | Readonly<{ readonly kind: "doctor" }>
@@ -34,6 +36,7 @@ export type UiEventPayload =
   | Readonly<{ readonly kind: "run.delta"; readonly runId: string; readonly sessionId: string; readonly delta: string }>
   | Readonly<{ readonly kind: "run.finished"; readonly runId: string; readonly sessionId: string; readonly status: string; readonly finalText: string }>
   | Readonly<{ readonly kind: "approval.challenge"; readonly requestId: string; readonly runId: string; readonly toolName: string; readonly actionDigest: string; readonly shapeDigest?: string; readonly summary: string }>
+  | Readonly<{ readonly kind: "surface.invalidate"; readonly scopes: readonly ("projects" | "sessions" | "session-view")[]; readonly sessionIds: readonly string[] }>
   | Readonly<{ readonly kind: "stream.resync-required"; readonly cursor: number }>;
 
 export interface UiEventEnvelope {
@@ -43,9 +46,27 @@ export interface UiEventEnvelope {
   readonly payload: UiEventPayload;
 }
 
+export interface UiEventFrame {
+  readonly schemaVersion: 1;
+  readonly cursorStart: number;
+  readonly cursorEnd: number;
+  readonly timestamp: string;
+  readonly events: readonly UiEventEnvelope[];
+}
+
+export interface UiSurfaceSnapshot {
+  readonly schemaVersion: 1;
+  readonly cursor: number;
+  readonly project?: ProjectRecord;
+  readonly projects: readonly ProjectRecord[];
+  readonly sessions: readonly AgentSessionRecord[];
+  readonly selectedSessionId?: string;
+  readonly selectedView?: SessionView;
+}
+
 export interface UiCommandClient {
   execute(envelope: UiCommandEnvelope): Promise<UiCommandResult>;
-  subscribe(afterCursor?: number): AsyncIterable<UiEventEnvelope>;
+  subscribe(afterCursor?: number): AsyncIterable<UiEventFrame>;
   importProviderCredential(profileId: string, secret: string): Promise<void>;
   decideApproval(input: Readonly<{ requestId: string; actionDigest: string; shapeDigest?: string; approved: boolean }>): void;
   close(): Promise<void>;
@@ -64,6 +85,7 @@ function decodeCommand(value: unknown): UiCommand {
   switch (input.kind) {
     case "project.list": case "session.list": case "provider.list": case "resource.list": case "doctor":
       exact(input, ["kind"]); return Object.freeze({ kind: input.kind });
+    case "surface.snapshot": { exact(input, ["kind", "selectedSessionId"]); const selectedSessionId = input.selectedSessionId === undefined ? undefined : requiredText(input.selectedSessionId); return Object.freeze({ kind: input.kind, ...(selectedSessionId ? { selectedSessionId } : {}) }); }
     case "project.activate": exact(input, ["kind", "projectId"]); return Object.freeze({ kind: input.kind, projectId: requiredText(input.projectId) });
     case "session.create": exact(input, ["kind", "title", "idempotencyKey"]); return Object.freeze({ kind: input.kind, title: requiredText(input.title), idempotencyKey: commandKey(input.idempotencyKey) });
     case "session.show": exact(input, ["kind", "sessionId"]); return Object.freeze({ kind: input.kind, sessionId: requiredText(input.sessionId) });
@@ -76,6 +98,7 @@ function decodeCommand(value: unknown): UiCommand {
       return Object.freeze({ kind: input.kind, sessionId: requiredText(input.sessionId), ...(entryId ? { entryId } : {}), expectedRevision: revision(input.expectedRevision), idempotencyKey: commandKey(input.idempotencyKey) });
     }
     case "session.reshape": exact(input, ["kind", "sessionId", "goal", "expectedRevision", "idempotencyKey"]); return Object.freeze({ kind: input.kind, sessionId: requiredText(input.sessionId), goal: requiredText(input.goal), expectedRevision: revision(input.expectedRevision), idempotencyKey: commandKey(input.idempotencyKey) });
+    case "session.fork": { exact(input, ["kind", "sessionId", "entryId", "title", "expectedRevision", "idempotencyKey"]); const entryId = input.entryId === undefined ? undefined : requiredText(input.entryId); const title = input.title === undefined ? undefined : requiredText(input.title); return Object.freeze({ kind: input.kind, sessionId: requiredText(input.sessionId), ...(entryId ? { entryId } : {}), ...(title ? { title } : {}), expectedRevision: revision(input.expectedRevision), idempotencyKey: commandKey(input.idempotencyKey) }); }
     case "harness.plan": exact(input, ["kind", "prompt"]); return Object.freeze({ kind: input.kind, prompt: requiredText(input.prompt) });
     case "run.cancel": {
       exact(input, ["kind", "runId", "reason"]); const reason = input.reason === undefined ? undefined : requiredText(input.reason);

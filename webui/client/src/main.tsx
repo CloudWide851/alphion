@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "../../../ui/markdown.js";
-import type { UiCommand, UiCommandEnvelope, UiCommandResult, UiEventEnvelope } from "../../../ui/contracts.js";
+import type { UiCommand, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiSurfaceSnapshot } from "../../../ui/contracts.js";
 import type { DesktopApprovalDecision, DesktopRendererBridge } from "../../../desktop/contracts.js";
 import "./style.css";
 import "./enhancements.css";
@@ -14,7 +14,7 @@ interface ApprovalChallenge { readonly requestId: string; readonly runId: string
 interface SurfaceClient {
   readonly ready: boolean;
   execute(command: UiCommand): Promise<UiCommandResult>;
-  subscribe(listener: (event: UiEventEnvelope) => void): () => void;
+  subscribe(listener: (frame: UiEventFrame) => void): () => void;
   importProviderCredential(profileId: string, secret: string): Promise<void>;
   decideApproval(decision: DesktopApprovalDecision): Promise<void>;
 }
@@ -44,7 +44,7 @@ function App(): React.JSX.Element {
     subscribe: (listener) => {
       if (desktop) return desktop.subscribe(listener);
       const source = new EventSource(`/api/events?cursor=${cursor.current}`, { withCredentials: true });
-      for (const kind of ["run.delta", "run.finished", "agent.event", "stream.resync-required", "approval.challenge"]) source.addEventListener(kind, (event) => listener(JSON.parse((event as MessageEvent<string>).data) as UiEventEnvelope));
+      source.addEventListener("surface.frame", (event) => listener(JSON.parse((event as MessageEvent<string>).data) as UiEventFrame));
       return () => source.close();
     },
     importProviderCredential: async (profileId, secret) => {
@@ -69,27 +69,36 @@ function App(): React.JSX.Element {
   }, [api]);
 
   const reloadSessions = useCallback(async (preferredId?: string): Promise<void> => {
-    const result = await api.execute({ kind: "session.list" });
-    const values = result.result as SessionItem[];
+    const result = await api.execute({ kind: "surface.snapshot", ...(preferredId ? { selectedSessionId: preferredId } : {}) });
+    const snapshot = result.result as UiSurfaceSnapshot;
+    cursor.current = Math.max(cursor.current, snapshot.cursor);
+    const values = snapshot.sessions as SessionItem[];
     setSessions(values);
-    const selected = values.find((item) => item.id === preferredId) ?? values[0];
-    if (selected) await showSession(selected); else { setActive(undefined); setMessages([]); }
+    const selected = values.find((item) => item.id === snapshot.selectedSessionId) ?? values[0];
+    if (selected && snapshot.selectedView) { setActive(snapshot.selectedView.session as SessionItem); setMessages(sessionMessages(snapshot.selectedView)); }
+    else if (selected) await showSession(selected); else { setActive(undefined); setMessages([]); }
   }, [api, showSession]);
 
   useEffect(() => { if (desktop) { setStatus("已连接"); return; } void fetch("/api/bootstrap", { method: "POST" }).then((response) => response.json()).then((value: { csrf: string }) => { setCsrf(value.csrf); setStatus("已连接"); }); }, [desktop]);
-  useEffect(() => { if (!api.ready) return; void reloadSessions(); }, [api.ready, reloadSessions]);
   useEffect(() => {
     if (!api.ready) return;
+    let watermark = cursor.current;
+    let synchronized = false;
+    const pending: UiEventEnvelope[] = [];
     const consumeEvent = (event: UiEventEnvelope) => {
+      if (event.cursor <= watermark) return;
       cursor.current = globalThis.Math.max(cursor.current, event.cursor);
       const payload = event.payload;
       if (payload.kind === "run.delta") setMessages((items) => appendAssistantDelta(items, payload.runId, payload.delta));
       else if (payload.kind === "run.finished") { setStatus(payload.status); setMessages((items) => finalizeAssistant(items, payload.runId, payload.finalText)); void reloadSessions(payload.sessionId); }
       else if (payload.kind === "stream.resync-required") { setStatus("正在重新同步"); void reloadSessions().then(() => setStatus("已同步")); }
+      else if (payload.kind === "surface.invalidate") { const preferred = payload.sessionIds.includes(active?.id ?? "") ? active?.id : undefined; void reloadSessions(preferred); }
       else if (payload.kind === "approval.challenge") setApproval(payload);
     };
-    return api.subscribe(consumeEvent);
-  }, [api, reloadSessions]);
+    const unsubscribe = api.subscribe((frame) => { for (const event of frame.events) { if (synchronized) consumeEvent(event); else pending.push(event); } });
+    void reloadSessions(active?.id).then(() => { watermark = cursor.current; synchronized = true; for (const event of pending.splice(0)) consumeEvent(event); });
+    return unsubscribe;
+  }, [active?.id, api, reloadSessions]);
 
   const send = async () => {
     const content = draft.trim(); if (!content || !api.ready) return;

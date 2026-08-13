@@ -1,4 +1,4 @@
-import type { UiCommandEnvelope, UiCommandResult, UiEventEnvelope } from "../ui/contracts.js";
+import type { UiCommandEnvelope, UiCommandResult, UiEventFrame } from "../ui/contracts.js";
 
 export const DESKTOP_IPC_SCHEMA_VERSION = 1 as const;
 export const DESKTOP_IPC_CHANNELS = Object.freeze({
@@ -20,7 +20,7 @@ export interface DesktopApprovalDecision {
 export interface DesktopRendererBridge {
   readonly schemaVersion: typeof DESKTOP_IPC_SCHEMA_VERSION;
   invoke(envelope: UiCommandEnvelope): Promise<UiCommandResult>;
-  subscribe(listener: (event: UiEventEnvelope) => void): () => void;
+  subscribe(listener: (frame: UiEventFrame) => void): () => void;
   importProviderCredential(profileId: string, secret: string): Promise<void>;
   decideApproval(decision: DesktopApprovalDecision): Promise<void>;
   openExternal(href: string): Promise<boolean>;

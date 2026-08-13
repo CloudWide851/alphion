@@ -1,5 +1,6 @@
 import { AlphionError, type AgentApplication, type AgentRunHandle, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type ProjectManager } from "../src/index.js";
-import type { UiCommand, UiCommandClient, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventPayload } from "./contracts.js";
+import type { UiCommand, UiCommandClient, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiEventPayload, UiSurfaceSnapshot } from "./contracts.js";
+import { frameEvents, historyFrames, resyncFrame, UiFrameQueue } from "./event-frames.js";
 
 export interface LocalUiCommandClientOptions {
   readonly application: () => AgentApplication;
@@ -11,9 +12,11 @@ export interface LocalUiCommandClientOptions {
 export class LocalUiCommandClient implements UiCommandClient {
   readonly #runs = new Map<string, AgentRunHandle>();
   readonly #events: UiEventEnvelope[] = [];
-  readonly #subscribers = new Set<UiEventQueue>();
+  readonly #subscribers = new Set<UiFrameQueue>();
   readonly #approval: LocalUiApprovalPort;
+  readonly #pendingFrame: UiEventEnvelope[] = [];
   #cursor = 0;
+  #frameTimer: NodeJS.Timeout | undefined;
   #closed = false;
   constructor(private readonly options: LocalUiCommandClientOptions) { this.#approval = new LocalUiApprovalPort((payload) => this.#publish(payload), options.approvalTimeoutMs ?? 30_000); }
 
@@ -21,15 +24,15 @@ export class LocalUiCommandClient implements UiCommandClient {
     if (this.#closed) throw new AlphionError("conflict", "UI command client is closed.", { stage: "ui" });
     const command = envelope.command;
     const result = await this.#dispatch(command);
+    const invalidation = invalidationFor(command, result);
+    if (invalidation) this.#publish(invalidation);
     return Object.freeze({ schemaVersion: 1, requestId: envelope.requestId, status: command.kind === "session.send" ? "accepted" : "ok", result });
   }
 
-  subscribe(afterCursor = 0): AsyncIterable<UiEventEnvelope> {
+  subscribe(afterCursor = 0): AsyncIterable<UiEventFrame> {
     const firstCursor = this.#events[0]?.cursor ?? this.#cursor + 1;
-    const history = afterCursor > 0 && afterCursor < firstCursor - 1
-      ? [this.#resyncEvent(firstCursor - 1)]
-      : this.#events.filter((event) => event.cursor > afterCursor);
-    const channel = new UiEventQueue();
+    const history = afterCursor > 0 && afterCursor < firstCursor - 1 ? [resyncFrame(firstCursor - 1)] : historyFrames(this.#events.filter((event) => event.cursor > afterCursor));
+    const channel = new UiFrameQueue();
     this.#subscribers.add(channel);
     const subscribers = this.#subscribers;
     return { async *[Symbol.asyncIterator]() { try { yield* history; yield* channel; } finally { subscribers.delete(channel); channel.close(); } } };
@@ -45,15 +48,19 @@ export class LocalUiCommandClient implements UiCommandClient {
 
   async close(): Promise<void> {
     if (this.#closed) return;
-    this.#closed = true;
     for (const run of this.#runs.values()) run.cancel("UI command client closed.");
     this.#approval.close();
+    if (this.#frameTimer) clearTimeout(this.#frameTimer);
+    this.#frameTimer = undefined;
+    this.#flushFrame();
+    this.#closed = true;
     for (const subscriber of this.#subscribers) subscriber.close();
     this.#subscribers.clear();
     await Promise.allSettled([...this.#runs.values()].map((run) => run.result));
   }
 
   async #dispatch(command: UiCommand): Promise<unknown> {
+    if (command.kind === "surface.snapshot") return this.#snapshot(command.selectedSessionId);
     if (command.kind === "project.list") return this.options.projects?.list() ?? [];
     if (command.kind === "project.activate") {
       if (!this.options.activateProject) throw new AlphionError("forbidden", "Project activation is unavailable.", { stage: "ui" });
@@ -73,6 +80,7 @@ export class LocalUiCommandClient implements UiCommandClient {
       case "session.follow-up": return application.sessions.followUp(command.sessionId, command.message, writes(command), this.#approval);
       case "session.checkout": return application.sessions.checkout(command.sessionId, command.entryId, writes(command));
       case "session.reshape": return application.sessions.reshape(command.sessionId, { goal: command.goal }, writes(command));
+      case "session.fork": return application.sessions.fork({ sourceSessionId: command.sessionId, ...(command.entryId ? { sourceEntryId: command.entryId } : {}), ...(command.title ? { title: command.title } : {}), ...writes(command) });
       case "session.send": {
         const handle = await application.sessions.send(command.sessionId, command.message, writes(command), this.#approval);
         this.#runs.set(handle.runId, handle);
@@ -97,6 +105,7 @@ export class LocalUiCommandClient implements UiCommandClient {
       }
       const result = await handle.result;
       this.#publish({ kind: "run.finished", runId: handle.runId, sessionId: handle.sessionId, status: result.status, finalText: result.finalText });
+      this.#publish({ kind: "surface.invalidate", scopes: ["sessions", "session-view"], sessionIds: [handle.sessionId] });
     } catch {
       this.#publish({ kind: "run.finished", runId: handle.runId, sessionId: handle.sessionId, status: "failed", finalText: "" });
     } finally { this.#runs.delete(handle.runId); }
@@ -106,14 +115,25 @@ export class LocalUiCommandClient implements UiCommandClient {
     const event = Object.freeze({ schemaVersion: 1 as const, cursor: ++this.#cursor, timestamp: new Date().toISOString(), payload });
     this.#events.push(event);
     if (this.#events.length > 1_000) this.#events.splice(0, this.#events.length - 1_000);
-    for (const subscriber of this.#subscribers) {
-      const accepted = subscriber.offer(event);
-      if (!accepted) subscriber.replace(this.#resyncEvent(event.cursor));
-    }
+    this.#pendingFrame.push(event);
+    if (!this.#frameTimer) { this.#frameTimer = setTimeout(() => this.#flushFrame(), 16); this.#frameTimer.unref(); }
   }
 
-  #resyncEvent(cursor: number): UiEventEnvelope {
-    return Object.freeze({ schemaVersion: 1, cursor, timestamp: new Date().toISOString(), payload: Object.freeze({ kind: "stream.resync-required", cursor }) });
+  async #snapshot(selectedSessionId?: string): Promise<UiSurfaceSnapshot> {
+    const application = this.options.application();
+    const watermark = this.#cursor;
+    const [projects, project, sessions] = await Promise.all([this.options.projects?.list() ?? Promise.resolve([]), this.options.projects?.current() ?? Promise.resolve(undefined), application.sessions.list()]);
+    const selected = sessions.find((item) => item.id === selectedSessionId) ?? sessions[0];
+    const selectedView = selected ? await application.sessions.view(selected.id) : undefined;
+    return Object.freeze({ schemaVersion: 1, cursor: watermark, ...(project ? { project } : {}), projects: Object.freeze(projects), sessions: Object.freeze(sessions), ...(selected ? { selectedSessionId: selected.id } : {}), ...(selectedView ? { selectedView } : {}) });
+  }
+
+  #flushFrame(): void {
+    if (this.#frameTimer) clearTimeout(this.#frameTimer);
+    this.#frameTimer = undefined;
+    const frame = frameEvents(this.#pendingFrame.splice(0));
+    if (!frame) return;
+    for (const subscriber of this.#subscribers) if (!subscriber.offer(frame)) subscriber.replace(resyncFrame(frame.cursorEnd));
   }
 }
 
@@ -138,30 +158,14 @@ class LocalUiApprovalPort implements ApprovalPort {
 function writes(command: Extract<UiCommand, { readonly expectedRevision: number }>) { return { expectedRevision: command.expectedRevision, idempotencyKey: command.idempotencyKey }; }
 function assertNever(value: never): never { throw new AlphionError("internal", `Unhandled UI command: ${JSON.stringify(value)}`, { stage: "ui" }); }
 
-class UiEventQueue implements AsyncIterableIterator<UiEventEnvelope> {
-  readonly #items: UiEventEnvelope[] = [];
-  readonly #readers: ((value: IteratorResult<UiEventEnvelope>) => void)[] = [];
-  #bytes = 0;
-  #closed = false;
-  offer(event: UiEventEnvelope): boolean {
-    if (this.#closed) return false;
-    const bytes = Buffer.byteLength(JSON.stringify(event));
-    if (this.#items.length >= 256 || this.#bytes + bytes > 1024 * 1024) {
-      if (event.payload.kind !== "run.delta") return false;
-      const previous = this.#items.at(-1);
-      if (!previous || previous.payload.kind !== "run.delta" || previous.payload.runId !== event.payload.runId) return false;
-      this.#bytes -= Buffer.byteLength(JSON.stringify(previous));
-      const merged = Object.freeze({ ...event, payload: Object.freeze({ ...event.payload, delta: previous.payload.delta + event.payload.delta }) });
-      this.#items[this.#items.length - 1] = merged;
-      this.#bytes += Buffer.byteLength(JSON.stringify(merged));
-      return this.#bytes <= 1024 * 1024;
-    }
-    const reader = this.#readers.shift();
-    if (reader) reader({ value: event, done: false }); else { this.#items.push(event); this.#bytes += bytes; }
-    return true;
+function invalidationFor(command: UiCommand, result: unknown): UiEventPayload | undefined {
+  if (command.kind === "project.activate") return { kind: "surface.invalidate", scopes: ["projects", "sessions", "session-view"], sessionIds: [] };
+  if (command.kind === "session.create") return { kind: "surface.invalidate", scopes: ["sessions"], sessionIds: [] };
+  if (command.kind === "session.fork") { const sessionId = (result as { session?: { id?: unknown } }).session?.id; return { kind: "surface.invalidate", scopes: ["sessions", "session-view"], sessionIds: typeof sessionId === "string" ? [sessionId] : [] }; }
+  switch (command.kind) {
+    case "session.send": case "session.steer": case "session.follow-up": case "session.checkout": case "session.reshape":
+      return { kind: "surface.invalidate", scopes: ["sessions", "session-view"], sessionIds: [command.sessionId] };
+    default: break;
   }
-  replace(event: UiEventEnvelope): void { this.#items.splice(0); this.#bytes = 0; this.offer(event); }
-  close(): void { this.#closed = true; for (const reader of this.#readers.splice(0)) reader({ value: undefined, done: true }); }
-  next(): Promise<IteratorResult<UiEventEnvelope>> { const event = this.#items.shift(); if (event) { this.#bytes -= Buffer.byteLength(JSON.stringify(event)); return Promise.resolve({ value: event, done: false }); } if (this.#closed) return Promise.resolve({ value: undefined, done: true }); return new Promise((resolve) => this.#readers.push(resolve)); }
-  [Symbol.asyncIterator](): AsyncIterableIterator<UiEventEnvelope> { return this; }
+  return undefined;
 }

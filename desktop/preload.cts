@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require("electron") as typeof import("electron");
 import type { IpcRendererEvent } from "electron";
-import type { UiCommandEnvelope, UiCommandResult, UiEventEnvelope } from "../ui/contracts.js";
+import type { UiCommandEnvelope, UiCommandResult, UiEventFrame } from "../ui/contracts.js";
 import type { DesktopApprovalDecision, DesktopRendererBridge } from "./contracts.js";
 
 // Sandboxed Electron preloads are CommonJS and may only require Electron's
@@ -9,8 +9,8 @@ const channels = Object.freeze({ command: "alphion:command", event: "alphion:eve
 const bridge: DesktopRendererBridge = Object.freeze({
   schemaVersion: 1,
   invoke: (envelope: UiCommandEnvelope) => ipcRenderer.invoke(channels.command, envelope) as Promise<UiCommandResult>,
-  subscribe: (listener: (event: UiEventEnvelope) => void) => {
-    const handler = (_event: IpcRendererEvent, value: UiEventEnvelope) => listener(value);
+  subscribe: (listener: (frame: UiEventFrame) => void) => {
+    const handler = (_event: IpcRendererEvent, value: UiEventFrame) => listener(value);
     ipcRenderer.on(channels.event, handler);
     return () => ipcRenderer.removeListener(channels.event, handler);
   },

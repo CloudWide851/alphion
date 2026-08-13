@@ -69,7 +69,7 @@ async function route(request: IncomingMessage, response: ServerResponse, client:
       try {
         while (!abort.signal.aborted) {
           const next = await iterator.next(); if (next.done) break;
-          if (!response.write(`id: ${next.value.cursor}\nevent: ${next.value.payload.kind}\ndata: ${JSON.stringify(next.value)}\n\n`)) await new Promise<void>((done) => response.once("drain", done));
+          if (!response.write(`id: ${next.value.cursorEnd}\nevent: surface.frame\ndata: ${JSON.stringify(next.value)}\n\n`)) await new Promise<void>((done) => response.once("drain", done));
         }
       } finally { await iterator.return?.(); response.end(); }
       return;

@@ -281,6 +281,23 @@ export function SessionWorkbenchView(props: Readonly<{ application: AgentApplica
   }, [props.application]);
   useEffect(() => { void refresh().catch(props.onError); }, [refresh]);
   const current = sessions[selected];
+  useEffect(() => {
+    if (!current) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const iterator = props.application.sessions.subscribe(current.id)[Symbol.asyncIterator]();
+    void (async () => {
+      try {
+        while (!disposed) {
+          const next = await iterator.next();
+          if (next.done || disposed) break;
+          if (timer) continue;
+          timer = setTimeout(() => { timer = undefined; if (!disposed) void refresh().catch(props.onError); }, 33);
+        }
+      } catch (cause) { if (!disposed) props.onError(cause); }
+    })();
+    return () => { disposed = true; if (timer) clearTimeout(timer); void iterator.return?.(); };
+  }, [current?.id, props.application, props.onError, refresh]);
   useInput((input, key) => {
     if (entry) return;
     if (key.upArrow) setSelected((value) => Math.max(0, value - 1));

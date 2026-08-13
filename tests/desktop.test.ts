@@ -24,6 +24,8 @@ test("Electron Main and preload retain hardened process boundaries", async () =>
   assert.match(main, /will-navigate/u);
   assert.match(main, /will-attach-webview/u);
   assert.match(main, /assertTrustedSender/u);
+  assert.match(main, /window\.webContents\.send\(DESKTOP_IPC_CHANNELS\.event, frame\)/u);
+  assert.match(main, /for await \(const frame of client\.subscribe\(\)\)/u);
   assert.doesNotMatch(preload, /(?:node:fs|node:path|child_process|better-sqlite3|LocalAlphionApplication)/u);
   assert.match(preload, /contextBridge\.exposeInMainWorld\("alphionDesktop"/u);
 });

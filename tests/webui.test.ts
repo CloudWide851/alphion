@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createWebUiServer } from "../webui/server.js";
-import { decodeUiCommandEnvelope, type UiCommandClient, type UiCommandEnvelope, type UiCommandResult, type UiEventEnvelope } from "../ui/contracts.js";
+import { decodeUiCommandEnvelope, type UiCommandClient, type UiCommandEnvelope, type UiCommandResult, type UiEventFrame } from "../ui/contracts.js";
 
 test("shared UI decoder rejects unknown envelope and command fields", () => {
   assert.throws(() => decodeUiCommandEnvelope({ schemaVersion: 1, requestId: "request_web_0000", command: { kind: "session.list", secret: "must-not-pass" } }), /unknown/ui);
   assert.throws(() => decodeUiCommandEnvelope({ schemaVersion: 1, requestId: "request_web_0000", command: { kind: "session.list" }, extra: true }), /unknown/ui);
+  assert.deepEqual(decodeUiCommandEnvelope({ schemaVersion: 1, requestId: "request_web_0004", command: { kind: "surface.snapshot", selectedSessionId: "session_0001" } }).command, { kind: "surface.snapshot", selectedSessionId: "session_0001" });
 });
 
 test("WebUI binds loopback and enforces Origin, HttpOnly session, and CSRF", async () => {
@@ -69,7 +70,7 @@ class FakeClient implements UiCommandClient {
   readonly executed: UiCommandEnvelope[] = [];
   readonly credentials: Array<{ profileId: string; secret: string }> = [];
   execute(envelope: UiCommandEnvelope): Promise<UiCommandResult> { this.executed.push(envelope); return Promise.resolve({ schemaVersion: 1, requestId: envelope.requestId, status: "ok", result: [] }); }
-  async *subscribe(): AsyncIterable<UiEventEnvelope> { /* no events */ }
+  async *subscribe(): AsyncIterable<UiEventFrame> { /* no events */ }
   importProviderCredential(profileId: string, secret: string): Promise<void> { this.credentials.push({ profileId, secret }); return Promise.resolve(); }
   decideApproval(): void {}
   close(): Promise<void> { return Promise.resolve(); }
