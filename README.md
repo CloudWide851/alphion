@@ -6,7 +6,7 @@
 
 Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前 **v0.6.0** 延续 `Project → shared Agent → Session → Run → Turn → ToolCall`，增加同域事务型 Session Fork、SQLite v6、Snapshot/Frame 自动刷新、安全代码投影，以及 Node/Electron 原生 SQLite ABI 隔离。中文聊天式 TUI、本地 loopback WebUI 和 Electron Desktop 共享命令、事件、Markdown 与 revision/cursor 合同。
+当前 **v0.7.0** 延续 `Project → shared Agent → Session → Run → ProviderConversationPlan → Tool`，修复连续对话的 prompt 重复与审计消息污染，增加共享 slash 命令、原地流式对话气泡、Provider catalog 门禁及每调用 Vault 凭据租约。SQLite 继续使用 user_version 6。
 
 资源优先级固定为内置 → 用户共享 → 项目 `.alphion-resources/manifest.json` → Session overrides。扩展包仅支持声明式资源，不执行第三方 JavaScript。用户资源根可通过 `ALPHION_RESOURCE_HOME` 指定，否则使用平台标准配置目录。
 
@@ -24,6 +24,8 @@ Alphion 是一个面向不同软件项目、在证据和安全边界内持续优
 - 简体中文聊天式 Ink TUI、React/Vite loopback WebUI 和 Electron Desktop；三端完整渲染共享安全 Markdown 与受限代码投影（语言、高亮、复制/裁剪、稳定 digest），reasoning 不可见。
 - `read`、`grep`、`edit`、`write` 和 `shell` 工具；写入和进程执行必须逐次审批。
 - SQLite 权威事件写入与 SHA-256 审计链；三端先订阅再取 snapshot，按 30/60 FPS frame 合并 delta/invalidation，慢消费者通过 cursor resync，不延迟 AgentLoop。
+- ProviderConversationPlan 从当前 Run 之前的分支构建合法 user/assistant/tool 消息线；普通审计事件和 `tool.updated` 不进入 Provider 历史，当前 prompt 只追加一次。
+- TUI/Web/Desktop 共用 `/new`、`/settings`、`/projects`、`/sessions`、`/providers`、`/resources`、`/doctor`、`/help`、`/profile`、`/harness`、`/fork`、`/steer`、`/follow-up`、`/cancel` 注册表与可用性原因。
 - 进程内 LRU + SQLite L2 缓存、single-flight 合并、策略/权限/项目修订失效和可选 provider prompt caching；疑似秘密不进入缓存。
 - Project 注册层保证名称/realpath 唯一、每项目独立 SQLite v5；同域 `session.send` 支持 idle 自动 Run 与 busy steering，并限制 8 hop/每 Run 4 次发送。
 - WebUI 只绑定 `127.0.0.1`，采用 HttpOnly/Origin/CSRF/SSE；Electron 开启 sandbox/contextIsolation、禁用 Node integration/任意导航，preload 仅暴露五个 allowlisted IPC 通道。

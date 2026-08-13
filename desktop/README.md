@@ -15,3 +15,8 @@ to the loopback Web command/SSE boundary. There is no compatibility façade.
 Vault master passwords are never exposed through IPC. Provider credentials use
 the dedicated one-use bridge method and are cleared by the form after every
 outcome.
+
+In v0.7.0 the Renderer inherits the WebUI slash palette and conversation Run
+projection. No new Node capability or IPC channel is added: command envelope
+and event frame schemas remain v1, while `project.inspect` travels through the
+existing exact command bridge.
