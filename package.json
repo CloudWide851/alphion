@@ -1,6 +1,6 @@
 {
   "name": "alphion",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A project-scoped collaborative Agent workbench for TUI, local WebUI, and Electron Desktop.",
   "private": true,
   "type": "module",

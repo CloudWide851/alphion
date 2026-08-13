@@ -5,7 +5,7 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
-assert(packageJson.version === "0.6.0", "package.json must be version 0.6.0");
+assert(packageJson.version === "0.7.0", "package.json must be version 0.7.0");
 assert(lock.version === packageJson.version, "package-lock top-level version must match package.json");
 assert(lock.packages?.[""]?.version === packageJson.version, "package-lock root package version must match package.json");
 assert(packageJson.engines?.node === ">=22.13", "Node engine must be >=22.13");
@@ -66,7 +66,7 @@ for (const desktopPath of ["desktop/main.ts", "desktop/preload.cts", "desktop/co
 const electronBuilder = readFileSync(resolve(root, "electron-builder.yml"), "utf8");
 const desktopRuntime = JSON.parse(readFileSync(resolve(root, "desktop", "runtime", "package.json"), "utf8"));
 assert(/app:\s*\.desktop-runtime/u.test(electronBuilder), "Electron packaging must use the isolated Desktop runtime tree");
-assert(/output:\s*release\/v0\.6\.0/u.test(electronBuilder), "Electron packaging must use a versioned ignored output directory");
+assert(/output:\s*release\/v0\.7\.0/u.test(electronBuilder), "Electron packaging must use a versioned ignored output directory");
 assert(/npmRebuild:\s*false/u.test(electronBuilder), "Electron builder must not rebuild the preflighted Desktop native tree");
 assert(desktopRuntime.version === packageJson.version, "Desktop runtime version must match the release");
 assert(Object.keys(desktopRuntime.dependencies ?? {}).sort().join(",") === "better-sqlite3,openai", "Desktop runtime manifest must contain only Main-process dependencies");

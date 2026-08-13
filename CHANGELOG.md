@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0] - 2026-08-13
+
+- Added deterministic `ProviderConversationPlan` projection so the current Run prompt appears exactly once, audit events remain outside Provider history, and assistant Tool batches pair with ordered observations.
+- Hardened credential handling with one Vault decrypt lease per Provider call, best-effort temporary Buffer zeroing, sanitized HTTP/Vault error reasons, and catalog-only built-in model selection unless explicitly advanced.
+- Added one shared slash command registry and palette across TUI, WebUI and Electron, including typed `project.inspect`, availability reasons and draft-preserving keyboard/mouse interaction.
+- Kept TUI on the chat home during Runs and added shared waiting/streaming/tool/terminal conversation projection, in-place assistant bubbles, follow-up/steer/cancel input, and bounded 30 FPS rendering.
+- Added full glass assistant bubbles, purposeful waiting/stream animations and reduced-motion/transparency fallbacks to the shared WebUI/Desktop Renderer without expanding IPC privileges.
+- Restored TUI terminal lifecycle through alternate-screen cleanup and launcher clearing, eliminating stale startup menu output.
+
+This pre-1.0 milestone adds public shared slash descriptors, `ConversationRunState`, `project.inspect` UI command and Provider conversation diagnostics while preserving SQLite user_version 6 and UI envelope/frame schema v1. Rollback to v0.6.0 needs no database migration; stop all processes and reinstall the matching Node/Electron dependency trees. Provider profiles saved with explicit unlisted-model opt-in remain data-compatible but v0.6.0 does not enforce the v0.7 catalog workflow.
+
 ## [0.6.0] - 2026-08-13
 
 - Added revision-checked, idempotent transactional Session Fork across Core, SQLite, CLI, TUI, WebUI and Electron, with remapped independent history, preserved Evidence and immutable provenance.
