@@ -8,7 +8,7 @@ import { PlatformTerminalLauncher, terminalCandidates, type TerminalCandidate, t
 import { RunView } from "../tui/run-view.js";
 import { TuiApprovalPort } from "../tui/approval-port.js";
 import { decodeUiCommandEnvelope, type UiCommandResult } from "../ui/contracts.js";
-import { forkAndSelectSession, type SurfaceSession } from "../webui/client/src/session-actions.js";
+import { forkAndSelectSession, type SurfaceSession } from "../ui/session-actions.js";
 
 test("UI fork decoder is exact and preserves optional branch selection", () => {
   const command = { kind: "session.fork", sessionId: "session_0001", entryId: "entry_0001", title: "branch", expectedRevision: 7, idempotencyKey: "fork_request_0001" } as const;

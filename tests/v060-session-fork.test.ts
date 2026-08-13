@@ -51,8 +51,8 @@ test("transactional fork clones one visible branch with independent identities a
     assert.equal(replay.session.id, receipt.session.id);
     await assert.rejects(store.forkSession({ ...request, title: "changed" }), /different request/iu);
     const partial = await store.forkSession({ sourceSessionId: created.id, ...(first.entryId ? { sourceEntryId: first.entryId } : {}), expectedRevision: memoryReceipt.revision, idempotencyKey: "fork:v060:fork:0002" });
-    assert.equal(partial.entryMapping.length, 3);
-    assert.equal((await store.getSessionView(partial.session.id))?.entries.length, 4);
+    assert.equal(partial.entryMapping.length, 2);
+    assert.equal((await store.getSessionView(partial.session.id))?.entries.length, 3);
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 

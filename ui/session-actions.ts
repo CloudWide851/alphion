@@ -1,4 +1,4 @@
-import type { UiCommandResult } from "../../../ui/contracts.js";
+import type { UiCommandResult } from "./contracts.js";
 
 export interface SurfaceSession {
   readonly id: string;

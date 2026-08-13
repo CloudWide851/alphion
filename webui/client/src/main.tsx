@@ -6,7 +6,7 @@ import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "../../..
 import type { CodeProjection } from "../../../ui/code-projection.js";
 import type { UiCommand, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiSurfaceSnapshot } from "../../../ui/contracts.js";
 import type { DesktopApprovalDecision, DesktopRendererBridge } from "../../../desktop/contracts.js";
-import { forkAndSelectSession } from "./session-actions.js";
+import { forkAndSelectSession } from "../../../ui/session-actions.js";
 import "./style.css";
 import "./enhancements.css";
 
