@@ -73,3 +73,9 @@
 .composer .slash-option{position:static;display:flex;align-items:center;justify-content:space-between;width:100%;height:auto;padding:9px 10px;border-radius:8px;background:transparent;color:var(--ink);text-align:left}
 .slash-option strong{font-size:13px}.composer .slash-option span{position:static;font-size:12px;color:var(--muted)}
 .composer .slash-option.selected{background:rgba(163,119,246,.11)}.composer .slash-option:disabled{opacity:.52;cursor:not-allowed}
+.message.assistant{padding:13px 15px;border:1px solid rgba(163,119,246,.2);border-radius:14px 14px 14px 4px;background:rgba(251,250,253,.76);box-shadow:0 10px 30px rgba(61,44,80,.06);backdrop-filter:blur(12px)}
+.run-meta{display:block;margin-top:8px;color:var(--muted);font-size:11px}.stream-content{animation:stream-in 180ms cubic-bezier(.22,1,.36,1)}
+.waiting-dots{display:inline-flex;align-items:center;gap:4px;height:25px}.waiting-dots i{width:5px;height:5px;border-radius:50%;background:var(--accent);animation:wait-dot .9s cubic-bezier(.22,1,.36,1) infinite}.waiting-dots i:nth-child(2){animation-delay:100ms}.waiting-dots i:nth-child(3){animation-delay:200ms}
+@keyframes wait-dot{0%,60%,100%{opacity:.28;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}@keyframes stream-in{from{opacity:.65;transform:translateY(2px)}to{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){.waiting-dots i{animation:none;opacity:.75}.stream-content{animation:none}}
+@media(prefers-reduced-transparency:reduce){.message.assistant,.slash-palette{backdrop-filter:none;background:#fbfafd}}

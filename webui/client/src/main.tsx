@@ -9,11 +9,12 @@ import type { DesktopApprovalDecision, DesktopRendererBridge } from "../../../de
 import { forkAndSelectSession } from "../../../ui/session-actions.js";
 import { parseSlashCommand } from "../../../ui/slash-commands.js";
 import { SlashComposer } from "./slash-palette.js";
+import { createConversationRunState, reduceConversationRun, type ConversationRunState } from "../../../ui/conversation-run.js";
 import "./style.css";
 import "./enhancements.css";
 
 interface SessionItem { readonly id: string; readonly title: string; readonly revision: number; readonly status: string; }
-interface ChatItem { readonly id: string; readonly role: "user" | "assistant"; readonly content: string; }
+interface ChatItem { readonly id: string; readonly role: "user" | "assistant"; readonly content: string; readonly run?: ConversationRunState; }
 interface ApprovalChallenge { readonly requestId: string; readonly runId: string; readonly toolName: string; readonly actionDigest: string; readonly shapeDigest?: string; readonly summary: string; }
 interface SurfaceClient {
   readonly ready: boolean;
@@ -95,7 +96,8 @@ function App(): React.JSX.Element {
       cursor.current = globalThis.Math.max(cursor.current, event.cursor);
       const payload = event.payload;
       if (payload.kind === "run.delta") setMessages((items) => appendAssistantDelta(items, payload.runId, payload.delta));
-      else if (payload.kind === "run.finished") { setStatus(payload.status); setActiveRunId((value) => value === payload.runId ? undefined : value); setMessages((items) => finalizeAssistant(items, payload.runId, payload.finalText)); void reloadSessions(payload.sessionId); }
+      else if (payload.kind === "run.finished") { setStatus(payload.status); setActiveRunId((value) => value === payload.runId ? undefined : value); setMessages((items) => finalizeAssistant(items, payload.runId, payload.status, payload.finalText)); void reloadSessions(payload.sessionId); }
+      else if (payload.kind === "agent.event") setMessages((items) => applyAssistantEvent(items, payload.event));
       else if (payload.kind === "stream.resync-required") { setStatus("正在重新同步"); void reloadSessions().then(() => setStatus("已同步")); }
       else if (payload.kind === "surface.invalidate") { const preferred = payload.sessionIds.includes(active?.id ?? "") ? active?.id : undefined; void reloadSessions(preferred); }
       else if (payload.kind === "approval.challenge") setApproval(payload);
@@ -113,7 +115,7 @@ function App(): React.JSX.Element {
       const result = await api.execute({ kind: "session.send", sessionId: session.id, message: content, expectedRevision: session.revision, idempotencyKey: requestId() });
       const runId = (result.result as { runId: string }).runId;
       setDraft(""); setStatus("运行中"); setActiveRunId(runId);
-      setMessages((items) => [...items, { id: requestId(), role: "user", content }, { id: runId, role: "assistant", content: "" }]);
+      setMessages((items) => beginRunMessages(items, requestId(), content, runId, session.id));
     } catch (error) {
       setStatus(error instanceof UiApiError && error.status === 409 ? "修订冲突，已刷新" : "发送失败");
       if (error instanceof UiApiError && error.status === 409) await reloadSessions(session.id);
@@ -168,13 +170,15 @@ function App(): React.JSX.Element {
       <div className="conversation-head"><h1>{active?.title ?? "新对话"}</h1><div><button className="quiet" disabled={!active || active.status !== "idle"} onClick={() => void forkActive()}>Fork</button><span className="connection"><i />{status}</span></div></div>
       {settings ? <SettingsPanel client={api} onProjectActivated={() => void reloadSessions()} /> : null}
       {approval ? <ApprovalCard challenge={approval} onDecide={(approved) => void decideApproval(approved)} /> : null}
-      <section className="messages" aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span className="speaker">{message.role === "assistant" ? "Alphion" : "你"}</span><Markdown content={message.content || "…"} /></article>)}</section>
+      <section className="messages" aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role} ${message.run?.status ?? ""}`} key={message.id}><span className="speaker">{message.role === "assistant" ? "Alphion" : "你"}</span>{message.run?.status === "waiting" && !message.content ? <WaitingDots /> : <div className={message.run?.status === "streaming" ? "stream-content" : undefined}><Markdown content={message.content || message.run?.statusText || "…"} /></div>}{message.run ? <RunMeta run={message.run} /> : null}</article>)}</section>
       <SlashComposer value={draft} context={{ hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) }} disabled={!api.ready} onChange={setDraft} onSubmitMessage={() => void send()} onCommand={(command) => void executeSlash(command).catch(() => setStatus("命令执行失败"))} />
     </main>
   </div>;
 }
 
 function EmptyState(): React.JSX.Element { return <div className="empty"><div className="glyph">A</div><h1>Alphion</h1><Info text="直接描述任务。项目、Session、Provider 与资源可在设置中管理。" /></div>; }
+function WaitingDots(): React.JSX.Element { return <span className="waiting-dots" role="status" aria-label="等待模型输出"><i /><i /><i /></span>; }
+function RunMeta({ run }: Readonly<{ run: ConversationRunState }>): React.JSX.Element { return <small className="run-meta">{run.statusText}{run.usage.inputTokens || run.usage.outputTokens ? ` · tokens ${run.usage.inputTokens}/${run.usage.outputTokens}` : ""}</small>; }
 function Info({ text }: Readonly<{ text: string }>): React.JSX.Element { return <details className="info"><summary aria-label="说明">!</summary><div>{text}</div></details>; }
 function SettingsPanel({ client, onProjectActivated }: Readonly<{ client: SurfaceClient; onProjectActivated: () => void }>): React.JSX.Element {
   const [diagnostic, setDiagnostic] = useState("选择一项查看");
@@ -198,8 +202,11 @@ function CodeBlock({ projection }: Readonly<{ projection: CodeProjection }>): Re
 function inline(items: readonly MarkdownInline[]): React.ReactNode { return items.map((item, index) => { switch (item.kind) { case "text": return item.value; case "break": return <br key={index} />; case "code": return <code key={index}>{item.value}</code>; case "math": return <MathFragment key={index} value={item.value} />; case "link": return <a key={index} href={item.href} onClick={(event) => openExternal(event, item.href, item.domain)} rel="noreferrer">{inline(item.children)} <span aria-label={`域名 ${item.domain}`}>↗</span></a>; case "strong": return <strong key={index}>{inline(item.children)}</strong>; case "emphasis": return <em key={index}>{inline(item.children)}</em>; } }); }
 function MathFragment({ value, display = false }: Readonly<{ value: string; display?: boolean }>): React.JSX.Element { const ref = useRef<HTMLSpanElement>(null); useEffect(() => { if (ref.current) katex.render(value, ref.current, { displayMode: display, throwOnError: false, strict: "error", trust: false }); }, [display, value]); return <span className={display ? "math-block" : "math-inline"} ref={ref} />; }
 
-function appendAssistantDelta(items: readonly ChatItem[], runId: string, delta: string): readonly ChatItem[] { const index = items.findIndex((item) => item.id === runId); if (index < 0) return [...items, { id: runId, role: "assistant", content: delta }]; return items.map((item) => item.id === runId ? { ...item, content: item.content + delta } : item); }
-function finalizeAssistant(items: readonly ChatItem[], runId: string, finalText: string): readonly ChatItem[] { return items.map((item) => item.id === runId && !item.content ? { ...item, content: finalText } : item); }
+function beginRunMessages(items: readonly ChatItem[], userId: string, content: string, runId: string, sessionId: string): readonly ChatItem[] { const live = items.find((item) => item.id === runId); return [...items.filter((item) => item.id !== runId), { id: userId, role: "user", content }, live ?? { id: runId, role: "assistant", content: "", run: createConversationRunState(runId, sessionId) }]; }
+function appendAssistantDelta(items: readonly ChatItem[], runId: string, delta: string): readonly ChatItem[] { const index = items.findIndex((item) => item.id === runId); if (index < 0) { const run = reduceConversationRun(createConversationRunState(runId, "unknown"), { kind: "delta", delta }); return [...items, { id: runId, role: "assistant", content: run.text, run }]; } return items.map((item) => item.id === runId ? updateRunItem(item, { kind: "delta", delta }) : item); }
+function applyAssistantEvent(items: readonly ChatItem[], event: Extract<UiEventEnvelope["payload"], { kind: "agent.event" }>["event"]): readonly ChatItem[] { if ("delivery" in event) return items; const index = items.findIndex((item) => item.id === event.runId); if (index < 0) { const run = reduceConversationRun(createConversationRunState(event.runId, event.sessionId), { kind: "agent-event", event }); return [...items, { id: event.runId, role: "assistant", content: run.text, run }]; } return items.map((item) => item.id === event.runId ? updateRunItem(item, { kind: "agent-event", event }) : item); }
+function finalizeAssistant(items: readonly ChatItem[], runId: string, status: string, finalText: string): readonly ChatItem[] { return items.map((item) => item.id === runId ? updateRunItem(item, { kind: "finish", status, finalText }) : item); }
+function updateRunItem(item: ChatItem, action: Parameters<typeof reduceConversationRun>[1]): ChatItem { const run = reduceConversationRun(item.run ?? createConversationRunState(item.id, "unknown"), action); return { ...item, content: run.text, run }; }
 function sessionMessages(value: unknown): readonly ChatItem[] { const entries = (value as { entries?: Array<{ id: string; message: { kind: string; content?: string } }> }).entries ?? []; return entries.filter((entry) => (entry.message.kind === "user" || entry.message.kind === "assistant") && typeof entry.message.content === "string").map((entry) => ({ id: entry.id, role: entry.message.kind as "user" | "assistant", content: entry.message.content ?? "" })); }
 function requestId(): string { return `web_${crypto.randomUUID().replaceAll("-", "")}`; }
 function openExternal(event: React.MouseEvent<HTMLAnchorElement>, href: string, domain: string): void { event.preventDefault(); if (!confirm(`打开外部链接 ${domain}？`)) return; const desktop = (window as Window & { alphionDesktop?: { openExternal(href: string): Promise<boolean> } }).alphionDesktop; if (desktop) void desktop.openExternal(href); else window.open(href, "_blank", "noopener,noreferrer"); }

@@ -16,7 +16,7 @@ import type {
 import { TuiApprovalPort } from "./approval-port.js";
 import { sanitizeTerminalText } from "./run-projection.js";
 import { TextEntry } from "./input.js";
-import { RunView } from "./run-view.js";
+import { RunView, type RunViewCommand } from "./run-view.js";
 import { accent, AppShell, ChatHome, SettingsCard, textColor, selectWorkbenchLayout, type ChatMessage, type WorkbenchSection } from "./shell.js";
 import { EntryShell, LoadingView } from "./entry-shell.js";
 import { PlatformTerminalLauncher, type TerminalLauncher } from "./terminal-launcher.js";
@@ -38,7 +38,7 @@ export { AppShell, ChatHome, SettingsCard, selectWorkbenchLayout } from "./shell
 export { ChatEntry, TextEntry } from "./input.js";
 export type { WorkbenchLayout, WorkbenchSection } from "./shell.js";
 
-type Screen = "loading" | "vault-setup" | "vault-unlock" | "workbench" | "provider-form" | "credential" | "run";
+type Screen = "loading" | "vault-setup" | "vault-unlock" | "workbench" | "provider-form" | "credential";
 
 interface ProviderDraft {
   readonly existing?: ProviderProfile;
@@ -95,6 +95,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
   const [runPrompt, setRunPrompt] = useState("");
   const [runProviderId, setRunProviderId] = useState<string | undefined>();
   const [runSession, setRunSession] = useState<AgentSessionContract | undefined>(initialSession);
+  const [runCommand, setRunCommand] = useState<RunViewCommand>();
   const [chatSession, setChatSession] = useState<AgentSessionContract | undefined>(initialSession);
   const [chatMessages, setChatMessages] = useState<readonly ChatMessage[]>([]);
   const approval = useMemo(() => new TuiApprovalPort(), []);
@@ -113,6 +114,10 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     setSnapshot({ profile, diagnostics });
   }, [application]);
   const acceptRunSession = useCallback((session: AgentSessionContract) => setChatSession(session), []);
+  const finishRun = useCallback((answer: string) => {
+    if (answer.trim()) setChatMessages((messages) => [...messages, { id: `assistant:${Date.now()}`, role: "assistant", content: answer }]);
+    setRunPrompt(""); setRunSession(undefined); setRunCommand(undefined); void refreshSnapshot();
+  }, [refreshSnapshot]);
 
   useEffect(() => {
     void (async () => {
@@ -132,7 +137,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
   }, [application, refreshProfiles, refreshSnapshot]);
 
   useInput((input, key) => {
-    if (key.ctrl && input === "c" && screen !== "run") { exit(); return; }
+    if (key.ctrl && input === "c") { if (runPrompt) setRunCommand({ id: Date.now(), kind: "cancel" }); else exit(); return; }
     if (screen !== "workbench") return;
     if (section !== "home" && input === "?") { setHelp((value) => !value); return; }
     if (section !== "home" && input === "q") { exit(); return; }
@@ -147,11 +152,14 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     setRunPrompt(prompt);
     setRunSession(session ?? chatSession);
     setRunProviderId(activeProfile?.id);
-    setScreen("run");
   };
   const submitChat = (value: string) => {
-    const action = resolveTuiInput(value, { hasSession: chatSession !== undefined, sessionIdle: screen !== "run" });
-    if (action.kind === "message") { beginRun(action.content); return; }
+    const action = resolveTuiInput(value, { hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) });
+    if (action.kind === "message") {
+      if (runPrompt) { if (chatSession) setRunCommand({ id: Date.now(), kind: "follow-up", content: action.content }); else setError("会话尚未准备好。"); }
+      else beginRun(action.content);
+      return;
+    }
     if (action.kind === "fork") {
       if (!chatSession) { setError("/fork 需要当前会话；可使用 alphion tui --session <ID> 打开。"); return; }
       void forkTuiSession(chatSession, action.title, terminalLauncher).then((outcome) => setError(outcome.message)).catch((cause: unknown) => setError(safeError(cause)));
@@ -159,10 +167,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     }
     if (action.kind === "new") { setChatSession(undefined); setChatMessages([]); setError(""); return; }
     if (action.kind === "navigate") { setError(""); setSection(action.section); return; }
-    if (action.kind === "follow-up" && chatSession) {
-      void chatSession.get().then((record) => chatSession.followUp(action.content, { expectedRevision: record.revision, idempotencyKey: `tui:follow-up:${Date.now()}` }, approval)).then(() => setError("后续消息已排队。")).catch((cause: unknown) => setError(safeError(cause)));
-      return;
-    }
+    if (action.kind === "steer" || action.kind === "follow-up" || action.kind === "cancel") { setRunCommand({ id: Date.now(), kind: action.kind, ...(action.kind === "cancel" ? {} : { content: action.content }) }); setError(""); return; }
     setError(action.kind === "error" ? action.message : "命令需要活动 Run。");
   };
   const completeVault = async (password: string) => {
@@ -214,26 +219,8 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
       />
     </EntryShell>;
   }
-  if (screen === "run") {
-    return <EntryShell title="对话" colorEnabled={colorEnabled} error={error}>
-      <RunView
-        application={application}
-        approval={approval}
-        prompt={runPrompt}
-        {...(runSession ? { session: runSession } : {})}
-        {...(runProviderId ? { providerId: runProviderId } : {})}
-        onSession={acceptRunSession}
-        onDone={(answer) => {
-          if (answer.trim()) setChatMessages((messages) => [...messages, { id: `assistant:${Date.now()}`, role: "assistant", content: answer }]);
-          setRunPrompt(""); setRunSession(undefined); setScreen("workbench"); setSection("home"); void refreshSnapshot();
-        }}
-        onExit={() => exit()}
-      />
-    </EntryShell>;
-  }
-
   return <AppShell section={section} layout={layout} colorEnabled={colorEnabled} projectRoot={projectRoot} error={error} help={help}>
-    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} compact={layout === "compact"} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: screen !== "run" }} onSubmit={submitChat} /> : null}
+    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} activeBubble={runPrompt ? <RunView application={application} approval={approval} prompt={runPrompt} {...(runSession ? { session: runSession } : {})} {...(runProviderId ? { providerId: runProviderId } : {})} {...(runCommand ? { command: runCommand } : {})} compact={layout === "compact"} onSession={acceptRunSession} onError={setError} onDone={finishRun} /> : null} compact={layout === "compact"} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) }} onSubmit={submitChat} /> : null}
     {section === "settings" ? <SettingsCard onSelect={setSection} /> : null}
     {section === "projects" ? <ProjectCard projectRoot={projectRoot} /> : null}
     {section === "profile" ? <ProjectProfileView {...(snapshot.profile ? { profile: snapshot.profile } : {})} onRefresh={() => void refreshSnapshot(true).catch((cause: unknown) => setError(safeError(cause)))} /> : null}

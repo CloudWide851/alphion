@@ -72,6 +72,7 @@ export function formatSlashCommand(descriptor: SlashCommandDescriptor, argument 
 }
 
 function availabilityFor(name: SlashCommandName, context: SlashCommandContext): SlashCommandAvailability {
+  if (context.activeRunId && !["steer", "follow-up", "cancel"].includes(name)) return unavailable("运行期间请使用 /steer、/follow-up 或 /cancel");
   if (name === "fork") {
     if (!context.hasSession) return unavailable("需要当前 Session");
     if (!context.sessionIdle) return unavailable("仅空闲 Session 可 Fork");
