@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentRunResult, AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, CollaborationContext, HarnessPlan, SessionMessageReceipt, SessionMessageRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
+import type { AgentMessage, AgentRunResult, AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, CollaborationContext, HarnessPlan, SessionForkReceipt, SessionForkRequest, SessionMessageReceipt, SessionMessageRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
 import type { AgentContract, AgentRunHandle, AgentSessionContract, ApprovalPort, CodeRecall, ModelResolver, SessionStore } from "../ports/index.js";
 import type { AgentStreamEvent } from "../protocol/events.js";
 import { BoundedEventChannel } from "./event-channel.js";
@@ -54,6 +54,11 @@ export class AgentSession implements AgentSessionContract {
 
   reshape(request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt> {
     this.#assertOpen(); return this.#own(this.#reshape(request, options));
+  }
+
+  fork(request: Omit<SessionForkRequest, "sourceSessionId">): Promise<SessionForkReceipt> {
+    this.#assertOpen();
+    return this.#own(this.options.store.forkSession({ ...request, sourceSessionId: this.id }));
   }
 
   async #reshape(request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt> {

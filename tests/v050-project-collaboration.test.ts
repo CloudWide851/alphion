@@ -36,7 +36,7 @@ test("SQLite v5 records domain identity and creates a recoverable v4 backup", as
   try {
     let store = new SqliteStore({ path, domainId: "domain_project", projectId: "project-1" });
     const fresh = await store.createSession({ title: "v5", idempotencyKey: "create:v050:0001" });
-    assert.equal(fresh.schemaVersion, 2);
+    assert.equal(fresh.schemaVersion, 3);
     assert.equal(fresh.domainId, "domain_project");
     assert.equal(fresh.projectId, "project-1");
     store.close();

@@ -41,6 +41,7 @@ import { EnvironmentSecretResolver } from "../secrets/environment-secret.js";
 import { LocalResourceLoader } from "../resources/local-resource-loader.js";
 import { ProjectCodeRecall } from "../recall/project-code-recall.js";
 import { SqliteStore } from "../store/sqlite-store.js";
+import { SQLITE_SCHEMA_VERSION } from "../store/sqlite-constants.js";
 import { EditTool, GrepTool, ReadTool, SessionSendTool, ShellTool, WriteTool } from "../tools/index.js";
 
 export interface LocalApplicationOptions {
@@ -259,8 +260,8 @@ async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
     const schema = numericCell(database.prepare("PRAGMA user_version").get(), "user_version");
     const integrity = firstCell(database.prepare("PRAGMA quick_check").get()) === "ok";
     if (!integrity) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: "SQLite 完整性检查失败。", remediation: "请备份 .alphion 后按 Runbook 恢复。" })];
-    if (schema > 5) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: `SQLite schema ${schema} 高于当前支持的 5。`, remediation: "请使用兼容版本的 Alphion。" })];
-    if (schema < 5) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "warning", summary: `SQLite schema ${schema} 尚未迁移至 5；doctor 未做修改。`, remediation: "备份后通过正常应用启动执行迁移。" })];
+    if (schema > SQLITE_SCHEMA_VERSION) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: `SQLite schema ${schema} 高于当前支持的 ${SQLITE_SCHEMA_VERSION}。`, remediation: "请使用兼容版本的 Alphion。" })];
+    if (schema < SQLITE_SCHEMA_VERSION) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "warning", summary: `SQLite schema ${schema} 尚未迁移至 ${SQLITE_SCHEMA_VERSION}；doctor 未做修改。`, remediation: "备份后通过正常应用启动执行迁移。" })];
     const providerCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles").get(), "count");
     const activeCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles WHERE active = 1").get(), "count");
     const vaultCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM vault_metadata").get(), "count");

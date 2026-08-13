@@ -36,7 +36,7 @@ export class AgentShaper {
     const unknownResources = (input.request.resourceIds ?? []).filter((id) => !input.resources.resources.some((item) => item.id === id));
     if (unknownResources.length > 0) throw new AlphionError("validation", `Unknown Agent shape resources: ${unknownResources.join(", ")}.`, { stage: "shape" });
     const behavior: SessionBehavior = Object.freeze({ compaction: input.request.behavior?.compaction ?? "hybrid", steering: input.request.behavior?.steering ?? true, followUps: input.request.behavior?.followUps ?? true });
-    const promptPlan = this.#composer.compose({ identity: this.#identity, projectRevision: input.profile.projectRevision, goal, sessionBehavior: behavior, capabilities, policies, resources: requestedResources, harnessPlan: input.harness, ...(input.request.promptBudgetTokens ? { budgetTokens: input.request.promptBudgetTokens } : {}) });
+    const promptPlan = this.#composer.compose({ sessionId: input.sessionId, identity: this.#identity, projectRevision: input.profile.projectRevision, goal, sessionBehavior: behavior, capabilities, policies, resources: requestedResources, harnessPlan: input.harness, ...(input.request.promptBudgetTokens ? { budgetTokens: input.request.promptBudgetTokens } : {}) });
     const base = {
       schemaVersion: 1 as const,
       sessionId: input.sessionId,

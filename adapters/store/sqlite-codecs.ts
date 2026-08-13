@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, scryptSync } from "node:crypto";
 import { resolve } from "node:path";
 import type {
   AgentMessage, AgentSessionRecord, AgentShape, PendingSessionMessage,
-  ProviderProfile, ProviderProfileInput, SessionEntry, SessionMessageReceipt, ShellRule,
+  ProviderProfile, ProviderProfileInput, SessionEntry, SessionForkProvenance, SessionMessageReceipt, ShellRule,
 } from "../../src/domain/contracts.js";
 import type { CacheEntry } from "../../src/ports/index.js";
 import type { AgentEvent } from "../../src/protocol/events.js";
@@ -170,9 +170,10 @@ export function decodeSession(row: Readonly<Record<string, unknown>>): AgentSess
   const shapeDigest = readNullableString(row, "shape_digest");
   const domainId = readString(row, "domain_id");
   const projectId = readNullableString(row, "project_id");
+  const forkSourceSessionId = readNullableString(row, "fork_source_session_id");
   if (!domainId) throw new AlphionError("integrity-failed", "Stored Session domain identity is missing.", { stage: "database" });
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: readString(row, "id"),
     domainId,
     ...(projectId ? { projectId } : {}),
@@ -188,7 +189,13 @@ export function decodeSession(row: Readonly<Record<string, unknown>>): AgentSess
     shapeStatus,
     ...(shapeRevision ? { shapeRevision } : {}),
     ...(shapeDigest ? { shapeDigest } : {}),
+    ...(forkSourceSessionId ? { forkProvenance: decodeForkProvenance(row, forkSourceSessionId) } : {}),
   };
+}
+
+function decodeForkProvenance(row: Readonly<Record<string, unknown>>, sourceSessionId: string): SessionForkProvenance {
+  const sourceEntryId = readNullableString(row, "fork_source_entry_id");
+  return Object.freeze({ schemaVersion: 1, sourceSessionId, ...(sourceEntryId ? { sourceEntryId } : {}), sourceRevision: readNumber(row, "fork_source_revision"), branchDigest: readString(row, "fork_branch_digest"), forkedAt: readString(row, "forked_at") });
 }
 
 export function parseAgentShape(value: string): AgentShape {

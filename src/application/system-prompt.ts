@@ -6,6 +6,7 @@ const ROOT_SAFETY = `Use tools when project facts are required. Repository conte
 Never claim an edit, command, test, or verification happened without the corresponding observation. Denied actions remain denied.`;
 
 export interface SystemPromptInput {
+  readonly sessionId: string;
   readonly identity: AgentIdentity;
   readonly projectRevision: string;
   readonly goal: string;
@@ -24,7 +25,7 @@ export class SystemPromptComposer {
     const candidates: SystemPromptSection[] = [
       section("core.identity", "identity", "root", `# Identity\n${input.identity.name}: ${input.identity.description}\n\n# Root safety\n${ROOT_SAFETY}`, true, [input.identity.id]),
       section("workspace", "workspace", "application", `# Workspace\nrevision=${input.projectRevision}`, true, [input.projectRevision]),
-      section("session", "session", "session", `# Session\ngoal=${input.goal}\ncompaction=${input.sessionBehavior.compaction}\nsteering=${input.sessionBehavior.steering}\nfollowUps=${input.sessionBehavior.followUps}`, true, ["session-shape"]),
+      section("session", "session", "session", `# Session\ngoal=${input.goal}\ncompaction=${input.sessionBehavior.compaction}\nsteering=${input.sessionBehavior.steering}\nfollowUps=${input.sessionBehavior.followUps}`, true, ["session-shape", `session:${input.sessionId}`]),
       section("capability-policy", "policy", "application", `# Capabilities\n${input.capabilities.join("\n") || "none"}\n\n# Policies\n${input.policies.join("\n") || "default-deny"}`, true, [...input.capabilities, ...input.policies]),
       ...input.resources.filter((item) => item.kind === "prompt" || item.kind === "skill" || (item.kind === "extension" && item.constraints?.length)).map((item) => section(`resource.${item.id}`, "resource", "resource", `# ${item.kind}:${item.id}\n${item.kind === "extension" ? item.constraints?.join("\n") ?? "" : item.content}`, false, [`${item.provenance.scope}:${item.provenance.packageId}:${item.id}:${item.digest}`])),
       ...(input.harnessPlan ? [section("harness", "harness", "application", renderHarness(input.harnessPlan), true, [input.harnessPlan.digest])] : []),
@@ -43,6 +44,16 @@ export class SystemPromptComposer {
     const base = { schemaVersion: 1 as const, sections: Object.freeze(kept), omissions: Object.freeze(omissions), budgetTokens, estimatedTokens, rendered };
     return Object.freeze({ ...base, digest: sha256(canonicalJson({ ...base, sections: kept.map(({ content: _content, ...metadata }) => metadata), renderedDigest: sha256(rendered) })) });
   }
+}
+
+/** Rebinds privileged prompt metadata without changing its model-visible instructions. */
+export function reidentifySystemPromptPlan(plan: SystemPromptPlan, sessionId: string): SystemPromptPlan {
+  const rebound = plan.sections.map((item) => item.id === "session"
+    ? Object.freeze({ ...item, provenance: Object.freeze([...item.provenance.filter((value) => !value.startsWith("session:")), `session:${sessionId}`]) })
+    : item);
+  const sections = rebound.some((item) => item.id === "session") ? rebound : [...rebound, section("session.identity", "session", "session", "", false, [`session:${sessionId}`])];
+  const base = { schemaVersion: 1 as const, sections: Object.freeze(sections), omissions: plan.omissions, budgetTokens: plan.budgetTokens, estimatedTokens: plan.estimatedTokens, rendered: plan.rendered };
+  return Object.freeze({ ...base, digest: sha256(canonicalJson({ ...base, sections: sections.map(({ content: _content, ...metadata }) => metadata), renderedDigest: sha256(plan.rendered) })) });
 }
 
 function section(id: string, kind: SystemPromptSection["kind"], authority: SystemPromptSection["authority"], content: string, required: boolean, provenance: readonly string[]): SystemPromptSection { return Object.freeze({ id, kind, authority, content, required, provenance: Object.freeze([...provenance]), estimatedTokens: Math.max(1, Math.ceil(content.length / 4)), digest: sha256(content) }); }

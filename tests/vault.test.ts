@@ -160,7 +160,7 @@ test("SQLite schema v1 profiles migrate through schema v5 without losing environ
       assert.equal(profile?.capabilities.reasoning, false);
       const database = openSqliteDatabase(path, { readOnly: true });
       try {
-        assert.equal((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 5);
+        assert.equal((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
       } finally {
         database.close();
       }

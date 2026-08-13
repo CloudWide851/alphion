@@ -44,6 +44,12 @@ test("compiled CLI configures a provider, runs through a fake endpoint, and deni
     assert.equal(completed.code, 0, completed.stderr);
     assert.match(completed.stdout, /hello from cli/);
     assert.match(completed.stdout, /status=completed/);
+    const sessions = JSON.parse((await runCli(["session", "list", "--state", state, "--project-root", directory])).stdout) as Array<{ id: string; revision: number }>;
+    const source = sessions[0];
+    assert.ok(source);
+    const forked = await runCli(["session", "fork", source.id, "--title", "CLI fork", "--revision", String(source.revision), "--state", state, "--project-root", directory]);
+    assert.equal(forked.code, 0, forked.stderr);
+    assert.match(forked.stdout, /"replayed": false/);
 
     const denied = await runCli(["run", "--prompt", "please write", "--state", state, "--project-root", directory]);
     assert.equal(denied.code, 0, denied.stderr);

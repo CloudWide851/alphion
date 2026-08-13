@@ -333,8 +333,30 @@ export type AgentMessage =
 
 export type SessionStatus = "idle" | "running" | "legacy-audit";
 
+export interface SessionForkEntryMapping {
+  readonly sourceEntryId: string;
+  readonly targetEntryId: string;
+}
+
+export interface SessionForkProvenance {
+  readonly schemaVersion: 1;
+  readonly sourceSessionId: string;
+  readonly sourceEntryId?: string;
+  readonly sourceRevision: number;
+  readonly branchDigest: string;
+  readonly forkedAt: string;
+}
+
+export interface SessionForkRequest {
+  readonly sourceSessionId: string;
+  readonly sourceEntryId?: string;
+  readonly title?: string;
+  readonly expectedRevision: number;
+  readonly idempotencyKey: string;
+}
+
 export interface AgentSessionRecord {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 3;
   readonly id: string;
   readonly domainId: string;
   readonly projectId?: string;
@@ -350,6 +372,14 @@ export interface AgentSessionRecord {
   readonly shapeStatus: "unshaped" | "shaped" | "legacy-unshaped";
   readonly shapeRevision?: number;
   readonly shapeDigest?: string;
+  readonly forkProvenance?: SessionForkProvenance;
+}
+
+export interface SessionForkReceipt {
+  readonly session: AgentSessionRecord;
+  readonly provenance: SessionForkProvenance;
+  readonly entryMapping: readonly SessionForkEntryMapping[];
+  readonly replayed: boolean;
 }
 
 export interface SessionEntry {

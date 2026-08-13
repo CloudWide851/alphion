@@ -81,7 +81,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p desktop/tsconfig.json --noEmit && tsc -p webui/tsconfig.json --noEmit",
     "verify:static": "node scripts/verify-static.mjs",
     "test": "npm run build && npm run test:built",
-    "test:built": "node --test dist/tests/foundation.test.js dist/tests/openai-compatible.test.js dist/tests/deepseek.test.js dist/tests/vault.test.js dist/tests/project-phase1.test.js dist/tests/sessions-v032.test.js dist/tests/v040.test.js dist/tests/v050-project-collaboration.test.js dist/tests/provider-catalog.test.js dist/tests/markdown.test.js dist/tests/webui.test.js dist/tests/desktop.test.js dist/tests/tui.test.js dist/tests/cli.test.js",
+    "test:built": "node --test dist/tests/foundation.test.js dist/tests/openai-compatible.test.js dist/tests/deepseek.test.js dist/tests/vault.test.js dist/tests/project-phase1.test.js dist/tests/sessions-v032.test.js dist/tests/v040.test.js dist/tests/v050-project-collaboration.test.js dist/tests/v060-session-fork.test.js dist/tests/provider-catalog.test.js dist/tests/markdown.test.js dist/tests/webui.test.js dist/tests/desktop.test.js dist/tests/tui.test.js dist/tests/cli.test.js",
     "benchmark:built": "node dist/benchmarks/foundation.js",
     "smoke:built": "node scripts/verify-built.mjs",
     "cli": "node dist/cli/index.js",

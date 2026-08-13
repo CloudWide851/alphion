@@ -13,6 +13,8 @@ import type {
   ModelRouteCandidate,
   PendingMessageKind,
   PendingSessionMessage,
+  SessionForkReceipt,
+  SessionForkRequest,
   ProjectRecord,
   RecallResult,
   ResourceLoadRequest,
@@ -136,6 +138,7 @@ export interface EventStore {
 
 export interface SessionStore {
   createSession(input: Readonly<{ title: string; providerId?: string; idempotencyKey: string }>): Promise<AgentSessionRecord>;
+  forkSession(request: SessionForkRequest): Promise<SessionForkReceipt>;
   listSessions(): Promise<readonly AgentSessionRecord[]>;
   getSession(sessionId: string): Promise<AgentSessionRecord | undefined>;
   getSessionView(sessionId: string): Promise<SessionView | undefined>;
@@ -251,6 +254,7 @@ export interface AgentSessionContract {
   view(): Promise<SessionView>;
   getShape(): Promise<AgentShape | undefined>;
   reshape(request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt>;
+  fork(request: Omit<SessionForkRequest, "sourceSessionId">): Promise<SessionForkReceipt>;
   checkout(entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
   send(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle>;
   steer(content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
@@ -264,6 +268,7 @@ export interface AgentSessionContract {
 /** Project-scoped owner of all durable session workflows. */
 export interface SessionManager {
   create(input?: Readonly<{ title?: string; providerId?: string; idempotencyKey?: string }>): Promise<AgentSessionContract>;
+  fork(request: SessionForkRequest): Promise<SessionForkReceipt>;
   list(): Promise<readonly AgentSessionRecord[]>;
   get(sessionId: string): Promise<AgentSessionContract>;
   view(sessionId: string): Promise<SessionView>;

@@ -23,6 +23,7 @@ import { parseMarkdown, renderMarkdownText } from "../ui/markdown.js";
 export interface RunTuiOptions {
   readonly projectRoot: string;
   readonly statePath?: string;
+  readonly sessionId?: string;
 }
 
 export { AppShell, ChatHome, SettingsCard, selectWorkbenchLayout } from "./shell.js";
@@ -51,7 +52,8 @@ export async function runTui(options: RunTuiOptions): Promise<number> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return 1;
   const application = await openLocalAlphionApplication(options);
   try {
-    const instance = render(<AlphionTui application={application} projectRoot={options.projectRoot} />, { exitOnCtrlC: false });
+    const initialSession = options.sessionId ? await application.sessions.get(options.sessionId) : undefined;
+    const instance = render(<AlphionTui application={application} projectRoot={options.projectRoot} {...(initialSession ? { initialSession } : {})} />, { exitOnCtrlC: false });
     await instance.waitUntilExit();
     return 0;
   } finally {
@@ -59,7 +61,7 @@ export async function runTui(options: RunTuiOptions): Promise<number> {
   }
 }
 
-function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentApplication; projectRoot: string }>): React.JSX.Element {
+function AlphionTui({ application, projectRoot, initialSession }: Readonly<{ application: AgentApplication; projectRoot: string; initialSession?: AgentSessionContract }>): React.JSX.Element {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const layout = selectWorkbenchLayout(stdout.columns ?? 80, stdout.rows ?? 24);
@@ -75,7 +77,8 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
   const [draft, setDraft] = useState<ProviderDraft>(() => presetDraft(presets[0]));
   const [runPrompt, setRunPrompt] = useState("");
   const [runProviderId, setRunProviderId] = useState<string | undefined>();
-  const [runSession, setRunSession] = useState<AgentSessionContract | undefined>();
+  const [runSession, setRunSession] = useState<AgentSessionContract | undefined>(initialSession);
+  const [chatSession] = useState<AgentSessionContract | undefined>(initialSession);
   const [chatMessages, setChatMessages] = useState<readonly ChatMessage[]>([]);
   const approval = useMemo(() => new TuiApprovalPort(), []);
 
@@ -123,7 +126,7 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
   const beginRun = (prompt: string, session?: AgentSessionContract) => {
     setChatMessages((messages) => [...messages, { id: `user:${Date.now()}`, role: "user", content: prompt }]);
     setRunPrompt(prompt);
-    setRunSession(session);
+    setRunSession(session ?? chatSession);
     setRunProviderId(activeProfile?.id);
     setScreen("run");
   };
@@ -198,7 +201,7 @@ function AlphionTui({ application, projectRoot }: Readonly<{ application: AgentA
         {...(runProviderId ? { providerId: runProviderId } : {})}
         onDone={(answer) => {
           if (answer.trim()) setChatMessages((messages) => [...messages, { id: `assistant:${Date.now()}`, role: "assistant", content: answer }]);
-          setRunPrompt(""); setRunSession(undefined); setScreen("workbench"); setSection("home"); void refreshSnapshot();
+          setRunPrompt(""); setRunSession(chatSession); setScreen("workbench"); setSection("home"); void refreshSnapshot();
         }}
         onExit={() => exit()}
       />

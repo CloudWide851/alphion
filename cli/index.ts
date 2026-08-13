@@ -41,7 +41,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       throw new AlphionError("validation", "The Alphion TUI requires an interactive terminal.", { stage: "tui" });
     }
     const { runTui } = await import("../tui/index.js");
-    return runTui({ projectRoot, statePath });
+    const sessionId = flagValue(parsed, "session");
+    return runTui({ projectRoot, statePath, ...(sessionId ? { sessionId } : {}) });
   }
   if (group === "web") { const { runWebUi } = await import("../webui/main.js"); await runWebUi({ ...(flagValue(parsed, "port") ? { port: Number(flagValue(parsed, "port")) } : {}) }); return 0; }
   if (group === "project") {
@@ -203,6 +204,7 @@ async function sessionCommand(command: string | undefined, parsed: ParsedArgumen
     if (command === "shape") { process.stdout.write(`${JSON.stringify(await session.getShape(), null, 2)}\n`); return 0; }
     const record = await session.get();
     const options = { expectedRevision: Number(flagValue(parsed, "revision") ?? record.revision), idempotencyKey: flagValue(parsed, "idempotency-key") ?? createCliKey(command) };
+    if (command === "fork") { const sourceEntryId = flagValue(parsed, "entry"); const title = flagValue(parsed, "title"); process.stdout.write(`${JSON.stringify(await session.fork({ ...(sourceEntryId ? { sourceEntryId } : {}), ...(title ? { title } : {}), ...options }), null, 2)}\n`); return 0; }
     if (command === "checkout") { process.stdout.write(`${JSON.stringify(await session.checkout(flagValue(parsed, "entry"), options), null, 2)}\n`); return 0; }
     if (command === "steer") { process.stdout.write(`${JSON.stringify(await session.steer(requiredFlag(parsed, "message"), options), null, 2)}\n`); return 0; }
     if (command === "follow-up") { process.stdout.write(`${JSON.stringify(await session.followUp(requiredFlag(parsed, "message"), options, new CliApprovalPort()), null, 2)}\n`); return 0; }
@@ -212,7 +214,7 @@ async function sessionCommand(command: string | undefined, parsed: ParsedArgumen
       for await (const event of handle.events) if (event.kind === "model.delta" && typeof event.payload.delta === "string") process.stdout.write(event.payload.delta);
       const result = await handle.result; process.stdout.write(`\n${JSON.stringify(result, null, 2)}\n`); return result.status === "completed" ? 0 : 1;
     }
-    throw new AlphionError("validation", "session command must be create, list, show, shape, reshape, checkout, send, steer, or follow-up.", { stage: "cli" });
+    throw new AlphionError("validation", "session command must be create, list, show, shape, reshape, fork, checkout, send, steer, or follow-up.", { stage: "cli" });
   } finally { await application.close(); }
 }
 
@@ -356,9 +358,9 @@ function printHelp(): void {
   process.stdout.write(`  doctor [--json] [--project-root PATH] [--state PATH]\n`);
   process.stdout.write(`  project inspect [--refresh] [--json] [--project-root PATH]\n  project register|create --name NAME --root PATH\n  project list|current|activate|remove ...\n`);
   process.stdout.write(`  run --prompt TEXT [--provider ID] [--project-root PATH] [--no-cache]\n\n`);
-  process.stdout.write(`  session create|list|show|shape|reshape|checkout|send|steer|follow-up ...\n  harness plan --prompt TEXT\n`);
+  process.stdout.write(`  session create|list|show|shape|reshape|fork|checkout|send|steer|follow-up ...\n  harness plan --prompt TEXT\n`);
   process.stdout.write(`  resource list|doctor [--disable-scope SCOPE] [--disable-id ID]\n  web [--port PORT]\n  desktop\n`);
-  process.stdout.write(`  tui [--project-root PATH] [--state PATH]\n\n`);
+  process.stdout.write(`  tui [--session SESSION_ID] [--project-root PATH] [--state PATH]\n\n`);
   process.stdout.write(`Global options: --state PATH --project-root PATH\n`);
 }
 

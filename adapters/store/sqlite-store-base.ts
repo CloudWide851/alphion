@@ -8,6 +8,7 @@ import {
   pathKey, readString, requiredRow, tableColumns, validateProviderProfile,
 } from "./sqlite-codecs.js";
 import { SQLITE_SCHEMA_VERSION, VAULT_AUTO_LOCK_MS } from "./sqlite-constants.js";
+import { createSessionForkSchemaV6 } from "./sqlite-fork-schema.js";
 
 const OPEN_DATABASES = new Set<string>();
 const DEFAULT_RUN_LEASE_MS = 2 * 60 * 1000;
@@ -109,22 +110,28 @@ export abstract class SqliteStoreBase {
         this.createSessionSchemaV3();
         this.createShapeSchemaV4(false);
         this.createProjectSessionSchemaV5();
+        createSessionForkSchemaV6(this.database);
       });
       return;
     }
     if (current === 2) {
       this.backupV2();
-      this.transaction(() => { this.createSessionSchemaV3(); this.createShapeSchemaV4(false); this.createProjectSessionSchemaV5(); });
+      this.transaction(() => { this.createSessionSchemaV3(); this.createShapeSchemaV4(false); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); });
       return;
     }
     if (current === 3) {
       this.backupV3();
-      this.transaction(() => { this.createShapeSchemaV4(true); this.createProjectSessionSchemaV5(); });
+      this.transaction(() => { this.createShapeSchemaV4(true); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); });
       return;
     }
     if (current === 4) {
       this.backupSchema(4, `${this.databasePath}.v4-backup`);
-      this.transaction(() => this.createProjectSessionSchemaV5());
+      this.transaction(() => { this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); });
+      return;
+    }
+    if (current === 5) {
+      this.backupSchema(5, `${this.databasePath}.v5-backup`);
+      this.transaction(() => createSessionForkSchemaV6(this.database));
       return;
     }
     if (current !== 1) {
@@ -170,6 +177,7 @@ export abstract class SqliteStoreBase {
       this.createSessionSchemaV3();
       this.createShapeSchemaV4(false);
       this.createProjectSessionSchemaV5();
+      createSessionForkSchemaV6(this.database);
     });
   }
 

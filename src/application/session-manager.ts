@@ -1,4 +1,4 @@
-import type { AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, SessionMessageReceipt, SessionMessageRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
+import type { AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, SessionForkReceipt, SessionForkRequest, SessionMessageReceipt, SessionMessageRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
 import type { AgentRunHandle, AgentSessionContract, ApprovalPort, SessionManager, SessionStore } from "../ports/index.js";
 import type { AgentStreamEvent } from "../protocol/events.js";
 import { createId } from "./canonical.js";
@@ -28,6 +28,7 @@ export class DefaultSessionManager implements SessionManager {
   }
 
   list(): Promise<readonly AgentSessionRecord[]> { this.options.assertOpen(); return this.#own(this.options.store.listSessions()); }
+  fork(request: SessionForkRequest): Promise<SessionForkReceipt> { this.options.assertOpen(); return this.#own(this.#get(request.sourceSessionId).then((session) => session.fork(request))); }
 
   get(sessionId: string): Promise<AgentSessionContract> {
     this.options.assertOpen();

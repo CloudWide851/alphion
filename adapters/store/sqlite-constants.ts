@@ -1,4 +1,4 @@
-export const SQLITE_SCHEMA_VERSION = 5;
+export const SQLITE_SCHEMA_VERSION = 6;
 export const VAULT_SCHEMA_VERSION = 1;
 export const VAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
 export const VAULT_VERIFIER = "alphion-vault-verifier-v1";
