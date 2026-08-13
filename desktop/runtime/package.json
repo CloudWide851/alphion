@@ -1,0 +1,11 @@
+{
+  "name": "alphion-desktop-runtime",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/desktop/main.js",
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "openai": "^7.4.0"
+  }
+}

@@ -64,8 +64,12 @@ const adapterImports = sourceFiles.flatMap((file) => [...readFileSync(resolve(ro
 assert(adapterImports.every(({ target }) => !target?.includes("desktop") && !target?.includes("cli") && !target?.includes("tui") && !target?.includes("adapters")), "core must not reverse-depend on adapter surfaces");
 for (const desktopPath of ["desktop/main.ts", "desktop/preload.cts", "desktop/contracts.ts", "electron-builder.yml", "scripts/electron-abi-smoke.cjs", "scripts/node-abi-smoke.mjs", "scripts/prepare-desktop-runtime.mjs"]) assert(existsSync(resolve(root, desktopPath)), `Desktop Electron file must exist: ${desktopPath}`);
 const electronBuilder = readFileSync(resolve(root, "electron-builder.yml"), "utf8");
+const desktopRuntime = JSON.parse(readFileSync(resolve(root, "desktop", "runtime", "package.json"), "utf8"));
 assert(/app:\s*\.desktop-runtime/u.test(electronBuilder), "Electron packaging must use the isolated Desktop runtime tree");
 assert(/output:\s*release\/v0\.6\.0/u.test(electronBuilder), "Electron packaging must use a versioned ignored output directory");
+assert(/npmRebuild:\s*false/u.test(electronBuilder), "Electron builder must not rebuild the preflighted Desktop native tree");
+assert(desktopRuntime.version === packageJson.version, "Desktop runtime version must match the release");
+assert(Object.keys(desktopRuntime.dependencies ?? {}).sort().join(",") === "better-sqlite3,openai", "Desktop runtime manifest must contain only Main-process dependencies");
 assert(/nsis:\s*[\s\S]*?artifactName:\s*Alphion-\$\{version\}-\$\{arch\}-setup\.\$\{ext\}/u.test(electronBuilder), "NSIS artifact must have a setup-specific name");
 assert(/portable:\s*[\s\S]*?artifactName:\s*Alphion-\$\{version\}-\$\{arch\}-portable\.\$\{ext\}/u.test(electronBuilder), "portable artifact must have a portable-specific name");
 for (const removedRpc of ["desktop/host.ts", "desktop/protocol.ts", "desktop/stdio.ts", "tests/desktop-rpc.test.ts"]) assert(!existsSync(resolve(root, removedRpc)), `removed Desktop JSONL file remains: ${removedRpc}`);

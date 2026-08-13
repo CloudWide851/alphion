@@ -5,14 +5,13 @@ import process from "node:process";
 
 const root = process.cwd();
 const runtime = resolve(root, ".desktop-runtime");
+const manifest = resolve(root, "desktop", "runtime");
 const install = process.argv.includes("--install");
-const sourcePackage = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
-const runtimePackage = { ...sourcePackage, main: "./dist/desktop/main.js", scripts: {} };
 
 assertRoot(runtime);
 mkdirSync(runtime, { recursive: true });
-writeFileSync(resolve(runtime, "package.json"), `${JSON.stringify(runtimePackage, null, 2)}\n`, "utf8");
-copyFileSync(resolve(root, "package-lock.json"), resolve(runtime, "package-lock.json"));
+copyFileSync(resolve(manifest, "package.json"), resolve(runtime, "package.json"));
+copyFileSync(resolve(manifest, "package-lock.json"), resolve(runtime, "package-lock.json"));
 for (const relative of install ? ["alphion-icon.svg"] : ["dist", "alphion-icon.svg"]) {
   const source = resolve(root, relative);
   if (!existsSync(source)) throw new Error(`Desktop runtime source is missing: ${relative}`);
@@ -32,6 +31,12 @@ if (install) {
   });
   const binding = resolve(runtime, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node");
   if (!existsSync(binding)) throw new Error("Desktop native dependency rebuild did not produce better_sqlite3.node.");
+  const savedBinding = resolve(runtime, "better_sqlite3.node.tmp");
+  copyFileSync(binding, savedBinding);
+  rmSync(resolve(runtime, "node_modules", "better-sqlite3", "build"), { recursive: true, force: true });
+  mkdirSync(dirname(binding), { recursive: true });
+  copyFileSync(savedBinding, binding);
+  rmSync(savedBinding, { force: true });
 }
 process.stdout.write(`desktop runtime ${install ? "installed" : "synchronized"}: ${runtime}\n`);
 
