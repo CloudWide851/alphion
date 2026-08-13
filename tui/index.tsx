@@ -19,11 +19,14 @@ import { ChatEntry, TextEntry } from "./input.js";
 import { RunView } from "./run-view.js";
 import { accent, AppShell, borderColor, BRAND_PURPLE, ChatHome, SettingsCard, textColor, selectWorkbenchLayout, type ChatMessage, type WorkbenchLayout, type WorkbenchSection } from "./shell.js";
 import { parseMarkdown, renderMarkdownText } from "../ui/markdown.js";
+import { PlatformTerminalLauncher, type TerminalLauncher } from "./terminal-launcher.js";
+import { forkTuiSession } from "./session-fork.js";
 
 export interface RunTuiOptions {
   readonly projectRoot: string;
   readonly statePath?: string;
   readonly sessionId?: string;
+  readonly terminalLauncher?: TerminalLauncher;
 }
 
 export { AppShell, ChatHome, SettingsCard, selectWorkbenchLayout } from "./shell.js";
@@ -53,7 +56,7 @@ export async function runTui(options: RunTuiOptions): Promise<number> {
   const application = await openLocalAlphionApplication(options);
   try {
     const initialSession = options.sessionId ? await application.sessions.get(options.sessionId) : undefined;
-    const instance = render(<AlphionTui application={application} projectRoot={options.projectRoot} {...(initialSession ? { initialSession } : {})} />, { exitOnCtrlC: false });
+    const instance = render(<AlphionTui application={application} projectRoot={options.projectRoot} terminalLauncher={options.terminalLauncher ?? new PlatformTerminalLauncher()} {...(initialSession ? { initialSession } : {})} />, { exitOnCtrlC: false });
     await instance.waitUntilExit();
     return 0;
   } finally {
@@ -61,7 +64,7 @@ export async function runTui(options: RunTuiOptions): Promise<number> {
   }
 }
 
-function AlphionTui({ application, projectRoot, initialSession }: Readonly<{ application: AgentApplication; projectRoot: string; initialSession?: AgentSessionContract }>): React.JSX.Element {
+function AlphionTui({ application, projectRoot, initialSession, terminalLauncher }: Readonly<{ application: AgentApplication; projectRoot: string; initialSession?: AgentSessionContract; terminalLauncher: TerminalLauncher }>): React.JSX.Element {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const layout = selectWorkbenchLayout(stdout.columns ?? 80, stdout.rows ?? 24);
@@ -78,7 +81,7 @@ function AlphionTui({ application, projectRoot, initialSession }: Readonly<{ app
   const [runPrompt, setRunPrompt] = useState("");
   const [runProviderId, setRunProviderId] = useState<string | undefined>();
   const [runSession, setRunSession] = useState<AgentSessionContract | undefined>(initialSession);
-  const [chatSession] = useState<AgentSessionContract | undefined>(initialSession);
+  const [chatSession, setChatSession] = useState<AgentSessionContract | undefined>(initialSession);
   const [chatMessages, setChatMessages] = useState<readonly ChatMessage[]>([]);
   const approval = useMemo(() => new TuiApprovalPort(), []);
 
@@ -95,6 +98,7 @@ function AlphionTui({ application, projectRoot, initialSession }: Readonly<{ app
     ]);
     setSnapshot({ profile, diagnostics });
   }, [application]);
+  const acceptRunSession = useCallback((session: AgentSessionContract) => setChatSession(session), []);
 
   useEffect(() => {
     void (async () => {
@@ -124,6 +128,7 @@ function AlphionTui({ application, projectRoot, initialSession }: Readonly<{ app
   const current = profiles[selected];
   const activeProfile = profiles.find((profile) => profile.active);
   const beginRun = (prompt: string, session?: AgentSessionContract) => {
+    if (session) setChatSession(session);
     setChatMessages((messages) => [...messages, { id: `user:${Date.now()}`, role: "user", content: prompt }]);
     setRunPrompt(prompt);
     setRunSession(session ?? chatSession);
@@ -133,6 +138,12 @@ function AlphionTui({ application, projectRoot, initialSession }: Readonly<{ app
   const submitChat = (value: string) => {
     const input = value.trim();
     if (!input.startsWith("/")) { beginRun(input); return; }
+    if (/^\/fork(?:\s|$)/iu.test(input)) {
+      if (!chatSession) { setError("/fork 需要当前会话；可使用 alphion tui --session <ID> 打开。"); return; }
+      const title = input.slice("/fork".length).trim();
+      void forkTuiSession(chatSession, title || undefined, terminalLauncher).then((outcome) => setError(outcome.message)).catch((cause: unknown) => setError(safeError(cause)));
+      return;
+    }
     const alias: Readonly<Record<string, WorkbenchSection>> = {
       "/settings": "settings", "/projects": "projects", "/sessions": "sessions", "/providers": "providers",
       "/resources": "resources", "/doctor": "doctor", "/help": "help", "/profile": "profile", "/harness": "harness",
@@ -199,9 +210,10 @@ function AlphionTui({ application, projectRoot, initialSession }: Readonly<{ app
         prompt={runPrompt}
         {...(runSession ? { session: runSession } : {})}
         {...(runProviderId ? { providerId: runProviderId } : {})}
+        onSession={acceptRunSession}
         onDone={(answer) => {
           if (answer.trim()) setChatMessages((messages) => [...messages, { id: `assistant:${Date.now()}`, role: "assistant", content: answer }]);
-          setRunPrompt(""); setRunSession(chatSession); setScreen("workbench"); setSection("home"); void refreshSnapshot();
+          setRunPrompt(""); setRunSession(undefined); setScreen("workbench"); setSection("home"); void refreshSnapshot();
         }}
         onExit={() => exit()}
       />
@@ -239,7 +251,7 @@ function ProjectCard({ projectRoot }: Readonly<{ projectRoot: string }>): React.
 }
 
 function HelpCard(): React.JSX.Element {
-  return <Box flexDirection="column"><Text>/settings · /projects · /sessions · /providers · /resources · /doctor · /profile · /harness · /help</Text><Text>Enter 发送 · Alt+Enter / Ctrl+J 换行 · Esc 返回 · Ctrl+C 取消/退出</Text></Box>;
+  return <Box flexDirection="column"><Text>/fork [标题] · /settings · /projects · /sessions · /providers · /resources · /doctor · /profile · /harness · /help</Text><Text>Enter 发送 · Alt+Enter / Ctrl+J 换行 · Esc 返回 · Ctrl+C 取消/退出</Text></Box>;
 }
 
 function ProjectProfileView(props: Readonly<{ profile?: ProjectProfile; onRefresh: () => void }>): React.JSX.Element {

@@ -6,6 +6,7 @@ import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "../../..
 import type { CodeProjection } from "../../../ui/code-projection.js";
 import type { UiCommand, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiSurfaceSnapshot } from "../../../ui/contracts.js";
 import type { DesktopApprovalDecision, DesktopRendererBridge } from "../../../desktop/contracts.js";
+import { forkAndSelectSession } from "./session-actions.js";
 import "./style.css";
 import "./enhancements.css";
 
@@ -122,12 +123,19 @@ function App(): React.JSX.Element {
       await api.decideApproval({ requestId: approval.requestId, actionDigest: approval.actionDigest, ...(approval.shapeDigest ? { shapeDigest: approval.shapeDigest } : {}), approved });
     } finally { setApproval(undefined); }
   };
+  const forkActive = async (): Promise<void> => {
+    if (!active || active.status !== "idle") { setStatus("仅空闲 Session 可 fork"); return; }
+    try {
+      await forkAndSelectSession((command) => api.execute(command), active, requestId(), reloadSessions);
+      setStatus("已切换到 Fork");
+    } catch (error) { setStatus(error instanceof UiApiError && error.status === 409 ? "Session 已变化，请重试" : "Fork 失败"); }
+  };
 
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><span className="brand-mark">A</span><span>Alphion</span></div><nav><button className="quiet" onClick={() => setSettings((value) => !value)}>设置</button><Info text="Alphion 只在本机 127.0.0.1 提供服务；修改依赖 revision 与幂等键。" /></nav></header>
     <aside className="rail"><span className="rail-label">Sessions</span>{sessions.map((session) => <button className={session.id === active?.id ? "session active" : "session"} key={session.id} onClick={() => void showSession(session)}>{session.title}<small>{session.status}</small></button>)}<button className="new-session" onClick={() => { setActive(undefined); setMessages([]); }}>＋ 新对话</button></aside>
     <main className="conversation">
-      <div className="conversation-head"><h1>{active?.title ?? "新对话"}</h1><span className="connection"><i />{status}</span></div>
+      <div className="conversation-head"><h1>{active?.title ?? "新对话"}</h1><div><button className="quiet" disabled={!active || active.status !== "idle"} onClick={() => void forkActive()}>Fork</button><span className="connection"><i />{status}</span></div></div>
       {settings ? <SettingsPanel client={api} onProjectActivated={() => void reloadSessions()} /> : null}
       {approval ? <ApprovalCard challenge={approval} onDecide={(approved) => void decideApproval(approved)} /> : null}
       <section className="messages" aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><span className="speaker">{message.role === "assistant" ? "Alphion" : "你"}</span><Markdown content={message.content || "…"} /></article>)}</section>

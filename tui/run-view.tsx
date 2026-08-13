@@ -6,7 +6,7 @@ import { TuiApprovalPort, type PendingApproval } from "./approval-port.js";
 import { TextEntry } from "./input.js";
 import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "./run-projection.js";
 
-export function RunView(props: Readonly<{ application: AgentApplication; approval: TuiApprovalPort; prompt: string; providerId?: string; session?: AgentSessionContract; onDone: (answer: string) => void; onExit: () => void }>): React.JSX.Element {
+export function RunView(props: Readonly<{ application: AgentApplication; approval: TuiApprovalPort; prompt: string; providerId?: string; session?: AgentSessionContract; onSession?: (session: AgentSessionContract) => void; onDone: (answer: string) => void; onExit: () => void }>): React.JSX.Element {
   const [projection, dispatch] = useReducer(reduceRunProjection, EMPTY_RUN_PROJECTION);
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | undefined>();
   const handle = useRef<AgentRunHandle | undefined>(undefined);
@@ -21,11 +21,11 @@ export function RunView(props: Readonly<{ application: AgentApplication; approva
     const flush = () => { if (flushTimer) clearTimeout(flushTimer); flushTimer = undefined; if (!active) return; if (answerBuffer) { dispatch({ type: "answer-delta", delta: answerBuffer }); answerBuffer = ""; } lastFlush = Date.now(); };
     const scheduleFlush = () => { if (!active && !flushTimer) return; flushTimer ??= setTimeout(flush, Math.max(0, 33 - (Date.now() - lastFlush))); };
     const resolveSession = props.session ? Promise.resolve(props.session) : props.application.sessions.create({ title: props.prompt.slice(0, 80), ...(props.providerId ? { providerId: props.providerId } : {}) });
-    void resolveSession.then(async (session) => { activeSession.current = session; return session.send(props.prompt, { expectedRevision: (await session.get()).revision, idempotencyKey: `tui:send:${Date.now()}` }, props.approval); })
+    void resolveSession.then(async (session) => { activeSession.current = session; props.onSession?.(session); return session.send(props.prompt, { expectedRevision: (await session.get()).revision, idempotencyKey: `tui:send:${Date.now()}` }, props.approval); })
       .then(async (runHandle) => { handle.current = runHandle; for await (const event of runHandle.events) { if (event.kind === "model.delta" && typeof event.payload.delta === "string") { answerBuffer += event.payload.delta; scheduleFlush(); } else if (!("delivery" in event)) { flush(); dispatch({ type: "event", event }); } } flush(); await runHandle.result; })
       .catch((cause: unknown) => { if (active) dispatch({ type: "run-error", message: safeError(cause) }); });
     return () => { active = false; if (flushTimer) clearTimeout(flushTimer); handle.current?.cancel("TUI view closed."); };
-  }, [props.application, props.approval, props.prompt, props.providerId, props.session]);
+  }, [props.application, props.approval, props.onSession, props.prompt, props.providerId, props.session]);
   useInput((input, key) => { if (queueMode) return; if (pendingApproval && (input === "y" || input === "n")) pendingApproval.decide(input === "y"); else if (input === "s" && projection.status === "running") setQueueMode("steer"); else if (input === "f") setQueueMode("follow-up"); else if (key.ctrl && input === "c") { if (projection.status === "running") handle.current?.cancel("Cancelled from TUI."); else props.onExit(); } else if (key.return && projection.status !== "running") props.onDone(projection.answer); });
   if (queueMode) return <TextEntry label={queueMode === "steer" ? "注入下一模型边界（steer）" : "排队终态后续（follow-up）"} onCancel={() => setQueueMode(undefined)} onSubmit={(content) => queue(activeSession.current, queueMode, content, props.approval).then(() => setQueueMode(undefined)).catch((cause: unknown) => { dispatch({ type: "run-error", message: safeError(cause) }); setQueueMode(undefined); })} />;
   return <Box flexDirection="column" marginTop={1}>
