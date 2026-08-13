@@ -30,7 +30,7 @@ export function reduceConversationRun(state: ConversationRunState | undefined, a
   if (action.kind === "start") return createConversationRunState(action.runId, action.sessionId);
   if (!state) throw new Error("Conversation Run must start before updates are reduced.");
   if (action.kind === "delta") return Object.freeze({ ...state, status: "streaming", text: state.text + action.delta, statusText: "正在输出", firstTokenReceived: true });
-  if (action.kind === "error") return Object.freeze({ ...state, status: "failed", statusText: action.message });
+  if (action.kind === "error") return Object.freeze({ ...state, status: "failed", statusText: safeText(action.message, "运行失败") });
   if (action.kind === "finish") {
     const status = terminalStatus(action.status);
     return Object.freeze({ ...state, status, text: state.text || action.finalText, statusText: terminalText(status) });

@@ -11,7 +11,7 @@ import { createConversationRunState, reduceConversationRun } from "../ui/convers
 import type { AgentEvent, AgentEventKind } from "../src/index.js";
 
 test("shared slash registry matches names aliases and descriptions deterministically", () => {
-  assert.equal(SLASH_COMMANDS.length, 15);
+  assert.equal(SLASH_COMMANDS.length, 14);
   assert.deepEqual(matchSlashCommands("/prov").map((item) => item.descriptor.name), ["providers"]);
   assert.equal(matchSlashCommands("/inspect")[0]?.descriptor.name, "profile");
   assert.equal(matchSlashCommands("/凭据")[0]?.descriptor.name, "providers");

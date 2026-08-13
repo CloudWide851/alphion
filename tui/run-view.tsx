@@ -1,7 +1,7 @@
 import React, { useEffect, useReducer, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { AgentApplication, AgentRunHandle, AgentSessionContract } from "../src/index.js";
-import { createConversationRunState, reduceConversationRun, type ConversationRunState } from "../ui/conversation-run.js";
+import { reduceConversationRun, type ConversationRunState } from "../ui/conversation-run.js";
 import { parseMarkdown, renderMarkdownText } from "../ui/markdown.js";
 import { TuiApprovalPort, type PendingApproval } from "./approval-port.js";
 import { accent, borderColor, textColor } from "./shell.js";
@@ -23,9 +23,9 @@ export function RunView(props: Readonly<{
   onExit?: () => void;
 }>): React.JSX.Element {
   const [projection, dispatch] = useReducer(reduceOptional, undefined);
-  const [pendingApproval, setPendingApproval] = useState<PendingApproval>();
+  const [pendingApproval, setPendingApproval] = useState<PendingApproval | undefined>(undefined);
   const [tick, setTick] = useState(0);
-  const handle = useRef<AgentRunHandle>();
+  const handle = useRef<AgentRunHandle | undefined>(undefined);
   const activeSession = useRef<AgentSessionContract | undefined>(props.session);
   const handledCommand = useRef(0);
   const started = useRef(false);

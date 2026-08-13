@@ -217,7 +217,7 @@ test("session injects steering at the next model boundary and launches terminal 
     await waitUntil(() => agent.requests.length === 2);
     assert.equal(agent.maxActive, 1);
     assert.equal(agent.requests[1]?.prompt, "after terminal");
-    assert.deepEqual(agent.requests[1]?.history.filter((message) => message.kind === "user").map((message) => "content" in message ? message.content : ""), ["initial"]);
+    assert.deepEqual(agent.requests[1]?.history.filter((message) => message.kind === "user").map((message) => "content" in message ? message.content : ""), ["initial", "redirect"]);
     agent.complete(1, "follow done");
     await waitUntil(async () => (await activeSession.get()).status === "idle");
     const idleRevision = (await activeSession.get()).revision;
