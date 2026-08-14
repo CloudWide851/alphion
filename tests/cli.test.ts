@@ -51,6 +51,18 @@ test("compiled CLI configures a provider, runs through a fake endpoint, and deni
     assert.equal(forked.code, 0, forked.stderr);
     assert.match(forked.stdout, /"replayed": false/);
 
+    const goalCreated = await runCli(["goal", "create", "--title", "CLI Goal", "--root", "Ship safely", "--acceptance", "tests pass", "--idempotency-key", "cli_goal_create_0001", "--state", state, "--project-root", directory]);
+    assert.equal(goalCreated.code, 0, goalCreated.stderr);
+    const goal = (JSON.parse(goalCreated.stdout) as { goal: { id: string; revision: number } }).goal;
+    const goalProgress = await runCli(["goal", "progress", goal.id, "--progress", "User checkpoint", "--revision", String(goal.revision), "--idempotency-key", "cli_goal_progress_0001", "--state", state, "--project-root", directory]);
+    assert.equal(goalProgress.code, 0, goalProgress.stderr);
+    const scheduled = await runCli(["schedule", "create", "--title", "CLI review", "--interval-minutes", "60", "--timezone", "UTC", "--goal", goal.id, "--idempotency-key", "cli_schedule_create_0001", "--state", state, "--project-root", directory]);
+    assert.equal(scheduled.code, 0, scheduled.stderr);
+    assert.match(scheduled.stdout, /"kind": "goal.review"/u);
+    const context = await runCli(["context", "list", source.id, "--state", state, "--project-root", directory]);
+    assert.equal(context.code, 0, context.stderr);
+    assert.deepEqual(JSON.parse(context.stdout), []);
+
     const denied = await runCli(["run", "--prompt", "please write", "--state", state, "--project-root", directory]);
     assert.equal(denied.code, 0, denied.stderr);
     assert.match(denied.stdout, /write was denied/);
@@ -85,7 +97,7 @@ test("compiled live smoke is guarded and Windows batch launcher shows help", asy
   }
   const launched = await runExecutable("cmd.exe", ["/d", "/c", "alphion.bat", "help"]);
   assert.equal(launched.code, 0, launched.stderr);
-  assert.match(launched.stdout, /Alphion v0\.7\.0/);
+  assert.match(launched.stdout, /Alphion v0\.8\.0/);
   const launcherMenu = await runCli(["_launcher", "menu"]);
   assert.equal(launcherMenu.code, 0, launcherMenu.stderr);
   assert.match(launcherMenu.stdout, /启动 Alphion/u);

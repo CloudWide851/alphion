@@ -1,6 +1,6 @@
 export type SlashCommandName =
   | "new" | "settings" | "projects" | "sessions" | "providers" | "resources" | "doctor" | "help" | "profile"
-  | "harness" | "fork" | "steer" | "follow-up" | "cancel";
+  | "harness" | "context" | "goals" | "goal" | "schedules" | "fork" | "steer" | "follow-up" | "cancel";
 
 export interface SlashCommandDescriptor {
   readonly name: SlashCommandName;
@@ -36,12 +36,16 @@ export const SLASH_COMMANDS: readonly SlashCommandDescriptor[] = Object.freeze([
   command("settings", "打开设置", ["set"]),
   command("projects", "管理 Project", ["project"]),
   command("sessions", "浏览 Session", ["session"]),
-  command("providers", "配置 Provider、Vault 与凭据", ["provider"]),
+  command("providers", "配置 Provider 与设备加密凭据", ["provider"]),
   command("resources", "查看 Agent 资源", ["resource"]),
   command("doctor", "运行只读 doctor", ["diagnose"]),
   command("help", "查看快捷命令", ["?"]),
   command("profile", "检查当前 Project", ["inspect"]),
   command("harness", "规划任务 Harness", ["plan"], "[任务]"),
+  command("context", "查看自动上下文优化状态", ["compact"]),
+  command("goals", "浏览长期 Goal", ["goal-list"]),
+  command("goal", "创建、推进或确认 Goal", [], "[操作]") ,
+  command("schedules", "管理定时复盘与 Session 提示", ["schedule"]),
   command("fork", "Fork 当前空闲 Session", [], "[标题]"),
   command("steer", "注入当前 Run 的下一模型边界", [], "<消息>"),
   command("follow-up", "排队或开始后续消息", ["followup"], "<消息>"),
@@ -72,7 +76,7 @@ export function formatSlashCommand(descriptor: SlashCommandDescriptor, argument 
 }
 
 function availabilityFor(name: SlashCommandName, context: SlashCommandContext): SlashCommandAvailability {
-  if (context.activeRunId && !["steer", "follow-up", "cancel"].includes(name)) return unavailable("运行期间请使用 /steer、/follow-up 或 /cancel");
+  if (context.activeRunId && !["steer", "follow-up", "cancel", "context", "goals", "goal", "schedules", "help"].includes(name)) return unavailable("运行期间请使用 /steer、/follow-up、/cancel 或只读状态命令");
   if (name === "fork") {
     if (!context.hasSession) return unavailable("需要当前 Session");
     if (!context.sessionIdle) return unavailable("仅空闲 Session 可 Fork");

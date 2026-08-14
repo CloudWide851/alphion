@@ -12,7 +12,7 @@ export type TuiSlashAction =
 
 const SECTIONS: Readonly<Partial<Record<string, WorkbenchSection>>> = Object.freeze({
   settings: "settings", projects: "projects", sessions: "sessions", providers: "providers", resources: "resources",
-  doctor: "doctor", help: "help", profile: "profile", harness: "harness",
+  doctor: "doctor", help: "help", profile: "profile", harness: "harness", context: "context", goals: "goals", goal: "goal", schedules: "schedules",
 });
 
 export function resolveTuiInput(input: string, context: SlashCommandContext = {}): TuiSlashAction {

@@ -122,5 +122,12 @@ async function serveAsset(pathname: string, response: ServerResponse, assetsRoot
 
 function setSecurityHeaders(response: ServerResponse): void { response.setHeader("content-security-policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"); response.setHeader("x-content-type-options", "nosniff"); response.setHeader("referrer-policy", "no-referrer"); response.setHeader("cross-origin-opener-policy", "same-origin"); }
 function json(response: ServerResponse, status: number, value: unknown): void { if (response.headersSent) return; response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify(value)); }
-function mime(extension: string): string { return extension === ".js" ? "text/javascript; charset=utf-8" : extension === ".css" ? "text/css; charset=utf-8" : extension === ".svg" ? "image/svg+xml" : "text/html; charset=utf-8"; }
+function mime(extension: string): string {
+  if (extension === ".js") return "text/javascript; charset=utf-8";
+  if (extension === ".css") return "text/css; charset=utf-8";
+  if (extension === ".svg") return "image/svg+xml";
+  if (extension === ".png") return "image/png";
+  if (extension === ".ico") return "image/x-icon";
+  return "text/html; charset=utf-8";
+}
 async function closeServer(server: Server, client: UiCommandClient): Promise<void> { await client.close(); await new Promise<void>((done, reject) => server.close((error) => error ? reject(error) : done())); }

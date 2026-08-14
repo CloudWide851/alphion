@@ -5,25 +5,19 @@ import "katex/dist/katex.min.css";
 import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "../../../ui/markdown.js";
 import type { CodeProjection } from "../../../ui/code-projection.js";
 import type { UiCommand, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiSurfaceSnapshot } from "../../../ui/contracts.js";
-import type { DesktopApprovalDecision, DesktopRendererBridge } from "../../../desktop/contracts.js";
+import type { DesktopRendererBridge } from "../../../desktop/contracts.js";
 import { forkAndSelectSession } from "../../../ui/session-actions.js";
 import { parseSlashCommand } from "../../../ui/slash-commands.js";
 import { SlashComposer } from "./slash-palette.js";
 import { createConversationRunState, reduceConversationRun, type ConversationRunState } from "../../../ui/conversation-run.js";
+import { AutomationPanel } from "./automation-panel.js";
+import type { SurfaceClient } from "./surface-client.js";
 import "./style.css";
 import "./enhancements.css";
 
 interface SessionItem { readonly id: string; readonly title: string; readonly revision: number; readonly status: string; }
 interface ChatItem { readonly id: string; readonly role: "user" | "assistant"; readonly content: string; readonly run?: ConversationRunState; }
 interface ApprovalChallenge { readonly requestId: string; readonly runId: string; readonly toolName: string; readonly actionDigest: string; readonly shapeDigest?: string; readonly summary: string; }
-interface SurfaceClient {
-  readonly ready: boolean;
-  execute(command: UiCommand): Promise<UiCommandResult>;
-  subscribe(listener: (frame: UiEventFrame) => void): () => void;
-  importProviderCredential(profileId: string, secret: string): Promise<void>;
-  decideApproval(decision: DesktopApprovalDecision): Promise<void>;
-}
-
 function App(): React.JSX.Element {
   const [csrf, setCsrf] = useState("");
   const [sessions, setSessions] = useState<readonly SessionItem[]>([]);
@@ -34,6 +28,7 @@ function App(): React.JSX.Element {
   const [settings, setSettings] = useState(false);
   const [approval, setApproval] = useState<ApprovalChallenge>();
   const [activeRunId, setActiveRunId] = useState<string>();
+  const [surface, setSurface] = useState<Pick<UiSurfaceSnapshot, "compaction" | "goals" | "schedules">>({ goals: [], schedules: [] });
   const cursor = useRef(0);
 
   const desktop = window.alphionDesktop;
@@ -79,6 +74,7 @@ function App(): React.JSX.Element {
     const snapshot = result.result as UiSurfaceSnapshot;
     cursor.current = Math.max(cursor.current, snapshot.cursor);
     const values: readonly SessionItem[] = snapshot.sessions;
+    setSurface({ ...(snapshot.compaction ? { compaction: snapshot.compaction } : {}), goals: snapshot.goals, schedules: snapshot.schedules });
     setSessions(values);
     const selected = values.find((item) => item.id === snapshot.selectedSessionId) ?? values[0];
     if (selected && snapshot.selectedView) { setActive(snapshot.selectedView.session as SessionItem); setMessages(sessionMessages(snapshot.selectedView)); }
@@ -142,6 +138,7 @@ function App(): React.JSX.Element {
     const name = parsed.descriptor.name;
     if (name === "new") { setActive(undefined); setMessages([]); setDraft(""); setStatus("新对话"); return; }
     if (name === "settings") { setSettings((value) => !value); setDraft(""); return; }
+    if (["context", "goals", "goal", "schedules"].includes(name)) { setSettings(true); setStatus(`/${name}`); setDraft(""); return; }
     if (name === "fork") { setDraft(""); await forkActive(); return; }
     if (name === "cancel" && activeRunId) { await api.execute({ kind: "run.cancel", runId: activeRunId, reason: "Cancelled from slash command." }); setDraft(""); return; }
     if ((name === "steer" || name === "follow-up") && active) {
@@ -164,11 +161,11 @@ function App(): React.JSX.Element {
   };
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark">A</span><span>Alphion</span></div><nav><button className="quiet" onClick={() => setSettings((value) => !value)}>设置</button><Info text="Alphion 只在本机 127.0.0.1 提供服务；修改依赖 revision 与幂等键。" /></nav></header>
+    <header className="topbar"><div className="brand"><img className="brand-mark" src="./alphion-icon.svg" alt="" /><span>Alphion</span></div><nav><button className="quiet" onClick={() => setSettings((value) => !value)}>设置</button><Info text="Alphion 只在本机 127.0.0.1 提供服务；修改依赖 revision 与幂等键。" /></nav></header>
     <aside className="rail"><span className="rail-label">Sessions</span>{sessions.map((session) => <button className={session.id === active?.id ? "session active" : "session"} key={session.id} onClick={() => void showSession(session)}>{session.title}<small>{session.status}</small></button>)}<button className="new-session" onClick={() => { setActive(undefined); setMessages([]); }}>＋ 新对话</button></aside>
     <main className="conversation">
       <div className="conversation-head"><h1>{active?.title ?? "新对话"}</h1><div><button className="quiet" disabled={!active || active.status !== "idle"} onClick={() => void forkActive()}>Fork</button><span className="connection"><i />{status}</span></div></div>
-      {settings ? <SettingsPanel client={api} onProjectActivated={() => void reloadSessions()} /> : null}
+      {settings ? <SettingsPanel client={api} {...(active ? { sessionId: active.id } : {})} surface={surface} sessions={sessions} onProjectActivated={() => void reloadSessions()} /> : null}
       {approval ? <ApprovalCard challenge={approval} onDecide={(approved) => void decideApproval(approved)} /> : null}
       <section className="messages" aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role} ${message.run?.status ?? ""}`} key={message.id}><span className="speaker">{message.role === "assistant" ? "Alphion" : "你"}</span>{message.run?.status === "waiting" && !message.content ? <WaitingDots /> : <div className={message.run?.status === "streaming" ? "stream-content" : undefined}><Markdown content={message.content || message.run?.statusText || "…"} /></div>}{message.run ? <RunMeta run={message.run} /> : null}</article>)}</section>
       <SlashComposer value={draft} context={{ hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) }} disabled={!api.ready} onChange={setDraft} onSubmitMessage={() => void send()} onCommand={(command) => void executeSlash(command).catch(() => setStatus("命令执行失败"))} />
@@ -176,15 +173,15 @@ function App(): React.JSX.Element {
   </div>;
 }
 
-function EmptyState(): React.JSX.Element { return <div className="empty"><div className="glyph">A</div><h1>Alphion</h1><Info text="直接描述任务。项目、Session、Provider 与资源可在设置中管理。" /></div>; }
+function EmptyState(): React.JSX.Element { return <div className="empty"><img className="glyph" src="./alphion-icon.svg" alt="Alphion" /><h1>Alphion</h1><Info text="直接描述任务。项目、Session、Provider 与资源可在设置中管理。" /></div>; }
 function WaitingDots(): React.JSX.Element { return <span className="waiting-dots" role="status" aria-label="等待模型输出"><i /><i /><i /></span>; }
 function RunMeta({ run }: Readonly<{ run: ConversationRunState }>): React.JSX.Element { return <small className="run-meta">{run.statusText}{run.usage.inputTokens || run.usage.outputTokens ? ` · tokens ${run.usage.inputTokens}/${run.usage.outputTokens}` : ""}</small>; }
 function Info({ text }: Readonly<{ text: string }>): React.JSX.Element { return <details className="info"><summary aria-label="说明">!</summary><div>{text}</div></details>; }
-function SettingsPanel({ client, onProjectActivated }: Readonly<{ client: SurfaceClient; onProjectActivated: () => void }>): React.JSX.Element {
+function SettingsPanel({ client, sessionId, surface, sessions, onProjectActivated }: Readonly<{ client: SurfaceClient; sessionId?: string; surface: Pick<UiSurfaceSnapshot, "compaction" | "goals" | "schedules">; sessions: readonly SessionItem[]; onProjectActivated: () => void }>): React.JSX.Element {
   const [diagnostic, setDiagnostic] = useState("选择一项查看");
   const [projects, setProjects] = useState<readonly { id: string; name: string }[]>([]);
   const loadProjects = () => void client.execute({ kind: "project.list" }).then((result) => { const items = result.result as readonly { id: string; name: string }[]; setProjects(items); setDiagnostic(items.length ? "选择 Project 进行切换" : "尚未注册 Project"); });
-  return <section className="settings-panel"><div className="settings-actions"><button onClick={loadProjects}>Projects</button><button onClick={() => void client.execute({ kind: "provider.list" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>Provider</button><button onClick={() => void client.execute({ kind: "resource.list" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>资源</button><button onClick={() => void client.execute({ kind: "doctor" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>doctor</button></div>{projects.length ? <div className="project-list">{projects.map((project) => <button key={project.id} onClick={() => void client.execute({ kind: "project.activate", projectId: project.id }).then(() => { setProjects([]); setDiagnostic(`已切换至 ${project.name}`); onProjectActivated(); })}>{project.name}</button>)}</div> : null}<pre>{diagnostic}</pre><CredentialForm client={client} /><Info text="敏感凭据通过独立的一次性表单提交；无论成功或失败，输入都会立即清空，且不会写入浏览器存储。" /></section>;
+  return <section className="settings-panel"><div className="settings-actions"><button onClick={loadProjects}>Projects</button><button onClick={() => void client.execute({ kind: "provider.list" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>Provider</button><button onClick={() => void client.execute({ kind: "resource.list" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>资源</button><button onClick={() => void client.execute({ kind: "doctor" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>doctor</button></div>{projects.length ? <div className="project-list">{projects.map((project) => <button key={project.id} onClick={() => void client.execute({ kind: "project.activate", projectId: project.id }).then(() => { setProjects([]); setDiagnostic(`已切换至 ${project.name}`); onProjectActivated(); })}>{project.name}</button>)}</div> : null}<pre>{diagnostic}</pre><AutomationPanel client={client} {...(sessionId ? { sessionId } : {})} {...(surface.compaction ? { compaction: surface.compaction } : {})} goals={surface.goals} schedules={surface.schedules} sessions={sessions} reload={onProjectActivated} /><CredentialForm client={client} /><Info text="敏感凭据通过设备密钥保护并经独立的一次性表单提交；无论成功或失败，输入都会立即清空，且不会写入浏览器存储。" /></section>;
 }
 
 function CredentialForm({ client }: Readonly<{ client: SurfaceClient }>): React.JSX.Element {

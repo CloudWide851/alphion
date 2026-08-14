@@ -35,7 +35,11 @@ test("frame history is bounded and slow consumers can be replaced with resync", 
 
 test("Local UI snapshot returns one watermark and selected Session view", async () => {
   const session = { schemaVersion: 3 as const, id: "session-0001", domainId: "domain-0001", title: "selected", revision: 1, status: "idle" as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), auditOnly: false, shapeStatus: "shaped" as const, shapeRevision: 1, shapeDigest: "a".repeat(64) };
-  const application = { sessions: { list: () => Promise.resolve([session]), view: () => Promise.resolve({ session, entries: [] }) } };
+  const application = {
+    sessions: { list: () => Promise.resolve([session]), view: () => Promise.resolve({ session, entries: [] }), getCompactionProjection: () => Promise.resolve({ count: 0 }) },
+    goals: { list: () => Promise.resolve([]) },
+    schedules: { list: () => Promise.resolve([]) },
+  };
   const client = new LocalUiCommandClient({ application: () => application as never });
   try {
     const result = await client.execute({ schemaVersion: 1, requestId: "request-snapshot-0001", command: { kind: "surface.snapshot", selectedSessionId: session.id } });

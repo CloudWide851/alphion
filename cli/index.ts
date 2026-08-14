@@ -51,6 +51,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
   if (group === "session") return sessionCommand(command, parsed, projectRoot, statePath);
   if (group === "resource") return resourceCommand(command, parsed, projectRoot, statePath);
+  if (group === "goal" || group === "schedule" || group === "context") return automationCliCommand(group, command, parsed, projectRoot, statePath);
   if (group === "desktop") { const { launchDesktop } = await import("../desktop/launcher.js"); await launchDesktop(); return 0; }
   if (group === "harness" && command === "plan") return harnessPlanCommand(parsed, projectRoot, statePath);
   if (group === "run") return runCommand(parsed, projectRoot, statePath);
@@ -235,6 +236,12 @@ async function harnessPlanCommand(parsed: ParsedArguments, projectRoot: string, 
   finally { await application.close(); }
 }
 
+async function automationCliCommand(group: string, command: string | undefined, parsed: ParsedArguments, projectRoot: string, statePath: string): Promise<number> {
+  const application = await openApplication(projectRoot, statePath);
+  try { const { automationCommand } = await import("./automation.js"); return await automationCommand(group, command, parsed, application); }
+  finally { await application.close(); }
+}
+
 function createCliKey(action: string | undefined): string { return `cli:${action ?? "command"}:${process.pid}:${Date.now()}`; }
 
 async function openApplication(projectRoot: string, statePath: string): Promise<LocalAlphionApplication> {
@@ -349,7 +356,7 @@ function safeEventMessage(payload: Readonly<Record<string, unknown>>): string {
 }
 
 function printHelp(): void {
-  process.stdout.write(`Alphion v0.7.0\n\n`);
+  process.stdout.write(`Alphion v0.8.0\n\n`);
   process.stdout.write(`Commands:\n`);
   process.stdout.write(`  provider set --id ID --preset deepseek|deepseek-international|kimi|kimi-international|qwen|qwen-international|glm|glm-international|custom-openai-compatible --model MODEL [--allow-unlisted-model] [--base-url URL for custom only] [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
   process.stdout.write(`  provider list\n  provider activate ID\n`);
@@ -361,13 +368,19 @@ function printHelp(): void {
   process.stdout.write(`  run --prompt TEXT [--provider ID] [--project-root PATH] [--no-cache]\n\n`);
   process.stdout.write(`  session create|list|show|shape|reshape|fork|checkout|send|steer|follow-up ...\n  harness plan --prompt TEXT\n`);
   process.stdout.write(`  resource list|doctor [--disable-scope SCOPE] [--disable-id ID]\n  web [--port PORT]\n  desktop\n`);
+  process.stdout.write(`  context list SESSION_ID [--limit N] | context show SESSION_ID COMPACTION_ID\n`);
+  process.stdout.write(`  goal create|list|show|update|progress|confirm|archive|restore ...\n`);
+  process.stdout.write(`  schedule create|list|show|pause|resume|run-now|executions ...\n`);
+  process.stdout.write(`    goal create --title TEXT --root TEXT --acceptance TEXT [--acceptance TEXT]\n`);
+  process.stdout.write(`    goal progress GOAL_ID --progress TEXT [--evidence ID] [--next TEXT] [--blocker TEXT]\n`);
+  process.stdout.write(`    schedule create --title TEXT (--once ISO|--interval-minutes N|--cron EXPR) --timezone IANA (--goal ID|--session ID --prompt TEXT)\n`);
   process.stdout.write(`  tui [--session SESSION_ID] [--project-root PATH] [--state PATH]\n\n`);
   process.stdout.write(`Global options: --state PATH --project-root PATH\n`);
 }
 
 function launcherCommand(command: string | undefined, parsed: ParsedArguments): number {
   if (command === "menu") {
-    process.stdout.write(`\n  ALPHION 0.7.0\n  =============\n\n`);
+    process.stdout.write(`\n  ALPHION 0.8.0\n  =============\n\n`);
     process.stdout.write(`  1. 启动 Alphion\n  2. 启动 doctor\n  3. 查看命令帮助\n  4. 退出\n\n`);
     return 0;
   }

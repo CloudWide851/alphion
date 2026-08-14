@@ -11,7 +11,7 @@ import { createConversationRunState, reduceConversationRun } from "../ui/convers
 import type { AgentEvent, AgentEventKind } from "../src/index.js";
 
 test("shared slash registry matches names aliases and descriptions deterministically", () => {
-  assert.equal(SLASH_COMMANDS.length, 14);
+  assert.equal(SLASH_COMMANDS.length, 18);
   assert.deepEqual(matchSlashCommands("/prov").map((item) => item.descriptor.name), ["providers"]);
   assert.equal(matchSlashCommands("/inspect")[0]?.descriptor.name, "profile");
   assert.equal(matchSlashCommands("/凭据")[0]?.descriptor.name, "providers");
@@ -30,7 +30,7 @@ test("slash parsing keeps disabled commands visible with stable reasons", () => 
   assert.equal(enabled.kind, "command");
   if (enabled.kind === "command") assert.deepEqual([enabled.descriptor.name, enabled.argument], ["follow-up", "continue"]);
   const settings = parseSlashCommand("/settings", { activeRunId: "run_0001" });
-  assert.equal(settings.kind === "command" ? settings.availability.reason : "", "运行期间请使用 /steer、/follow-up 或 /cancel");
+  assert.equal(settings.kind === "command" ? settings.availability.reason : "", "运行期间请使用 /steer、/follow-up、/cancel 或只读状态命令");
 });
 
 test("TUI slash dispatcher separates commands from Session history messages", () => {
@@ -42,7 +42,7 @@ test("TUI slash dispatcher separates commands from Session history messages", ()
 
 test("TUI slash palette opens on slash and executes keyboard selection", async () => {
   const submitted: string[] = [];
-  const view = render(React.createElement(ChatEntry, { onSubmit: (value: string) => submitted.push(value) }));
+  const view = render(React.createElement(ChatEntry, { onSubmit: (value: string) => { submitted.push(value); } }));
   view.stdin.write("/");
   await pause();
   assert.match(view.lastFrame() ?? "", /\/new.*开始新对话/u);
@@ -59,7 +59,10 @@ test("project.inspect uses exact schema v1 and delegates to read-only applicatio
   assert.deepEqual(command, { kind: "project.inspect", refresh: true });
   assert.throws(() => decodeUiCommandEnvelope({ schemaVersion: 1, requestId: "request_inspect_0002", command: { kind: "project.inspect", refresh: "yes" } }), /boolean/u);
   const calls: unknown[] = [];
-  const application = { inspectProject: (options: unknown) => { calls.push(options); return Promise.resolve({ revision: "r1" }); } };
+  const application = {
+    sessions: { subscribeActivity: () => ({ async *[Symbol.asyncIterator]() { /* no activity */ } }) },
+    inspectProject: (options: unknown) => { calls.push(options); return Promise.resolve({ revision: "r1" }); },
+  };
   const client = new LocalUiCommandClient({ application: () => application as never });
   try {
     const result = await client.execute({ schemaVersion: 1, requestId: "request_inspect_0003", command: { kind: "project.inspect", refresh: true } });
