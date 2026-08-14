@@ -26,17 +26,7 @@ export class ProviderConfigurationManager implements ProviderConfigurationServic
     return this.#vault.status();
   }
 
-  initializeVault(masterPassword: string): Promise<void> {
-    return this.#vault.initialize(masterPassword);
-  }
-
-  unlockVault(masterPassword: string): Promise<void> {
-    return this.#vault.unlock(masterPassword);
-  }
-
-  lockVault(): void {
-    this.#vault.lock();
-  }
+  provisionVault(): Promise<void> { return this.#vault.provision(); }
 
   importCredential(profileId: string, secret: string): Promise<ProviderProfile> {
     return this.#vault.importCredential(profileId, secret);
@@ -46,11 +36,10 @@ export class ProviderConfigurationManager implements ProviderConfigurationServic
     return this.#vault.removeCredential(profileId);
   }
 
-  rotateVaultPassword(currentPassword: string, nextPassword: string): Promise<void> {
-    return this.#vault.rotateMasterPassword(currentPassword, nextPassword);
-  }
-
   resetVault(): Promise<number> {
     return this.#vault.reset();
   }
+
+  legacyVaultStatus(): Promise<Readonly<{ disabled: boolean; secretCount: number }>> { return this.#vault.legacyStatus(); }
+  resetLegacyVault(): Promise<number> { return this.#vault.resetLegacy(); }
 }

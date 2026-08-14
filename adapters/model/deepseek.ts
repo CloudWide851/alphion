@@ -73,7 +73,7 @@ export class DeepSeekProvider implements AgentProvider {
       : this.profile.auth.secretId;
     const apiKey = await this.#secrets.resolve(reference);
     if (!apiKey) {
-      throw new AlphionError("dependency-unavailable", "The DeepSeek credential is unavailable or the vault is locked.", {
+      throw new AlphionError("dependency-unavailable", "The DeepSeek device credential is unavailable.", {
         stage: "provider",
         reason: "credential-unavailable",
       });

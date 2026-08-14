@@ -1,236 +1,167 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { diagnoseLocalProject } from "../adapters/local/local-application.js";
+import { FileDeviceKeyProvider } from "../adapters/secrets/device-key.js";
 import { openSqliteDatabase } from "../adapters/store/database.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
 
-const MASTER_ONE = "correct horse battery staple";
-const MASTER_TWO = "another strong local password";
-
-test("encrypted SQLite vault imports, locks, rotates, removes, and never stores plaintext", async () => {
-  await withTemporaryDirectory(async (directory) => {
-    const path = join(directory, "vault.sqlite3");
-    const secret = `sk-${"vault-secret-material".repeat(3)}`;
-    const store = new SqliteStore({ path });
-    assert.deepEqual(await store.status(), { initialized: false, locked: true, secretCount: 0, autoLockMs: 900_000 });
-    await store.initialize(MASTER_ONE);
-    await store.upsertProfile({
-      schemaVersion: 2,
-      id: "deepseek",
-      name: "DeepSeek",
-      kind: "deepseek",
-      presetId: "deepseek",
-      model: "deepseek-reasoner",
-      protocol: "chat-completions",
-      auth: { mode: "none" },
-      capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: true },
-      active: true,
-    });
-    const imported = await store.importCredential("deepseek", secret);
+test("device vault provisions on first import and restarts without a password", async () => {
+  await temporary(async (directory) => {
+    const path = join(directory, "device.sqlite3");
+    const keyPath = join(directory, "config", "device.key");
+    const credential = ["opaque", "device", "material".repeat(3)].join("-");
+    const provider = new FileDeviceKeyProvider(keyPath);
+    let store = new SqliteStore({ path, deviceKeyProvider: provider });
+    assert.deepEqual(await store.status(), { schemaVersion: 2, mode: "unprovisioned", provisioned: false, deviceKeyAvailable: false, secretCount: 0, legacySecretCount: 0 });
+    await store.upsertProfile(profile());
+    const imported = await store.importCredential("deepseek", credential);
     assert.equal(imported.auth.mode, "encrypted-sqlite");
     if (imported.auth.mode !== "encrypted-sqlite") assert.fail("Expected encrypted auth.");
-    assert.equal(await store.resolve(imported.auth.secretId), secret);
-    assert.equal(await store.resolve(imported.auth.secretId), secret);
-    assert.equal((await store.status()).secretCount, 1);
-    const initialNonce = readVaultNonce(path, imported.auth.secretId);
+    assert.equal(await store.resolve(imported.auth.secretId), credential);
+    assert.deepEqual(await store.status(), { schemaVersion: 2, mode: "device", provisioned: true, deviceKeyAvailable: true, secretCount: 1, legacySecretCount: 0 });
+    store.close();
 
-    store.lock();
-    await assert.rejects(store.resolve(imported.auth.secretId), (error) => error instanceof Error && "reason" in error && error.reason === "vault-locked");
-    await assert.rejects(store.unlock("wrong password value"), /could not be unlocked/i);
-    await store.unlock(MASTER_ONE);
-    await store.rotateMasterPassword(MASTER_ONE, MASTER_TWO);
-    assert.notDeepEqual(readVaultNonce(path, imported.auth.secretId), initialNonce);
-    store.lock();
-    await assert.rejects(store.unlock(MASTER_ONE), /could not be unlocked/i);
-    await store.unlock(MASTER_TWO);
-    assert.equal(await store.resolve(imported.auth.secretId), secret);
-
-    const removed = await store.removeCredential("deepseek");
-    assert.equal(removed.auth.mode, "none");
-    assert.equal((await store.status()).secretCount, 0);
+    assert.equal((await readFile(keyPath)).byteLength, 32);
+    store = new SqliteStore({ path, deviceKeyProvider: new FileDeviceKeyProvider(keyPath) });
+    assert.equal(await store.resolve(imported.auth.secretId), credential);
+    const replaced = await store.importCredential("deepseek", `${credential}-replacement`);
+    if (replaced.auth.mode !== "encrypted-sqlite") assert.fail("Expected encrypted auth.");
+    assert.equal(replaced.auth.secretId, imported.auth.secretId);
+    assert.equal(await store.resolve(replaced.auth.secretId), `${credential}-replacement`);
+    assert.equal((await store.removeCredential("deepseek")).auth.mode, "none");
+    assert.equal(await store.reset(), 0);
     store.close();
 
     const bytes = await readFile(path);
-    assert.equal(bytes.includes(Buffer.from(secret)), false);
-    assert.equal(bytes.includes(Buffer.from(MASTER_ONE)), false);
-    assert.equal(bytes.includes(Buffer.from(MASTER_TWO)), false);
+    assert.equal(bytes.includes(Buffer.from(credential)), false);
+    assert.equal(bytes.includes(Buffer.from(`${credential}-replacement`)), false);
   });
 });
 
-test("vault password rotation rolls back metadata and ciphertext together", async () => {
-  await withTemporaryDirectory(async (directory) => {
-    const path = join(directory, "rotation-rollback.sqlite3");
-    const secret = ["sk", "rollback", "material", "123456"].join("-");
-    const store = new SqliteStore({ path });
-    await store.initialize(MASTER_ONE);
-    await store.upsertProfile({
-      schemaVersion: 2,
-      id: "deepseek",
-      name: "DeepSeek",
-      kind: "deepseek",
-      presetId: "deepseek",
-      model: "deepseek-chat",
-      protocol: "chat-completions",
-      auth: { mode: "none" },
-      capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false },
-      active: true,
-    });
-    const profile = await store.importCredential("deepseek", secret);
-    if (profile.auth.mode !== "encrypted-sqlite") assert.fail("Expected encrypted auth.");
-
-    const database = openSqliteDatabase(path);
-    database.exec(`
-      CREATE TRIGGER reject_vault_rotation
-      BEFORE UPDATE OF ciphertext ON vault_secrets
-      BEGIN SELECT RAISE(ABORT, 'forced rotation rollback'); END;
-    `);
-    await assert.rejects(store.rotateMasterPassword(MASTER_ONE, MASTER_TWO), /rotation failed/i);
-    database.exec("DROP TRIGGER reject_vault_rotation");
-    database.close();
-
-    store.lock();
-    await store.unlock(MASTER_ONE);
-    assert.equal(await store.resolve(profile.auth.secretId), secret);
-    store.lock();
-    await assert.rejects(store.unlock(MASTER_TWO), /could not be unlocked/i);
-    store.close();
-  });
-});
-
-test("vault detects ciphertext tampering and reset preserves profiles", async () => {
-  await withTemporaryDirectory(async (directory) => {
+test("device key loss, corruption, envelope tamper, and ciphertext tamper fail closed", async () => {
+  await temporary(async (directory) => {
     const path = join(directory, "tamper.sqlite3");
-    const store = new SqliteStore({ path });
-    await store.initialize(MASTER_ONE);
-    await store.upsertProfile({
-      schemaVersion: 2,
-      id: "deepseek",
-      name: "DeepSeek",
-      kind: "deepseek",
-      presetId: "deepseek",
-      model: "deepseek-chat",
-      protocol: "chat-completions",
-      auth: { mode: "none" },
-      capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false },
-      active: true,
-    });
-    const profile = await store.importCredential("deepseek", ["sk", "tamper", "detection", "material", "123456"].join("-"));
-    if (profile.auth.mode !== "encrypted-sqlite") assert.fail("Expected encrypted auth.");
-    const secretId = profile.auth.secretId;
+    const keyPath = join(directory, "device.key");
+    const lostPath = join(directory, "device.key.lost");
+    const provider = new FileDeviceKeyProvider(keyPath);
+    let store = new SqliteStore({ path, deviceKeyProvider: provider });
+    await store.upsertProfile(profile());
+    const imported = await store.importCredential("deepseek", ["opaque", "tamper", "material", "123456"].join("-"));
+    if (imported.auth.mode !== "encrypted-sqlite") assert.fail("Expected encrypted auth.");
     store.close();
 
-    const database = openSqliteDatabase(path);
-    const row = database.prepare("SELECT ciphertext FROM vault_secrets WHERE secret_id = ?").get(secretId) as { ciphertext: Uint8Array };
-    const corrupted = Buffer.from(row.ciphertext);
-    corrupted[0] = (corrupted[0] ?? 0) ^ 0xff;
-    database.prepare("UPDATE vault_secrets SET ciphertext = ? WHERE secret_id = ?").run(corrupted, secretId);
-    database.close();
+    await rename(keyPath, lostPath);
+    store = new SqliteStore({ path, deviceKeyProvider: provider });
+    await rejectsReason(store.resolve(imported.auth.secretId), "device-key-unavailable");
+    store.close();
+    await rename(lostPath, keyPath);
+    const originalKey = await readFile(keyPath);
+    await writeFile(keyPath, Buffer.from("corrupt"));
+    store = new SqliteStore({ path, deviceKeyProvider: provider });
+    await rejectsReason(store.resolve(imported.auth.secretId), "device-key-corrupt");
+    store.close();
+    await writeFile(keyPath, originalKey);
 
-    const reopened = new SqliteStore({ path });
-    await reopened.unlock(MASTER_ONE);
-    await assert.rejects(reopened.resolve(secretId), (error) => error instanceof Error && "reason" in error && error.reason === "credential-authentication-failed");
-    assert.equal(await reopened.reset(), 1);
-    assert.equal((await reopened.getProfile("deepseek"))?.auth.mode, "none");
-    assert.deepEqual(await reopened.status(), { initialized: false, locked: true, secretCount: 0, autoLockMs: 900_000 });
-    reopened.close();
-  });
-});
-
-test("vault auto-lock expires an unlocked key", async () => {
-  await withTemporaryDirectory(async (directory) => {
-    const store = new SqliteStore({ path: join(directory, "timeout.sqlite3"), vaultAutoLockMs: 10 });
-    await store.initialize(MASTER_ONE);
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.equal((await store.status()).locked, true);
+    mutateBlob(path, "device_vault_metadata", "wrapped_key_ciphertext", "id", 1);
+    store = new SqliteStore({ path, deviceKeyProvider: provider });
+    await rejectsReason(store.resolve(imported.auth.secretId), "device-envelope-authentication-failed");
+    store.close();
+    mutateBlob(path, "device_vault_metadata", "wrapped_key_ciphertext", "id", 1);
+    mutateBlob(path, "device_vault_secrets", "ciphertext", "secret_id", imported.auth.secretId);
+    store = new SqliteStore({ path, deviceKeyProvider: provider });
+    await rejectsReason(store.resolve(imported.auth.secretId), "credential-authentication-failed");
     store.close();
   });
 });
 
-test("SQLite schema v1 profiles migrate through schema v5 without losing environment auth", async () => {
-  await withTemporaryDirectory(async (directory) => {
-    const path = join(directory, "v1.sqlite3");
-    createV1Database(path);
-    const store = new SqliteStore({ path });
-    try {
-      const profile = await store.getActiveProfile();
-      assert.equal(profile?.schemaVersion, 2);
-      assert.equal(profile?.kind, "custom-openai-compatible");
-      assert.equal(profile?.auth.mode, "bearer-env");
-      assert.equal(profile?.capabilities.reasoning, false);
-      const database = openSqliteDatabase(path, { readOnly: true });
-      try {
-        assert.equal((database.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
-      } finally {
-        database.close();
-      }
-    } finally {
-      store.close();
-    }
+test("doctor reports a missing device key without modifying the database", async () => {
+  await temporary(async (directory) => {
+    const path = join(directory, "doctor.sqlite3");
+    const keyPath = join(directory, "device.key");
+    const provider = new FileDeviceKeyProvider(keyPath);
+    const store = new SqliteStore({ path, deviceKeyProvider: provider });
+    await store.upsertProfile(profile());
+    await store.importCredential("deepseek", ["opaque", "doctor", "material", "123456789"].join("-"));
+    store.close();
+    await rm(keyPath);
+    const before = await readFile(path);
+    const beforeSize = (await stat(path)).size;
+    const report = await diagnoseLocalProject({ projectRoot: directory, statePath: path, deviceKeyProvider: provider });
+    const check = report.checks.find((item) => item.id === "device-vault");
+    assert.equal(check?.status, "fail");
+    assert.match(check?.summary ?? "", /设备密钥不可用/u);
+    assert.equal((await stat(path)).size, beforeSize);
+    assert.deepEqual(await readFile(path), before);
   });
 });
 
-function createV1Database(path: string): void {
+test("v6 password credentials migrate as legacy-disabled and reset only by explicit request", async () => {
+  await temporary(async (directory) => {
+    const path = join(directory, "legacy.sqlite3");
+    const store = new SqliteStore({ path, deviceKeyProvider: new FileDeviceKeyProvider(join(directory, "device.key")) });
+    await store.upsertProfile(profile());
+    store.close();
+    createLegacyV6State(path);
+
+    const migrated = new SqliteStore({ path, deviceKeyProvider: new FileDeviceKeyProvider(join(directory, "device.key")) });
+    assert.deepEqual(await migrated.legacyStatus(), { disabled: true, secretCount: 1 });
+    assert.equal((await migrated.status()).mode, "legacy-disabled");
+    await rejectsReason(migrated.resolve("vault_legacy123"), "legacy-vault-disabled");
+    assert.equal(await migrated.resetLegacy(), 1);
+    assert.deepEqual(await migrated.legacyStatus(), { disabled: false, secretCount: 0 });
+    assert.equal((await migrated.getProfile("deepseek"))?.auth.mode, "none");
+    migrated.close();
+
+    const backup = openSqliteDatabase(`${path}.v6-backup`, { readOnly: true });
+    assert.equal((backup.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
+    assert.equal((backup.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get() as { count: number }).count, 1);
+    backup.close();
+  });
+});
+
+function profile() {
+  return {
+    schemaVersion: 2 as const,
+    id: "deepseek", name: "DeepSeek", kind: "deepseek" as const, presetId: "deepseek",
+    model: "deepseek-chat", protocol: "chat-completions" as const, auth: { mode: "none" as const },
+    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false }, active: true,
+  };
+}
+
+function mutateBlob(path: string, table: string, column: string, keyColumn: string, key: unknown): void {
+  const database = openSqliteDatabase(path);
+  try {
+    const row = database.prepare(`SELECT ${column} AS value FROM ${table} WHERE ${keyColumn} = ?`).get(key) as { value: Uint8Array };
+    const value = Buffer.from(row.value); value[0] = (value[0] ?? 0) ^ 0xff;
+    database.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${keyColumn} = ?`).run(value, key);
+  } finally { database.close(); }
+}
+
+function createLegacyV6State(path: string): void {
   const database = openSqliteDatabase(path);
   try {
     database.exec(`
-    CREATE TABLE provider_profiles (
-      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, base_url TEXT NOT NULL, model TEXT NOT NULL,
-      protocol TEXT NOT NULL, auth_mode TEXT NOT NULL, auth_environment_variable TEXT,
-      capabilities_json TEXT NOT NULL, revision INTEGER NOT NULL, active INTEGER NOT NULL,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-    );
-    CREATE UNIQUE INDEX provider_profiles_one_active ON provider_profiles(active) WHERE active = 1;
-    CREATE TABLE runs (run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-    CREATE TABLE events (
-      run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, sequence INTEGER NOT NULL,
-      event_id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, correlation_id TEXT NOT NULL,
-      causation_id TEXT, timestamp TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL,
-      previous_digest TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY (run_id, sequence)
-    );
-    CREATE TABLE cache_entries (
-      namespace TEXT NOT NULL, cache_key TEXT NOT NULL, value_text TEXT NOT NULL, created_at TEXT NOT NULL,
-      expires_at TEXT NOT NULL, provenance TEXT NOT NULL, size_bytes INTEGER NOT NULL, hit_count INTEGER NOT NULL,
-      last_accessed_at TEXT NOT NULL, PRIMARY KEY (namespace, cache_key)
-    );
-    CREATE INDEX cache_entries_lru ON cache_entries(last_accessed_at);
-    CREATE TABLE cache_metrics (id INTEGER PRIMARY KEY, hits INTEGER NOT NULL, misses INTEGER NOT NULL);
-    INSERT INTO cache_metrics VALUES (1, 0, 0);
-    CREATE TABLE shell_rules (
-      id TEXT PRIMARY KEY, executable_path TEXT NOT NULL, executable_key TEXT NOT NULL, executable_digest TEXT,
-      argument_prefix_json TEXT NOT NULL, enabled INTEGER NOT NULL, created_at TEXT NOT NULL
-    );
-    CREATE INDEX shell_rules_lookup ON shell_rules(executable_key, enabled);
-    INSERT INTO provider_profiles VALUES (
-      'legacy', 'Legacy', 'https://example.com/v1', 'legacy-model', 'chat-completions', 'bearer-env',
-      'LEGACY_API_KEY', '{"streaming":true,"tools":true,"promptCaching":false}', 4, 1,
-      '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
-    );
-    PRAGMA user_version = 1;
+      DROP TABLE schedule_commands; DROP TABLE schedule_executions; DROP TABLE schedules;
+      DROP TABLE goal_commands; DROP TABLE goal_revisions; DROP TABLE goals;
+      DROP TABLE compaction_records; DROP TABLE vault_legacy_state;
+      DROP TABLE device_vault_secrets; DROP TABLE device_vault_metadata;
+      INSERT INTO vault_metadata VALUES (1, 1, 'scrypt', X'00', 131072, 8, 1, X'00', X'00', X'00', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      INSERT INTO vault_secrets VALUES ('vault_legacy123', 'deepseek', 1, X'00', X'00', X'00', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      UPDATE provider_profiles SET auth_mode = 'encrypted-sqlite', auth_secret_id = 'vault_legacy123' WHERE id = 'deepseek';
+      PRAGMA user_version = 6;
     `);
-  } finally {
-    database.close();
-  }
+  } finally { database.close(); }
 }
 
-function readVaultNonce(path: string, secretId: string): Buffer {
-  const database = openSqliteDatabase(path, { readOnly: true });
-  try {
-    const row = database.prepare("SELECT nonce FROM vault_secrets WHERE secret_id = ?").get(secretId) as {
-      nonce: Uint8Array;
-    };
-    return Buffer.from(row.nonce);
-  } finally {
-    database.close();
-  }
+async function rejectsReason(promise: Promise<unknown>, reason: string): Promise<void> {
+  await assert.rejects(promise, (error) => error instanceof Error && "reason" in error && error.reason === reason);
 }
 
-async function withTemporaryDirectory(operation: (directory: string) => Promise<void>): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "alphion-vault-test-"));
-  try {
-    await operation(directory);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+async function temporary(operation: (directory: string) => Promise<void>): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), "alphion-v080-vault-"));
+  try { await operation(directory); }
+  finally { await rm(directory, { recursive: true, force: true }); }
 }

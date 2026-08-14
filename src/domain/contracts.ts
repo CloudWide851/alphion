@@ -667,6 +667,7 @@ export interface ModelDescriptor {
   readonly providerKind: ProviderKind;
   readonly model: string;
   readonly capabilities: ProviderCapabilities;
+  readonly contextWindowTokens: number;
 }
 
 export interface ModelRouteCandidate {
@@ -689,10 +690,12 @@ export interface AgentExecutionRequest extends Omit<AgentRunRequest, "systemProm
 }
 
 export interface VaultStatus {
-  readonly initialized: boolean;
-  readonly locked: boolean;
+  readonly schemaVersion: 2;
+  readonly mode: "unprovisioned" | "device" | "legacy-disabled";
+  readonly provisioned: boolean;
+  readonly deviceKeyAvailable: boolean;
   readonly secretCount: number;
-  readonly autoLockMs: number;
+  readonly legacySecretCount: number;
 }
 
 export interface GroundingReport {

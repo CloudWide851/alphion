@@ -72,7 +72,7 @@ export class OpenAICompatibleProvider implements AgentProvider {
       if (!resolved) {
         throw new AlphionError(
           "dependency-unavailable",
-          "The configured provider credential is unavailable or the vault is locked.",
+          "The configured device credential is unavailable.",
           { stage: "provider", reason: "credential-unavailable" },
         );
       }

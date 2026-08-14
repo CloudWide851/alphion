@@ -3,15 +3,13 @@ import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import type { ProviderProfile, ProviderProfileInput, ShellRule, VaultStatus } from "../../src/domain/contracts.js";
 import type { CacheEntry, CacheStats, CacheStore, ProviderProfileStore, SecretVault, ShellPolicyStore } from "../../src/ports/index.js";
-import { createId } from "../../src/application/canonical.js";
+import { canonicalJson, createId } from "../../src/application/canonical.js";
 import { AlphionError } from "../../src/application/errors.js";
 import { containsPotentialSecret } from "../../src/application/sensitive-data.js";
 import { SqliteStoreBase } from "./sqlite-store-base.js";
-import { SCRYPT_OPTIONS, VAULT_SCHEMA_VERSION, VAULT_VERIFIER } from "./sqlite-constants.js";
 import {
-  decodeCacheEntry, decodeProviderProfile, decodeShellRule, decryptValue, deriveVaultKey, encryptValue,
-  optionalRow, pathKey, readBuffer, readNumber, readString, requiredRow, secretAad,
-  type VaultMetadata, validateMasterPassword, validateProviderProfile, vaultVerifierAad,
+  decodeCacheEntry, decodeProviderProfile, decodeShellRule, decryptValue, encryptValue,
+  optionalRow, pathKey, readBuffer, readNumber, readString, requiredRow, validateProviderProfile,
 } from "./sqlite-codecs.js";
 
 export abstract class SqliteConfigurationStore extends SqliteStoreBase
@@ -27,8 +25,9 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
       if (input.auth.mode === "encrypted-sqlite") {
         const secret = optionalRow(
           this.database
-            .prepare("SELECT profile_id FROM vault_secrets WHERE secret_id = ?")
-            .get(input.auth.secretId),
+            .prepare(`SELECT profile_id FROM device_vault_secrets WHERE secret_id = ?
+              UNION ALL SELECT profile_id FROM vault_secrets WHERE secret_id = ? LIMIT 1`)
+            .get(input.auth.secretId, input.auth.secretId),
         );
         if (!secret || readString(secret, "profile_id") !== input.id) {
           throw new AlphionError("validation", "Vault credential reference does not belong to this profile.", {
@@ -110,270 +109,149 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
   }
 
   async status(): Promise<VaultStatus> {
-    this.expireVaultIfNeeded();
-    const initialized = optionalRow(this.database.prepare("SELECT id FROM vault_metadata WHERE id = 1").get()) !== undefined;
-    const count = requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get());
-    return {
-      initialized,
-      locked: this.vaultKey === undefined,
-      secretCount: readNumber(count, "count"),
-      autoLockMs: this.vaultAutoLockMs,
-    };
+    const deviceMetadata = optionalRow(this.database.prepare("SELECT id FROM device_vault_metadata WHERE id = 1").get());
+    const deviceCount = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM device_vault_secrets").get()), "count");
+    const legacyCount = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get()), "count");
+    const deviceKeyAvailable = await this.deviceKeyProvider.load().then((value) => value?.byteLength === 32, () => false);
+    return Object.freeze({
+      schemaVersion: 2,
+      mode: deviceMetadata ? "device" : legacyCount > 0 ? "legacy-disabled" : "unprovisioned",
+      provisioned: deviceMetadata !== undefined,
+      deviceKeyAvailable,
+      secretCount: deviceCount,
+      legacySecretCount: legacyCount,
+    });
   }
 
-  async initialize(masterPassword: string): Promise<void> {
-    validateMasterPassword(masterPassword);
-    if (optionalRow(this.database.prepare("SELECT id FROM vault_metadata WHERE id = 1").get())) {
-      throw new AlphionError("conflict", "Credential vault is already initialized.", { stage: "vault" });
-    }
-    const salt = randomBytes(16);
-    const key = deriveVaultKey(masterPassword, salt);
-    const verifier = encryptValue(key, Buffer.from(VAULT_VERIFIER), vaultVerifierAad());
-    try {
-      this.transaction(() => {
-        this.database
-          .prepare(
-            `INSERT INTO vault_metadata
-             (id, schema_version, kdf, salt, work_factor, block_size, parallelism, verifier_nonce, verifier_ciphertext, verifier_tag, created_at, updated_at)
-             VALUES (1, ?, 'scrypt', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            VAULT_SCHEMA_VERSION,
-            salt,
-            SCRYPT_OPTIONS.N,
-            SCRYPT_OPTIONS.r,
-            SCRYPT_OPTIONS.p,
-            verifier.nonce,
-            verifier.ciphertext,
-            verifier.authTag,
-            new Date().toISOString(),
-            new Date().toISOString(),
-          );
-      });
-      this.setVaultKey(key);
-    } catch (error) {
+  async provision(): Promise<void> {
+    if (optionalRow(this.database.prepare("SELECT id FROM device_vault_metadata WHERE id = 1").get())) {
+      const key = await this.loadDeviceDataKey();
       key.fill(0);
-      throw error;
+      return;
     }
-  }
-
-  async unlock(masterPassword: string): Promise<void> {
-    const metadata = this.readVaultMetadata();
-    const key = deriveVaultKey(masterPassword, metadata.salt);
+    const deviceKey = await this.loadDeviceKey(true);
+    const dataKey = randomBytes(32);
+    const keyId = createId("device_key");
     try {
-      const verifier = decryptValue(
-        key,
-        metadata.verifierNonce,
-        metadata.verifierCiphertext,
-        metadata.verifierTag,
-        vaultVerifierAad(),
-      );
-      if (verifier.toString("utf8") !== VAULT_VERIFIER) {
-        throw new Error("Vault verifier mismatch.");
-      }
-      this.setVaultKey(key);
+      const wrapped = encryptValue(deviceKey, dataKey, deviceVaultAad(keyId));
+      const now = new Date().toISOString();
+      this.transaction(() => this.database.prepare(
+        `INSERT INTO device_vault_metadata
+         (id, schema_version, key_id, wrapped_key_nonce, wrapped_key_ciphertext, wrapped_key_tag, created_at, updated_at)
+         VALUES (1, 1, ?, ?, ?, ?, ?, ?)`,
+      ).run(keyId, wrapped.nonce, wrapped.ciphertext, wrapped.authTag, now, now));
     } catch (error) {
-      key.fill(0);
-      throw new AlphionError("forbidden", "Credential vault could not be unlocked.", { stage: "vault", cause: error });
+      if (!optionalRow(this.database.prepare("SELECT id FROM device_vault_metadata WHERE id = 1").get())) throw error;
+    } finally {
+      deviceKey.fill(0);
+      dataKey.fill(0);
     }
-  }
-
-  lock(): void {
-    if (this.vaultLockTimer) clearTimeout(this.vaultLockTimer);
-    this.vaultLockTimer = undefined;
-    this.vaultLastActivity = 0;
-    this.vaultKey?.fill(0);
-    this.vaultKey = undefined;
   }
 
   async resolve(reference: string): Promise<string | undefined> {
     if (!/^vault_[A-Za-z0-9_-]{8,}$/.test(reference)) return undefined;
-    const key = this.requireVaultKey();
-    const row = optionalRow(
-      this.database
-        .prepare("SELECT secret_id, profile_id, revision, nonce, ciphertext, auth_tag FROM vault_secrets WHERE secret_id = ?")
-        .get(reference),
-    );
-    if (!row) return undefined;
+    const row = optionalRow(this.database.prepare(
+      "SELECT secret_id, profile_id, revision, nonce, ciphertext, auth_tag FROM device_vault_secrets WHERE secret_id = ?",
+    ).get(reference));
+    if (!row) {
+      if (optionalRow(this.database.prepare("SELECT secret_id FROM vault_secrets WHERE secret_id = ?").get(reference))) {
+        throw new AlphionError("dependency-unavailable", "Legacy password credential is disabled; reset and re-import it.", { stage: "vault", reason: "legacy-vault-disabled" });
+      }
+      return undefined;
+    }
+    const key = await this.loadDeviceDataKey();
     let plaintext: Buffer | undefined;
     try {
-      plaintext = decryptValue(
-        key,
-        readBuffer(row, "nonce"),
-        readBuffer(row, "ciphertext"),
-        readBuffer(row, "auth_tag"),
-        secretAad(readString(row, "secret_id"), readString(row, "profile_id"), readNumber(row, "revision")),
-      );
-      this.touchVault();
+      plaintext = decryptValue(key, readBuffer(row, "nonce"), readBuffer(row, "ciphertext"), readBuffer(row, "auth_tag"), deviceSecretAad(readString(row, "secret_id"), readString(row, "profile_id"), readNumber(row, "revision")));
       return plaintext.toString("utf8");
     } catch (error) {
-      throw new AlphionError("integrity-failed", "Encrypted credential failed authentication.", {
-        stage: "vault",
-        reason: "credential-authentication-failed",
-        cause: error,
-      });
+      throw new AlphionError("integrity-failed", "Encrypted credential failed authentication.", { stage: "vault", reason: "credential-authentication-failed", cause: error });
     } finally {
+      key.fill(0);
       plaintext?.fill(0);
     }
   }
 
   async importCredential(profileId: string, secret: string): Promise<ProviderProfile> {
-    if (secret.length === 0 || secret.length > 16_384 || secret.includes("\0")) {
-      throw new AlphionError("validation", "Credential must be between 1 and 16384 characters.", { stage: "vault" });
-    }
-    const key = this.requireVaultKey();
+    if (secret.length === 0 || secret.length > 16_384 || secret.includes("\0")) throw new AlphionError("validation", "Credential must be between 1 and 16384 characters.", { stage: "vault" });
+    await this.provision();
+    const key = await this.loadDeviceDataKey();
     const profile = await this.getProfile(profileId);
-    if (!profile) throw new AlphionError("validation", `Unknown provider profile: ${profileId}`, { stage: "vault" });
-    const existing = optionalRow(
-      this.database.prepare("SELECT secret_id, revision FROM vault_secrets WHERE profile_id = ?").get(profile.id),
-    );
+    if (!profile) { key.fill(0); throw new AlphionError("validation", `Unknown provider profile: ${profileId}`, { stage: "vault" }); }
+    const existing = optionalRow(this.database.prepare("SELECT secret_id, revision FROM device_vault_secrets WHERE profile_id = ?").get(profile.id));
     const secretId = existing ? readString(existing, "secret_id") : createId("vault");
     const secretRevision = existing ? readNumber(existing, "revision") + 1 : 1;
     const plaintext = Buffer.from(secret, "utf8");
-    let encrypted: ReturnType<typeof encryptValue>;
-    try { encrypted = encryptValue(key, plaintext, secretAad(secretId, profile.id, secretRevision)); }
-    finally { plaintext.fill(0); }
-    this.transaction(() => {
-      const now = new Date().toISOString();
-      this.database
-        .prepare(
-          `INSERT INTO vault_secrets
+    try {
+      const encrypted = encryptValue(key, plaintext, deviceSecretAad(secretId, profile.id, secretRevision));
+      this.transaction(() => {
+        const now = new Date().toISOString();
+        this.database.prepare(
+          `INSERT INTO device_vault_secrets
            (secret_id, profile_id, revision, nonce, ciphertext, auth_tag, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(profile_id) DO UPDATE SET
-             secret_id = excluded.secret_id,
-             revision = excluded.revision,
-             nonce = excluded.nonce,
-             ciphertext = excluded.ciphertext,
-             auth_tag = excluded.auth_tag,
-             updated_at = excluded.updated_at`,
-        )
-        .run(secretId, profile.id, secretRevision, encrypted.nonce, encrypted.ciphertext, encrypted.authTag, now, now);
-      this.database
-        .prepare(
-          `UPDATE provider_profiles
-           SET auth_mode = 'encrypted-sqlite', auth_environment_variable = NULL, auth_secret_id = ?, revision = revision + 1, updated_at = ?
-           WHERE id = ?`,
-        )
-        .run(secretId, now, profile.id);
-    });
-    this.touchVault();
-    return this.requireProfile(profile.id);
-  }
-
-  async removeCredential(profileId: string): Promise<ProviderProfile> {
-    this.requireVaultKey();
-    const profile = await this.getProfile(profileId);
-    if (!profile) throw new AlphionError("validation", `Unknown provider profile: ${profileId}`, { stage: "vault" });
-    this.transaction(() => {
-      this.database.prepare("DELETE FROM vault_secrets WHERE profile_id = ?").run(profile.id);
-      this.database
-        .prepare(
-          `UPDATE provider_profiles
-           SET auth_mode = 'none', auth_environment_variable = NULL, auth_secret_id = NULL, revision = revision + 1, updated_at = ?
-           WHERE id = ?`,
-        )
-        .run(new Date().toISOString(), profile.id);
-    });
-    this.touchVault();
-    return this.requireProfile(profile.id);
-  }
-
-  async rotateMasterPassword(currentPassword: string, nextPassword: string): Promise<void> {
-    validateMasterPassword(nextPassword);
-    const metadata = this.readVaultMetadata();
-    const currentKey = deriveVaultKey(currentPassword, metadata.salt);
-    const rows = this.database
-      .prepare("SELECT secret_id, profile_id, revision, nonce, ciphertext, auth_tag FROM vault_secrets ORDER BY secret_id")
-      .all()
-      .map(requiredRow);
-    try {
-      const verifier = decryptValue(
-        currentKey,
-        metadata.verifierNonce,
-        metadata.verifierCiphertext,
-        metadata.verifierTag,
-        vaultVerifierAad(),
-      );
-      if (verifier.toString("utf8") !== VAULT_VERIFIER) throw new Error("Vault verifier mismatch.");
-      const plaintext = rows.map((row) => ({
-        row,
-        value: decryptValue(
-          currentKey,
-          readBuffer(row, "nonce"),
-          readBuffer(row, "ciphertext"),
-          readBuffer(row, "auth_tag"),
-          secretAad(readString(row, "secret_id"), readString(row, "profile_id"), readNumber(row, "revision")),
-        ),
-      }));
-      const nextSalt = randomBytes(16);
-      const nextKey = deriveVaultKey(nextPassword, nextSalt);
-      try {
-        const nextVerifier = encryptValue(nextKey, Buffer.from(VAULT_VERIFIER), vaultVerifierAad());
-        const encrypted = plaintext.map(({ row, value }) => ({
-          secretId: readString(row, "secret_id"),
-          value: encryptValue(
-            nextKey,
-            value,
-            secretAad(readString(row, "secret_id"), readString(row, "profile_id"), readNumber(row, "revision")),
-          ),
-        }));
-        this.transaction(() => {
-          this.database
-            .prepare(
-              `UPDATE vault_metadata
-               SET salt = ?, work_factor = ?, block_size = ?, parallelism = ?, verifier_nonce = ?, verifier_ciphertext = ?, verifier_tag = ?, updated_at = ?
-               WHERE id = 1`,
-            )
-            .run(
-              nextSalt,
-              SCRYPT_OPTIONS.N,
-              SCRYPT_OPTIONS.r,
-              SCRYPT_OPTIONS.p,
-              nextVerifier.nonce,
-              nextVerifier.ciphertext,
-              nextVerifier.authTag,
-              new Date().toISOString(),
-            );
-          const update = this.database.prepare(
-            "UPDATE vault_secrets SET nonce = ?, ciphertext = ?, auth_tag = ?, updated_at = ? WHERE secret_id = ?",
-          );
-          for (const item of encrypted) {
-            update.run(item.value.nonce, item.value.ciphertext, item.value.authTag, new Date().toISOString(), item.secretId);
-          }
-        });
-        this.setVaultKey(nextKey);
-      } catch (error) {
-        nextKey.fill(0);
-        throw error;
-      } finally {
-        for (const item of plaintext) item.value.fill(0);
-      }
-    } catch (error) {
-      throw error instanceof AlphionError
-        ? error
-        : new AlphionError("forbidden", "Credential vault password rotation failed.", { stage: "vault", cause: error });
+           ON CONFLICT(profile_id) DO UPDATE SET secret_id = excluded.secret_id, revision = excluded.revision,
+             nonce = excluded.nonce, ciphertext = excluded.ciphertext, auth_tag = excluded.auth_tag, updated_at = excluded.updated_at`,
+        ).run(secretId, profile.id, secretRevision, encrypted.nonce, encrypted.ciphertext, encrypted.authTag, now, now);
+        this.database.prepare(
+          `UPDATE provider_profiles SET auth_mode = 'encrypted-sqlite', auth_environment_variable = NULL,
+           auth_secret_id = ?, revision = revision + 1, updated_at = ? WHERE id = ?`,
+        ).run(secretId, now, profile.id);
+      });
+      return this.requireProfile(profile.id);
     } finally {
-      currentKey.fill(0);
+      key.fill(0);
+      plaintext.fill(0);
     }
   }
 
+  async removeCredential(profileId: string): Promise<ProviderProfile> {
+    const profile = await this.getProfile(profileId);
+    if (!profile) throw new AlphionError("validation", `Unknown provider profile: ${profileId}`, { stage: "vault" });
+    this.transaction(() => {
+      this.database.prepare("DELETE FROM device_vault_secrets WHERE profile_id = ?").run(profile.id);
+      this.database.prepare(
+        `UPDATE provider_profiles SET auth_mode = 'none', auth_environment_variable = NULL,
+         auth_secret_id = NULL, revision = revision + 1, updated_at = ? WHERE id = ?`,
+      ).run(new Date().toISOString(), profile.id);
+    });
+    return this.requireProfile(profile.id);
+  }
+
   async reset(): Promise<number> {
-    const count = requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get());
-    const deleted = readNumber(count, "count");
+    const deleted = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM device_vault_secrets").get()), "count");
     this.transaction(() => {
       const now = new Date().toISOString();
-      this.database.prepare("DELETE FROM vault_secrets").run();
-      this.database
-        .prepare(
-          `UPDATE provider_profiles
-           SET auth_mode = 'none', auth_environment_variable = NULL, auth_secret_id = NULL, revision = revision + 1, updated_at = ?
-           WHERE auth_mode = 'encrypted-sqlite'`,
-        )
-        .run(now);
-      this.database.prepare("DELETE FROM vault_metadata WHERE id = 1").run();
+      this.database.prepare(
+        `UPDATE provider_profiles SET auth_mode = 'none', auth_environment_variable = NULL,
+         auth_secret_id = NULL, revision = revision + 1, updated_at = ?
+         WHERE auth_secret_id IN (SELECT secret_id FROM device_vault_secrets)`,
+      ).run(now);
+      this.database.prepare("DELETE FROM device_vault_secrets").run();
+      this.database.prepare("DELETE FROM device_vault_metadata WHERE id = 1").run();
     });
-    this.lock();
+    return deleted;
+  }
+
+  async legacyStatus(): Promise<Readonly<{ disabled: boolean; secretCount: number }>> {
+    const state = optionalRow(this.database.prepare("SELECT state FROM vault_legacy_state WHERE id = 1").get());
+    const secretCount = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get()), "count");
+    return Object.freeze({ disabled: state ? readString(state, "state") === "legacy-disabled" : false, secretCount });
+  }
+
+  async resetLegacy(): Promise<number> {
+    const deleted = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get()), "count");
+    this.transaction(() => {
+      const now = new Date().toISOString();
+      this.database.prepare(
+        `UPDATE provider_profiles SET auth_mode = 'none', auth_environment_variable = NULL,
+         auth_secret_id = NULL, revision = revision + 1, updated_at = ?
+         WHERE auth_secret_id IN (SELECT secret_id FROM vault_secrets)`,
+      ).run(now);
+      this.database.prepare("DELETE FROM vault_secrets").run();
+      this.database.prepare("DELETE FROM vault_metadata").run();
+      this.database.prepare("UPDATE vault_legacy_state SET state = 'none', updated_at = ? WHERE id = 1").run(now);
+    });
     return deleted;
   }
 
@@ -508,51 +386,32 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
     return decodeProviderProfile(row);
   }
 
-  private readVaultMetadata(): VaultMetadata {
-    const row = optionalRow(this.database.prepare("SELECT * FROM vault_metadata WHERE id = 1").get());
-    if (!row) throw new AlphionError("conflict", "Credential vault is not initialized.", { stage: "vault" });
-    if (
-      readNumber(row, "schema_version") !== VAULT_SCHEMA_VERSION ||
-      readString(row, "kdf") !== "scrypt" ||
-      readNumber(row, "work_factor") !== SCRYPT_OPTIONS.N ||
-      readNumber(row, "block_size") !== SCRYPT_OPTIONS.r ||
-      readNumber(row, "parallelism") !== SCRYPT_OPTIONS.p
-    ) {
-      throw new AlphionError("incompatible-schema", "Credential vault parameters are unsupported.", { stage: "vault" });
+  private async loadDeviceDataKey(): Promise<Buffer> {
+    const row = optionalRow(this.database.prepare("SELECT * FROM device_vault_metadata WHERE id = 1").get());
+    if (!row) throw new AlphionError("conflict", "Device credential vault is not provisioned.", { stage: "vault" });
+    if (readNumber(row, "schema_version") !== 1) throw new AlphionError("incompatible-schema", "Device credential envelope is unsupported.", { stage: "vault" });
+    const deviceKey = await this.loadDeviceKey(false);
+    try {
+      const value = decryptValue(
+        deviceKey,
+        readBuffer(row, "wrapped_key_nonce"),
+        readBuffer(row, "wrapped_key_ciphertext"),
+        readBuffer(row, "wrapped_key_tag"),
+        deviceVaultAad(readString(row, "key_id")),
+      );
+      if (value.byteLength !== 32) { value.fill(0); throw new Error("Invalid data key length."); }
+      return value;
+    } catch (error) {
+      throw new AlphionError("integrity-failed", "Device credential envelope failed authentication.", { stage: "vault", reason: "device-envelope-authentication-failed", cause: error });
+    } finally {
+      deviceKey.fill(0);
     }
-    return {
-      salt: readBuffer(row, "salt"),
-      verifierNonce: readBuffer(row, "verifier_nonce"),
-      verifierCiphertext: readBuffer(row, "verifier_ciphertext"),
-      verifierTag: readBuffer(row, "verifier_tag"),
-    };
   }
 
-  private requireVaultKey(): Buffer {
-    this.expireVaultIfNeeded();
-    if (!this.vaultKey) {
-      throw new AlphionError("forbidden", "Credential vault is locked.", { stage: "vault", reason: "vault-locked" });
-    }
-    this.touchVault();
-    return this.vaultKey;
-  }
-
-  private setVaultKey(key: Buffer): void {
-    this.lock();
-    this.vaultKey = key;
-    this.touchVault();
-  }
-
-  private touchVault(): void {
-    if (!this.vaultKey) return;
-    this.vaultLastActivity = Date.now();
-    if (this.vaultLockTimer) clearTimeout(this.vaultLockTimer);
-    this.vaultLockTimer = setTimeout(() => this.lock(), this.vaultAutoLockMs);
-    this.vaultLockTimer.unref();
-  }
-
-  private expireVaultIfNeeded(): void {
-    if (this.vaultKey && Date.now() - this.vaultLastActivity >= this.vaultAutoLockMs) this.lock();
+  private async loadDeviceKey(create: boolean): Promise<Buffer> {
+    const value = create ? await this.deviceKeyProvider.loadOrCreate() : await this.deviceKeyProvider.load();
+    if (!value || value.byteLength !== 32) throw new AlphionError("dependency-unavailable", "Device credential key is unavailable.", { stage: "vault", reason: "device-key-unavailable" });
+    return Buffer.from(value);
   }
 
   private pruneCache(): void {
@@ -566,4 +425,12 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
       this.database.prepare("DELETE FROM cache_entries WHERE rowid IN (SELECT rowid FROM cache_entries ORDER BY last_accessed_at LIMIT 32)").run();
     }
   }
+}
+
+function deviceVaultAad(keyId: string): Buffer {
+  return Buffer.from(canonicalJson({ schemaVersion: 1, kind: "device-data-key", keyId }), "utf8");
+}
+
+function deviceSecretAad(secretId: string, profileId: string, revision: number): Buffer {
+  return Buffer.from(canonicalJson({ schemaVersion: 2, kind: "provider-credential", secretId, profileId, revision }), "utf8");
 }

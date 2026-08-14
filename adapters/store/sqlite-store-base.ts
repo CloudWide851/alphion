@@ -7,8 +7,10 @@ import {
   assertDatabaseHealthy, logicalDatabaseDigest, optionalRow, parseRecord, pathKey, readBoolean,
   readNullableString, readNumber, readString, requiredRow, tableColumns,
 } from "./sqlite-codecs.js";
-import { SQLITE_SCHEMA_VERSION, VAULT_AUTO_LOCK_MS } from "./sqlite-constants.js";
+import { SQLITE_SCHEMA_VERSION } from "./sqlite-constants.js";
 import { createSessionForkSchemaV6 } from "./sqlite-fork-schema.js";
+import { createRuntimeSchemaV7 } from "./sqlite-v7-schema.js";
+import type { DeviceKeyProvider } from "../../src/ports/index.js";
 
 const OPEN_DATABASES = new Set<string>();
 const DEFAULT_RUN_LEASE_MS = 2 * 60 * 1000;
@@ -17,9 +19,18 @@ export interface SqliteStoreOptions {
   readonly path: string;
   readonly domainId?: string;
   readonly projectId?: string;
-  readonly vaultAutoLockMs?: number;
   readonly runLeaseMs?: number;
+  readonly deviceKeyProvider?: DeviceKeyProvider;
 }
+
+const UNAVAILABLE_DEVICE_KEY: DeviceKeyProvider = Object.freeze({
+  load: () => Promise.resolve(undefined),
+  loadOrCreate: () => Promise.reject(new AlphionError(
+    "dependency-unavailable",
+    "Device credential key is unavailable.",
+    { stage: "vault", reason: "device-key-unavailable" },
+  )),
+});
 
 export abstract class SqliteStoreBase {
   protected readonly database: SqliteDatabase;
@@ -29,15 +40,11 @@ export abstract class SqliteStoreBase {
   protected readonly runLeaseMs: number;
   protected readonly domainId: string;
   protected readonly projectId: string | undefined;
+  protected readonly deviceKeyProvider: DeviceKeyProvider;
   protected leaseHeartbeat: NodeJS.Timeout | undefined;
   protected closed = false;
-  protected vaultKey: Buffer | undefined;
-  protected vaultLastActivity = 0;
-  protected vaultLockTimer: NodeJS.Timeout | undefined;
-  protected readonly vaultAutoLockMs: number;
 
-
-  abstract lock(): void;
+  protected closeSecrets(): void {}
 
   constructor(options: SqliteStoreOptions) {
     const databasePath = resolve(options.path);
@@ -45,11 +52,8 @@ export abstract class SqliteStoreBase {
     this.databaseKey = pathKey(databasePath);
     this.domainId = options.domainId ?? `domain_${sha256(pathKey(databasePath)).slice(0, 32)}`;
     this.projectId = options.projectId;
-    this.vaultAutoLockMs = options.vaultAutoLockMs ?? VAULT_AUTO_LOCK_MS;
+    this.deviceKeyProvider = options.deviceKeyProvider ?? UNAVAILABLE_DEVICE_KEY;
     this.runLeaseMs = options.runLeaseMs ?? DEFAULT_RUN_LEASE_MS;
-    if (!Number.isSafeInteger(this.vaultAutoLockMs) || this.vaultAutoLockMs <= 0) {
-      throw new AlphionError("validation", "Vault auto-lock duration must be a positive safe integer.", { stage: "vault" });
-    }
     if (!Number.isSafeInteger(this.runLeaseMs) || this.runLeaseMs < 1_000 || this.runLeaseMs > 24 * 60 * 60 * 1000) {
       throw new AlphionError("validation", "Run lease duration must be between one second and 24 hours.", { stage: "session" });
     }
@@ -89,7 +93,7 @@ export abstract class SqliteStoreBase {
     this.leaseHeartbeat = undefined;
     try { this.retireOwner(); } catch { /* Closing still releases the local handle. Expiry remains the crash fallback. */ }
     try { this.database.exec("PRAGMA wal_checkpoint(PASSIVE)"); } catch { /* Checkpoint is maintenance-only; close still releases the handle. */ }
-    this.lock();
+    this.closeSecrets();
     this.database.close();
     OPEN_DATABASES.delete(this.databaseKey);
   }
@@ -111,27 +115,33 @@ export abstract class SqliteStoreBase {
         this.createShapeSchemaV4(false);
         this.createProjectSessionSchemaV5();
         createSessionForkSchemaV6(this.database);
+        createRuntimeSchemaV7(this.database);
       });
       return;
     }
     if (current === 2) {
       this.backupV2();
-      this.transaction(() => { this.createSessionSchemaV3(); this.createShapeSchemaV4(false); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); });
+      this.transaction(() => { this.createSessionSchemaV3(); this.createShapeSchemaV4(false); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); });
       return;
     }
     if (current === 3) {
       this.backupV3();
-      this.transaction(() => { this.createShapeSchemaV4(true); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); });
+      this.transaction(() => { this.createShapeSchemaV4(true); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); });
       return;
     }
     if (current === 4) {
       this.backupSchema(4, `${this.databasePath}.v4-backup`);
-      this.transaction(() => { this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); });
+      this.transaction(() => { this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); });
       return;
     }
     if (current === 5) {
       this.backupSchema(5, `${this.databasePath}.v5-backup`);
-      this.transaction(() => createSessionForkSchemaV6(this.database));
+      this.transaction(() => { createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); });
+      return;
+    }
+    if (current === 6) {
+      this.backupSchema(6, `${this.databasePath}.v6-backup`);
+      this.transaction(() => createRuntimeSchemaV7(this.database));
       return;
     }
     if (current !== 1) {
@@ -178,6 +188,7 @@ export abstract class SqliteStoreBase {
       this.createShapeSchemaV4(false);
       this.createProjectSessionSchemaV5();
       createSessionForkSchemaV6(this.database);
+      createRuntimeSchemaV7(this.database);
     });
   }
 
