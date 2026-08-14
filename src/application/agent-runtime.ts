@@ -16,6 +16,7 @@ import type {
   ApprovalPort,
   CapabilityPolicy,
   EventStore,
+  ToolExecutionContext,
 } from "../ports/index.js";
 import type { AgentEvent, AgentEventDraft, AgentEventKind, AgentStreamEvent } from "../protocol/events.js";
 import { emptyProviderUsage, isCriticalAgentEvent } from "../protocol/events.js";
@@ -474,8 +475,10 @@ export class AgentLoop {
       validateJsonSchema(executor.contract.inputSchema, call.arguments);
       let finalArguments = call.arguments;
       let terminate = false;
-      const toolContext = {
+      const toolContext: ToolExecutionContext = {
         projectRoot: context.request.projectRoot,
+        sessionId: context.sessionId,
+        runId: context.runId,
         signal: context.signal,
         reportUpdate: async (content: string) => {
           const safeContent = content.slice(0, 4096);
@@ -626,7 +629,7 @@ export class AgentLoop {
   async #executeWithTimeout(
     executor: NonNullable<ReturnType<ToolRegistry["get"]>>,
     input: Readonly<Record<string, unknown>>,
-    context: Readonly<{ projectRoot: string; signal: AbortSignal; reportUpdate: (content: string) => Promise<void> }>,
+    context: ToolExecutionContext,
   ): Promise<ToolResult> {
     const timeoutMs = executor.contract.timeoutMs ?? 30_000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw new AlphionError("validation", "Tool timeout must be 1-300000 ms.", { stage: "tools" });

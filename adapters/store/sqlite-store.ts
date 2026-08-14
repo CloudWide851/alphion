@@ -4,6 +4,7 @@ import type {
   SessionWriteOptions, SessionWriteReceipt,
 } from "../../src/domain/contracts.js";
 import type { SessionStore } from "../../src/ports/index.js";
+import type { CompactionProjection, CompactionRecord } from "../../src/domain/compaction-contracts.js";
 import { canonicalJson, createId, sha256 } from "../../src/application/canonical.js";
 import { AlphionError } from "../../src/application/errors.js";
 import { SqliteEventStore } from "./sqlite-event-store.js";
@@ -13,10 +14,16 @@ import {
   optionalRow, parseAgentShape, readNullableString, readNumber, readString, requiredRow,
   validateAgentMessage, validateAgentShape, validateIdempotencyKey,
 } from "./sqlite-codecs.js";
+import { appendStoredCompaction, getStoredCompaction, listStoredCompactions, projectStoredCompactions } from "./sqlite-compaction-store.js";
 
 export type { SqliteStoreOptions } from "./sqlite-store-base.js";
 
 export class SqliteStore extends SqliteEventStore implements SessionStore {
+  async appendCompaction(record: CompactionRecord): Promise<void> { this.transaction(() => appendStoredCompaction(this.database, record)); }
+  async listCompactions(sessionId: string, limit?: number): Promise<readonly CompactionRecord[]> { return listStoredCompactions(this.database, sessionId, limit); }
+  async getCompaction(compactionId: string): Promise<CompactionRecord | undefined> { return getStoredCompaction(this.database, compactionId); }
+  async getCompactionProjection(sessionId: string): Promise<CompactionProjection> { return projectStoredCompactions(this.database, sessionId); }
+
   async forkSession(request: SessionForkRequest): Promise<SessionForkReceipt> {
     return this.transaction(() => forkStoredSession(this.database, request));
   }

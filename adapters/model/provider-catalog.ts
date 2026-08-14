@@ -1,5 +1,5 @@
 import { AlphionError } from "../../src/application/errors.js";
-import type { BuiltInProviderKind, ProviderPreset, ProviderProfile, ProviderProfileInput } from "../../src/domain/contracts.js";
+import type { BuiltInProviderKind, ModelDescriptor, ProviderPreset, ProviderProfile, ProviderProfileInput } from "../../src/domain/contracts.js";
 
 interface CatalogEntry extends ProviderPreset { readonly endpoint: string; }
 
@@ -14,6 +14,17 @@ const CATALOG: readonly CatalogEntry[] = Object.freeze([
   entry("glm-international", "GLM（国际）", "glm", "international", "https://api.z.ai/api/paas/v4", ["glm-4.5", "glm-4.5-air"]),
   Object.freeze({ id: "custom-openai-compatible", label: "自定义 OpenAI 兼容接口", kind: "custom-openai-compatible", region: "custom", requiresBaseUrl: true, endpoint: "", models: Object.freeze([]), protocol: "chat-completions" }),
 ]);
+
+const CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.freeze({
+  "deepseek-chat": 131_072,
+  "deepseek-reasoner": 131_072,
+  "moonshot-v1-8k": 8_192,
+  "kimi-k2-0711-preview": 131_072,
+  "qwen-plus": 131_072,
+  "qwen-max": 131_072,
+  "glm-4.5": 131_072,
+  "glm-4.5-air": 131_072,
+});
 
 export const LOCAL_PROVIDER_PRESETS: readonly ProviderPreset[] = Object.freeze(CATALOG.map(({ endpoint: _endpoint, ...preset }) => Object.freeze(preset)));
 
@@ -32,6 +43,17 @@ export function providerPreset(presetId: string): ProviderPreset {
 
 export function resolveProviderEndpoint(profile: ProviderProfile | ProviderProfileInput): string {
   return profile.kind === "custom-openai-compatible" ? validateCustomEndpoint(profile.baseUrl) : providerCatalogEntry(profile.presetId).endpoint;
+}
+
+export function describeProviderModel(profile: ProviderProfile): ModelDescriptor {
+  const cataloged = profile.kind !== "custom-openai-compatible" && providerCatalogEntry(profile.presetId).models.includes(profile.model);
+  return Object.freeze({
+    id: `${profile.kind === "custom-openai-compatible" ? profile.id : profile.presetId}:${profile.model}`,
+    providerKind: profile.kind,
+    model: profile.model,
+    capabilities: profile.capabilities,
+    contextWindowTokens: cataloged ? CONTEXT_WINDOWS[profile.model] ?? 32_768 : 32_768,
+  });
 }
 
 export function validateProviderPreset(profile: ProviderProfile | ProviderProfileInput, allowStoredUnlistedModel = false): void {

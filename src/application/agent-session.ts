@@ -3,12 +3,14 @@ import type { AgentContract, AgentRunHandle, AgentSessionContract, ApprovalPort,
 import type { AgentStreamEvent } from "../protocol/events.js";
 import { BoundedEventChannel } from "./event-channel.js";
 import { AlphionError } from "./errors.js";
-import { compactSessionEntries, compactSessionEntriesWithProvider } from "./compaction.js";
+import { compactSessionEntriesForModel } from "./compaction.js";
 import { createId } from "./canonical.js";
 import { canonicalJson } from "./canonical.js";
 import { sanitizeRecord } from "./sensitive-data.js";
 import type { ProjectProfile } from "../domain/contracts.js";
 import type { AgentEnvironment } from "../domain/contracts.js";
+import type { CompactionProjection, CompactionRecord } from "../domain/compaction-contracts.js";
+import type { SessionActivity } from "../domain/session-activity.js";
 
 export interface AgentSessionOptions {
   readonly sessionId: string;
@@ -22,6 +24,7 @@ export interface AgentSessionOptions {
   readonly models?: ModelResolver;
   readonly recall?: CodeRecall;
   readonly deliverSessionMessage?: (request: SessionMessageRequest) => Promise<SessionMessageReceipt>;
+  readonly publishActivity?: (activity: SessionActivity) => void;
 }
 
 export class AgentSession implements AgentSessionContract {
@@ -51,6 +54,13 @@ export class AgentSession implements AgentSessionContract {
   }
 
   getShape(): Promise<AgentShape | undefined> { this.#assertOpen(); return this.#own(this.options.store.getSessionShape(this.id)); }
+  listCompactions(limit?: number): Promise<readonly CompactionRecord[]> { this.#assertOpen(); return this.#own(this.options.store.listCompactions(this.id, limit)); }
+  compactionProjection(): Promise<CompactionProjection> { this.#assertOpen(); return this.#own(this.options.store.getCompactionProjection(this.id)); }
+  async getCompaction(compactionId: string): Promise<CompactionRecord | undefined> {
+    this.#assertOpen();
+    const record = await this.#own(this.options.store.getCompaction(compactionId));
+    return record?.sessionId === this.id ? record : undefined;
+  }
 
   reshape(request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt> {
     this.#assertOpen(); return this.#own(this.#reshape(request, options));
@@ -171,6 +181,7 @@ export class AgentSession implements AgentSessionContract {
   }
 
   async #observe(handle: AgentRunHandle, publicEvents: BoundedEventChannel<AgentStreamEvent> | undefined, approval: ApprovalPort): Promise<AgentRunResult> {
+    let completed: AgentRunResult | undefined;
     try {
       for await (const event of handle.events) {
         if ("delivery" in event) {
@@ -187,6 +198,7 @@ export class AgentSession implements AgentSessionContract {
         }
         fanOut(publicEvents, event, event.sessionSequence ?? 0);
         for (const channel of this.#events) fanOut(channel, event, event.sessionSequence ?? 0);
+        this.options.publishActivity?.(Object.freeze({ kind: "run.event", sessionId: this.id, runId: handle.runId, event }));
       }
       const result = await handle.result;
       if (result.finalText) {
@@ -194,12 +206,14 @@ export class AgentSession implements AgentSessionContract {
         const assistant: AgentMessage = Object.freeze({ schemaVersion: 1, kind: "assistant", id: createId("message"), createdAt: new Date().toISOString(), content: result.finalText, evidenceIds: Object.freeze(result.grounding.referencedEvidenceIds) });
         await this.options.store.appendSessionEntry(this.id, assistant, { expectedRevision: session.revision, idempotencyKey: `run:${handle.runId}:assistant` }, handle.runId);
       }
+      completed = result;
       return result;
     } finally {
       await this.options.store.releaseRunLease(this.id, handle.runId).catch(() => undefined);
       this.#activeRuns.delete(handle);
       if (publicEvents) this.#publicEvents.delete(publicEvents);
       publicEvents?.close();
+      if (completed) this.options.publishActivity?.(Object.freeze({ kind: "run.finished", sessionId: this.id, runId: handle.runId, status: completed.status, finalText: completed.finalText }));
       if (!this.#closed) this.#launchQueuedFollowUps(approval);
     }
   }
@@ -215,9 +229,15 @@ export class AgentSession implements AgentSessionContract {
       ? await this.options.models.resolveModel({ sessionId: this.id, ...(selectedProviderId ? { providerId: selectedProviderId } : {}), requiredCapabilities: shape.requiredProviderCapabilities })
       : undefined;
     const priorEntries = branch.entries.filter((entry) => entry.runId !== runId && entry.message.kind !== "system-event" && entry.message.kind !== "human-approval");
-    const history = compactionProvider
-      ? await compactSessionEntriesWithProvider(priorEntries, compactionProvider, AbortSignal.timeout(15_000))
-      : compactSessionEntries(priorEntries);
+    const model = compactionProvider && this.options.models?.describeModel ? await this.options.models.describeModel(compactionProvider) : undefined;
+    const compaction = await compactSessionEntriesForModel(priorEntries, compactionProvider, AbortSignal.timeout(15_000), {
+      sessionId: this.id,
+      runId,
+      ...(model ? { model } : {}),
+      toolReserveTokens: Math.min(8_192, shape.toolIds.length * 512),
+    });
+    if (compaction.record) await this.options.store.appendCompaction(compaction.record);
+    const history = compaction.messages;
     const effectiveProviderId = selectedProviderId ?? compactionProvider?.profile.id;
     return this.options.agent.execute({ prompt, runId, sessionId: this.id, projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}), projectProfile: profile, history, environment, harnessPlan: shape.harnessPlan, shape, collaboration, ...(recall ? { recall } : {}) }, approval, {
       drainSteering: async (activeRunId, signal) => {

@@ -1,18 +1,22 @@
 import type { AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, SessionForkReceipt, SessionForkRequest, SessionMessageReceipt, SessionMessageRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
 import type { AgentRunHandle, AgentSessionContract, ApprovalPort, SessionManager, SessionStore } from "../ports/index.js";
 import type { AgentStreamEvent } from "../protocol/events.js";
+import type { CompactionProjection, CompactionRecord } from "../domain/compaction-contracts.js";
 import { createId } from "./canonical.js";
 import { AlphionError } from "./errors.js";
+import { BoundedEventChannel } from "./event-channel.js";
+import type { SessionActivity } from "../domain/session-activity.js";
 
 export interface DefaultSessionManagerOptions {
   readonly store: SessionStore;
-  readonly session: (sessionId: string) => AgentSessionContract;
+  readonly session: (sessionId: string, publishActivity: (activity: SessionActivity) => void) => AgentSessionContract;
   readonly assertOpen: () => void;
 }
 
 export class DefaultSessionManager implements SessionManager {
   readonly #sessions = new Map<string, AgentSessionContract>();
   readonly #ownedTasks = new Set<Promise<unknown>>();
+  readonly #activitySubscribers = new Set<BoundedEventChannel<SessionActivity>>();
   #closed = false;
   #closePromise: Promise<void> | undefined;
   constructor(private readonly options: DefaultSessionManagerOptions) {}
@@ -41,6 +45,9 @@ export class DefaultSessionManager implements SessionManager {
   }
 
   view(sessionId: string): Promise<SessionView> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.view())); }
+  listCompactions(sessionId: string, limit?: number): Promise<readonly CompactionRecord[]> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.listCompactions(limit))); }
+  getCompaction(sessionId: string, compactionId: string): Promise<CompactionRecord | undefined> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.getCompaction(compactionId))); }
+  getCompactionProjection(sessionId: string): Promise<CompactionProjection> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.compactionProjection())); }
   getShape(sessionId: string): Promise<AgentShape | undefined> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.getShape())); }
   reshape(sessionId: string, request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.reshape(request, options))); }
   checkout(sessionId: string, entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.checkout(entryId, options))); }
@@ -60,9 +67,19 @@ export class DefaultSessionManager implements SessionManager {
     return { async *[Symbol.asyncIterator]() { yield* await subscription; } };
   }
 
+  subscribeActivity(): AsyncIterable<SessionActivity> {
+    this.options.assertOpen();
+    const channel = activityChannel();
+    this.#activitySubscribers.add(channel);
+    const subscribers = this.#activitySubscribers;
+    return { async *[Symbol.asyncIterator]() { try { yield* channel; } finally { subscribers.delete(channel); channel.close(); } } };
+  }
+
   async close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
+    for (const channel of this.#activitySubscribers) channel.close();
+    this.#activitySubscribers.clear();
     this.#closePromise = (async () => {
       while (this.#ownedTasks.size > 0) {
         await Promise.allSettled([...this.#ownedTasks]);
@@ -75,7 +92,7 @@ export class DefaultSessionManager implements SessionManager {
   #session(sessionId: string): AgentSessionContract {
     const cached = this.#sessions.get(sessionId);
     if (cached) return cached;
-    const session = this.options.session(sessionId);
+    const session = this.options.session(sessionId, (activity) => this.#publishActivity(activity));
     this.#sessions.set(sessionId, session);
     if (this.#closed) void session.close();
     return session;
@@ -86,9 +103,33 @@ export class DefaultSessionManager implements SessionManager {
     void task.finally(() => this.#ownedTasks.delete(task)).catch(() => undefined);
     return task;
   }
+
+  #publishActivity(activity: SessionActivity): void {
+    for (const channel of this.#activitySubscribers) {
+      const merge = activity.kind === "run.event" && !("delivery" in activity.event) && activity.event.kind === "model.delta"
+        ? (previous: SessionActivity) => mergeActivityDelta(previous, activity)
+        : undefined;
+      const accepted = channel.offer(activity, activity.kind === "run.finished", merge);
+      if (!accepted) channel.replace(Object.freeze({
+        kind: "stream.resync-required",
+        ...("sessionId" in activity ? { sessionId: activity.sessionId } : {}),
+      }));
+    }
+  }
 }
 
 const DENY_UNATTENDED_APPROVAL: ApprovalPort = Object.freeze({
   revision: "unattended-deny-v1",
   requestApproval: () => Promise.resolve(Object.freeze({ approved: false, reason: "No approval client is attached to this automatically started Run." })),
 });
+
+function activityChannel(): BoundedEventChannel<SessionActivity> {
+  return new BoundedEventChannel<SessionActivity>(256, { maxBytes: 1024 * 1024, measure: (activity) => Buffer.byteLength(JSON.stringify(activity), "utf8") });
+}
+
+function mergeActivityDelta(previous: SessionActivity, next: Extract<SessionActivity, { readonly kind: "run.event" }>): SessionActivity | undefined {
+  if (previous.kind !== "run.event" || previous.runId !== next.runId || "delivery" in previous.event || "delivery" in next.event || previous.event.kind !== "model.delta" || next.event.kind !== "model.delta") return undefined;
+  const left = typeof previous.event.payload.delta === "string" ? previous.event.payload.delta : "";
+  const right = typeof next.event.payload.delta === "string" ? next.event.payload.delta : "";
+  return Object.freeze({ ...next, event: Object.freeze({ ...next.event, payload: Object.freeze({ ...next.event.payload, delta: `${left}${right}` }) }) });
+}
