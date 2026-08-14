@@ -12,11 +12,14 @@ navigation, new windows, WebView attachment and non-allowlisted IPC are denied.
 
 Integrations that require the old line protocol must remain on v0.4.x or move
 to the loopback Web command/SSE boundary. There is no compatibility façade.
-Vault master passwords are never exposed through IPC. Provider credentials use
-the dedicated one-use bridge method and are cleared by the form after every
-outcome.
+Device keys, wrapped data keys and legacy Vault ciphertext are never exposed
+through IPC. Provider credentials use the dedicated one-use bridge method,
+provision the device vault in Main when needed, and are cleared by the form
+after every outcome.
 
-In v0.7.0 the Renderer inherits the WebUI slash palette and conversation Run
-projection. No new Node capability or IPC channel is added: command envelope
-and event frame schemas remain v1, while `project.inspect` travels through the
-existing exact command bridge.
+In v0.8.0 the Renderer inherits the WebUI slash palette, conversation Run,
+Compaction, Goal and Schedule projections. No generic Node capability or IPC
+channel is added: all v0.8 commands travel through the existing exact command
+bridge. The Electron window, top-left header, executable, installer, Start Menu
+entry and shortcuts use the ICO/PNG assets deterministically generated from
+the canonical `alphion-icon.svg`.

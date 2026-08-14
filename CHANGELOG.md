@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0] - 2026-08-14
+
+- Replaced password-gated startup credentials with a device-bound vault: first credential import provisions a 32-byte per-user device key, Project SQLite stores authenticated envelopes, Provider calls receive short-lived plaintext, and legacy password ciphertext remains `legacy-disabled` until explicit reset.
+- Added model-aware, append-only context compaction records. Effective input budgets derive from catalog context windows at an 85% threshold after output, Tool-schema and safety reserves; unknown models use 32K and deterministic fallback always rebuilds from the raw branch.
+- Added Project-scoped Goals with dedicated visible Sessions, append-only revisions, Evidence-backed Agent progress, user-only root/acceptance authority, advisory completion and explicit user confirmation.
+- Added durable once/interval/five-field-Cron schedules with IANA timezone handling, bounded claims and leases, busy-Session follow-up, overlap audit, most-recent missed-run catch-up and process-local lifecycle.
+- Extended shared commands, snapshots and TUI/Web/Desktop surfaces with `/context`, `/goals`, `/goal` and `/schedules`, draft-safe automatic refresh, hidden compaction bodies by default and bounded non-blocking activity fan-out.
+- Made `alphion-icon.svg` the canonical brand source and deterministically generated Web favicon/PNG plus Windows multi-size ICO assets used by Web, Electron, installers, Start Menu entries and shortcuts.
+- Migrated SQLite from user_version 6 to 7 after a verified adjacent `.v6-backup`; added Goal, Schedule, Compaction and device-credential tables without rewriting Session/Event history.
+
+This pre-1.0 milestone adds public Goal, Schedule, Compaction and device-vault contracts and removes the old password Vault public API. To roll back, stop every Alphion process, preserve the failed/current v7 database for diagnosis, restore the verified adjacent `.v6-backup`, then run v0.7.0. v0.7.0 rejects schema v7 and cannot retain post-migration Goal, Schedule, Compaction or device-credential writes. Losing the device key is reported as `device-key-unavailable`; it is not database corruption and must never trigger database deletion.
+
 ## [0.7.0] - 2026-08-13
 
 - Added deterministic `ProviderConversationPlan` projection so the current Run prompt appears exactly once, audit events remain outside Provider history, and assistant Tool batches pair with ordered observations.

@@ -6,15 +6,19 @@
 
 Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前 **v0.7.0** 延续 `Project → shared Agent → Session → Run → ProviderConversationPlan → Tool`，修复连续对话的 prompt 重复与审计消息污染，增加共享 slash 命令、原地流式对话气泡、Provider catalog 门禁及每调用 Vault 凭据租约。SQLite 继续使用 user_version 6。
+当前 **v0.8.0** 将运行脊柱扩展为 `Project → shared Agent → Session → Goal/Run → ProviderConversationPlan → Tool`：新增长期 Goal、进程内持久化调度、模型感知的无感上下文压缩、设备绑定凭据，以及 Web/Desktop 统一品牌资产。SQLite 使用 user_version 7。
 
 资源优先级固定为内置 → 用户共享 → 项目 `.alphion-resources/manifest.json` → Session overrides。扩展包仅支持声明式资源，不执行第三方 JavaScript。用户资源根可通过 `ALPHION_RESOURCE_HOME` 指定，否则使用平台标准配置目录。
 
-这是新的 0.x 能力里程碑。SQLite user_version 为 6；首次打开 v5 数据库会先 checkpoint 并创建、验证相邻 `.v5-backup`。回滚必须停止所有 Alphion 进程、恢复 `.v5-backup` 并切回 v0.5.0；迁移后的 v6 Fork 数据会丢失。
+这是新的 0.x 能力里程碑。首次打开 v6 数据库会先 checkpoint 并创建、验证相邻 `.v6-backup`，再事务升级到 SQLite user_version 7。回滚必须停止所有 Alphion 进程、保留失败文件用于诊断、恢复 `.v6-backup` 并切回 v0.7.0；迁移后的 Goal、Schedule、Compaction 和设备凭据数据不会回写到 v6。
 
 ## 当前能力
 
 - 项目级共享 Agent 与分层 Session/Run/Turn/ToolCall；每个 Session 独立持有分支消息、双队列、运行租约、审批上下文、compaction 和 append-only AgentShape。
+- 每个 Project 最多 64 个活动 Goal；Goal 拥有专属可见 Session 和 append-only revision。Agent 只能用 Evidence 推进或建议完成，根目标/验收/安全约束及最终完成确认仍由用户控制。
+- 一次性、固定间隔和标准五段 Cron Schedule 使用 IANA timezone、10 分钟租约和幂等 receipt；只在活动 Project 的 Alphion 进程内扫描，忙 Session 转为持久 follow-up，重启最多补最近一次遗漏。
+- 模型感知 Compaction 在有效窗口占用达到 85% 前触发，扣除输出、Tool schema 和安全余量；从原始分支重建并持久记录来源、保留项、损失和 digest，聊天只显示非历史“已优化上下文”状态。
+- Provider 凭据首次导入时自动 provision 设备密钥，无需启动密码。SQLite 只保存认证密文和 wrapped data key，Provider 调用时短暂解密；旧密码 Vault 保留为 `legacy-disabled`，只允许显式重置后重新导入。
 - idle、已塑形 Session 可按当前 leaf 或指定 entry 原子 Fork；目标保留 Evidence、重映射 entry/Memory 引用、重新计算身份 digest，并记录不可变 provenance。
 - 四层声明式资源解析、确定性 SystemPrompt Composer、任务分类与最小 HarnessPlan，以及 CodeGraph 优先、词法降级的有界代码召回。
 - Node/TypeScript 优先的确定性只读 Project Profile，识别语言、运行时、模块系统、包管理器、框架、质量命令、Git/CI、约束、风险和冲突；未知项目安全降级。
@@ -25,12 +29,13 @@ Alphion 是一个面向不同软件项目、在证据和安全边界内持续优
 - `read`、`grep`、`edit`、`write` 和 `shell` 工具；写入和进程执行必须逐次审批。
 - SQLite 权威事件写入与 SHA-256 审计链；三端先订阅再取 snapshot，按 30/60 FPS frame 合并 delta/invalidation，慢消费者通过 cursor resync，不延迟 AgentLoop。
 - ProviderConversationPlan 从当前 Run 之前的分支构建合法 user/assistant/tool 消息线；普通审计事件和 `tool.updated` 不进入 Provider 历史，当前 prompt 只追加一次。
-- TUI/Web/Desktop 共用 `/new`、`/settings`、`/projects`、`/sessions`、`/providers`、`/resources`、`/doctor`、`/help`、`/profile`、`/harness`、`/fork`、`/steer`、`/follow-up`、`/cancel` 注册表与可用性原因。
+- TUI/Web/Desktop 共用 `/new`、`/settings`、`/projects`、`/sessions`、`/providers`、`/resources`、`/doctor`、`/help`、`/profile`、`/harness`、`/fork`、`/steer`、`/follow-up`、`/cancel`、`/context`、`/goals`、`/goal`、`/schedules` 注册表与可用性原因。
 - 进程内 LRU + SQLite L2 缓存、single-flight 合并、策略/权限/项目修订失效和可选 provider prompt caching；疑似秘密不进入缓存。
-- Project 注册层保证名称/realpath 唯一、每项目独立 SQLite v5；同域 `session.send` 支持 idle 自动 Run 与 busy steering，并限制 8 hop/每 Run 4 次发送。
+- Project 注册层保证名称/realpath 唯一、每项目独立 SQLite v7；同域 `session.send` 支持 idle 自动 Run 与 busy steering，并限制 8 hop/每 Run 4 次发送。
 - WebUI 只绑定 `127.0.0.1`，采用 HttpOnly/Origin/CSRF/SSE；Electron 开启 sandbox/contextIsolation、禁用 Node integration/任意导航，preload 仅暴露五个 allowlisted IPC 通道。
+- `alphion-icon.svg` 是唯一图标源；确定性生成 Web favicon/PNG 和 Windows 多尺寸 ICO，Web/Desktop 左上角、Electron 窗口、安装器、开始菜单与快捷方式使用同一品牌。
 
-本版不会实现 LAN/远程部署、多用户、跨 Project 协作、动态代码插件、SubAgent 或长期记忆。
+本版不会实现 LAN/远程部署、多用户、跨 Project 协作、动态代码插件、SubAgent、常驻 daemon、托盘服务或操作系统计划任务。
 
 ## 安装与构建
 
@@ -56,7 +61,7 @@ npm run desktop
 alphion.bat web
 ```
 
-主密码无法恢复；忘记后只能重置 vault 并重新导入 API key。reasoning 仅在 Provider 当前 Run 的工具续轮中短暂存在，不进入任何用户界面、SQLite 或重放。
+启动不要求 Vault 密码；首次导入 API key 时自动创建当前设备用户专属的 device key。设备密钥丢失时 doctor 报 `device-key-unavailable`，不会把它误判为数据库损坏，也不会自动删除旧密文。reasoning 仅在 Provider 当前 Run 的工具续轮中短暂存在，不进入任何用户界面、SQLite 或重放。
 
 ## 配置兼容服务
 
@@ -83,6 +88,9 @@ cache stats/clear
 doctor [--json]
 project inspect [--refresh] [--json]
 session create/list/show/shape/reshape/checkout/send/steer/follow-up/fork
+context list/show
+goal create/list/show/update/progress/confirm/archive/restore
+schedule create/list/show/pause/resume/run-now/executions
 resource list/doctor
 desktop
 web [--port PORT]
@@ -110,14 +118,14 @@ benchmarks/   通信、缓存和 SQLite 基线
 
 ## 公共接口
 
-根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 Agent、Project/Session、AgentShape、HarnessPlan、ResourceResolution、SystemPromptPlan 与 Provider/runtime 端口。稳定子路径包括 `alphion/runtime`、`alphion/providers`、`alphion/resources`、`alphion/webui`、`alphion/desktop` 及既有具体 adapter。Provider profile schema v2 继续支持环境变量或加密 SQLite 凭据引用；AgentSessionRecord schema v3 可携带 Fork provenance，SQLite user_version 现为 6。
+根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 Agent、Project/Session、Goal/Schedule、Compaction、AgentShape、HarnessPlan、ResourceResolution、SystemPromptPlan 与 Provider/runtime 端口。稳定子路径包括 `alphion/runtime`、`alphion/providers`、`alphion/resources`、`alphion/webui`、`alphion/desktop` 及既有具体 adapter。Provider profile schema v2 继续支持环境变量或设备加密 SQLite 凭据引用；AgentSessionRecord schema v3 可携带 Fork provenance，SQLite user_version 现为 7。
 
-当当前分支超过模型上下文预算时，会话会从原始分支重建压缩：保留最近两个交互周期及系统/目标/验收、权限/约束/revision、失败、Evidence 和未解决项，并可调用同一 Provider 生成禁用工具、`temperature: 0`、闭合 JSON schema 校验的结构化摘要；超时、非法输出或 Provider 失败会确定性回退。模型 reasoning 只存在于实时 `AgentStreamEvent`，不进入 SQLite 事件、会话条目、重放、Working Memory 或持久缓存。
+当当前分支接近模型 catalog 的 context window 时，会话按 85% 阈值并扣除输出、Tool schema 和安全余量，从原始分支重建压缩：保留最近两个交互周期及系统/目标/验收、权限/约束/revision、失败、Evidence 和未解决项，并可调用同一 Provider 生成禁用工具、`temperature: 0`、闭合 JSON schema 校验的结构化摘要；超时、非法输出或 Provider 失败会确定性回退。每次压缩形成 append-only `CompactionRecord`，但不产生 Session 消息或移动 leaf；模型 reasoning 仍不进入 SQLite、重放、Working Memory 或持久缓存。
 
 ## 安全和数据
 
 - HTTPS endpoint 默认允许；HTTP 只允许 localhost/loopback。
-- vault 使用 scrypt + AES-256-GCM、每条密钥随机 nonce 和绑定 profile/revision 的认证数据；15 分钟无活动后自动锁定。
+- device vault 使用随机 32-byte 设备密钥、wrapped data key 与 AES-256-GCM；认证数据绑定 profile/secret/revision，凭据只在 Provider 调用时短暂解密并清零临时 Buffer。
 - `.git`、`.alphion`、工具生成物、依赖、构建目录和常见秘密文件不能被 Agent 文件工具读取或修改。
 - 路径同时检查词法范围、真实路径与符号链接，写入使用 revision 校验和原子替换。
 - 模型输出不是完成证据；工具观察生成 Evidence ID，最终答案可用 `[evidence:<id>]` 引用。
@@ -130,6 +138,8 @@ benchmarks/   通信、缓存和 SQLite 基线
 | 主系统 Logo | `alphion-logo.svg` |
 | 图标 | `alphion-icon.svg` |
 | 文字标识 | `alphion-wordmark.svg` |
+| Web/Desktop PNG | `assets/alphion.png` |
+| Windows 多尺寸图标 | `assets/alphion.ico` |
 
 ## 许可
 
