@@ -13,6 +13,7 @@ import { decodeDesktopApprovalDecision, decodeDesktopCredential, DESKTOP_IPC_CHA
 const moduleDirectory = fileURLToPath(new URL(".", import.meta.url));
 const rendererFile = normalize(join(moduleDirectory, "..", "webui", "client", "index.html"));
 const rendererUrl = pathToFileURL(rendererFile).href;
+const desktopIcon = normalize(join(moduleDirectory, "..", "..", "assets", "alphion.png"));
 let shuttingDown = false;
 
 export async function runElectronDesktop(): Promise<void> {
@@ -43,7 +44,7 @@ export async function runElectronDesktop(): Promise<void> {
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1180, height: 780, minWidth: 720, minHeight: 520, backgroundColor: "#f7f6fa", show: false,
+    width: 1180, height: 780, minWidth: 720, minHeight: 520, backgroundColor: "#f7f6fa", show: false, icon: desktopIcon,
     titleBarStyle: "hiddenInset",
     webPreferences: { preload: join(moduleDirectory, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true },
   });

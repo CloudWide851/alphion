@@ -8,17 +8,22 @@ asarUnpack:
 files:
   - dist/**
   - package.json
-  - alphion-icon.svg
+  - assets/**
 directories:
   app: .desktop-runtime
-  output: release/v0.7.0
+  output: release/v0.8.0
+  buildResources: assets
 win:
+  icon: alphion.ico
   target:
     - target: nsis
       arch: [x64]
     - target: portable
       arch: [x64]
 nsis:
+  installerIcon: alphion.ico
+  uninstallerIcon: alphion.ico
+  installerHeaderIcon: alphion.ico
   artifactName: Alphion-${version}-${arch}-setup.${ext}
   oneClick: false
   perMachine: false
@@ -27,5 +32,6 @@ nsis:
   deleteAppDataOnUninstall: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  shortcutName: Alphion
 portable:
   artifactName: Alphion-${version}-${arch}-portable.${ext}

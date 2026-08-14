@@ -12,13 +12,12 @@ assertRoot(runtime);
 mkdirSync(runtime, { recursive: true });
 copyFileSync(resolve(manifest, "package.json"), resolve(runtime, "package.json"));
 copyFileSync(resolve(manifest, "package-lock.json"), resolve(runtime, "package-lock.json"));
-for (const relative of install ? ["alphion-icon.svg"] : ["dist", "alphion-icon.svg"]) {
+for (const relative of install ? ["assets"] : ["dist", "assets"]) {
   const source = resolve(root, relative);
   if (!existsSync(source)) throw new Error(`Desktop runtime source is missing: ${relative}`);
   const target = resolve(runtime, relative);
   rmSync(target, { recursive: true, force: true });
-  if (relative === "dist") copyDirectory(source, target);
-  else copyFileSync(source, target);
+  copyDirectory(source, target);
 }
 if (install) {
   execFileSync("npm", ["ci", "--omit=dev", "--ignore-scripts", "--prefix", runtime], { cwd: root, stdio: "inherit", shell: process.platform === "win32" });

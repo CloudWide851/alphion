@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, relative, resolve } from "node:path";
 
 const root = process.cwd();
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const lock = JSON.parse(readFileSync(resolve(root, "package-lock.json"), "utf8"));
-assert(packageJson.version === "0.7.0", "package.json must be version 0.7.0");
+assert(packageJson.version === "0.8.0", "package.json must be version 0.8.0");
 assert(lock.version === packageJson.version, "package-lock top-level version must match package.json");
 assert(lock.packages?.[""]?.version === packageJson.version, "package-lock root package version must match package.json");
 assert(packageJson.engines?.node === ">=22.13", "Node engine must be >=22.13");
@@ -19,13 +20,19 @@ const fileOutput = execFileSync("git", ["ls-files", "--cached", "--others", "--e
   encoding: "utf8",
 });
 const files = fileOutput.split(/\r?\n/).filter(Boolean);
-const sizeExemptions = new Set(["package-lock.json"]);
+const generatedMedia = new Set([
+  "assets/alphion.ico",
+  "assets/alphion.png",
+  "webui/client/public/alphion-icon-192.png",
+  "webui/client/public/favicon-32.png",
+]);
+const sizeExemptions = new Set(["package-lock.json", "desktop/runtime/package-lock.json", ...generatedMedia]);
 for (const file of files) {
   if (/(^|\/)(?:node_modules|dist|\.alphion)(?:\/|$)/.test(file)) continue;
   const absolute = resolve(root, file);
   if (!existsSync(absolute)) continue;
   const extension = extname(file).toLowerCase();
-  const maintained = [".ts", ".tsx", ".js", ".cjs", ".mjs", ".json", ".md", ".bat", ".yml", ".yaml", ".css", ".html"].includes(extension);
+  const maintained = [".ts", ".tsx", ".js", ".cjs", ".mjs", ".json", ".md", ".bat", ".yml", ".yaml", ".css", ".html", ".svg"].includes(extension);
   if (maintained && !sizeExemptions.has(file.replaceAll("\\", "/"))) {
     assert(Buffer.byteLength(readFileSync(absolute)) <= 32 * 1024, `maintained file exceeds 32 KiB: ${file}`);
   }
@@ -66,12 +73,14 @@ for (const desktopPath of ["desktop/main.ts", "desktop/preload.cts", "desktop/co
 const electronBuilder = readFileSync(resolve(root, "electron-builder.yml"), "utf8");
 const desktopRuntime = JSON.parse(readFileSync(resolve(root, "desktop", "runtime", "package.json"), "utf8"));
 assert(/app:\s*\.desktop-runtime/u.test(electronBuilder), "Electron packaging must use the isolated Desktop runtime tree");
-assert(/output:\s*release\/v0\.7\.0/u.test(electronBuilder), "Electron packaging must use a versioned ignored output directory");
+assert(/output:\s*release\/v0\.8\.0/u.test(electronBuilder), "Electron packaging must use a versioned ignored output directory");
 assert(/npmRebuild:\s*false/u.test(electronBuilder), "Electron builder must not rebuild the preflighted Desktop native tree");
 assert(desktopRuntime.version === packageJson.version, "Desktop runtime version must match the release");
 assert(Object.keys(desktopRuntime.dependencies ?? {}).sort().join(",") === "better-sqlite3,openai", "Desktop runtime manifest must contain only Main-process dependencies");
 assert(/nsis:\s*[\s\S]*?artifactName:\s*Alphion-\$\{version\}-\$\{arch\}-setup\.\$\{ext\}/u.test(electronBuilder), "NSIS artifact must have a setup-specific name");
 assert(/portable:\s*[\s\S]*?artifactName:\s*Alphion-\$\{version\}-\$\{arch\}-portable\.\$\{ext\}/u.test(electronBuilder), "portable artifact must have a portable-specific name");
+assert(/win:\s*[\s\S]*?icon:\s*alphion\.ico/u.test(electronBuilder), "Windows executable must use the generated Alphion ICO");
+assert(/nsis:\s*[\s\S]*?installerIcon:\s*alphion\.ico[\s\S]*?createDesktopShortcut:\s*true[\s\S]*?createStartMenuShortcut:\s*true/u.test(electronBuilder), "NSIS installer and shortcuts must use the Alphion brand configuration");
 for (const removedRpc of ["desktop/host.ts", "desktop/protocol.ts", "desktop/stdio.ts", "tests/desktop-rpc.test.ts"]) assert(!existsSync(resolve(root, removedRpc)), `removed Desktop JSONL file remains: ${removedRpc}`);
 assert(packageJson.scripts?.["desktop:deps"]?.includes("prepare-desktop-runtime.mjs --install"), "Desktop native dependencies must be installed in the isolated runtime tree");
 assert(!packageJson.scripts?.["desktop:deps"]?.startsWith("electron-builder"), "Desktop dependency preparation must not rebuild root node_modules");
@@ -97,6 +106,18 @@ for (const svg of ["alphion-logo.svg", "alphion-icon.svg", "alphion-wordmark.svg
   assert(/<svg\b/i.test(content) && /<\/svg>$/i.test(content), `${svg} is not a complete SVG document`);
 }
 
+assert(packageJson.scripts?.["brand:generate"] === "electron scripts/generate-brand-assets.cjs", "brand asset generation script must be registered");
+assert(packageJson.files?.includes("assets"), "generated Desktop assets must be included in the package");
+const canonicalIcon = readFileSync(resolve(root, "alphion-icon.svg"));
+for (const copy of ["webui/client/public/alphion-icon.svg", "webui/client/public/favicon.svg"]) {
+  assert(digestFile(readFileSync(resolve(root, copy))) === digestFile(canonicalIcon), `${copy} must be an exact copy of alphion-icon.svg`);
+}
+for (const media of generatedMedia) assert(existsSync(resolve(root, media)), `generated brand asset must exist: ${media}`);
+for (const png of ["assets/alphion.png", "webui/client/public/alphion-icon-192.png", "webui/client/public/favicon-32.png"]) {
+  assert(readFileSync(resolve(root, png)).subarray(0, 8).toString("hex") === "89504e470d0a1a0a", `${png} must be a PNG`);
+}
+assert(readFileSync(resolve(root, "assets/alphion.ico")).subarray(0, 4).toString("hex") === "00000100", "assets/alphion.ico must be a Windows icon");
+
 assert(existsSync(resolve(root, "alphion.bat")), "alphion.bat must exist");
 process.stdout.write(`static verification passed: ${markdownFiles.length} Markdown files, ${sourceFiles.length} core files\n`);
 
@@ -113,3 +134,5 @@ function listMarkdown(directory) {
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
+
+function digestFile(value) { return createHash("sha256").update(value).digest("hex"); }
