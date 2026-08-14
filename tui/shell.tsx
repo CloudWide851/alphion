@@ -6,15 +6,16 @@ import { ChatEntry } from "./input.js";
 import { sanitizeTerminalText } from "./run-projection.js";
 import type { SlashCommandContext } from "../ui/slash-commands.js";
 
-export type WorkbenchSection = "home" | "settings" | "projects" | "profile" | "providers" | "sessions" | "resources" | "harness" | "doctor" | "help";
+export type WorkbenchSection = "home" | "settings" | "projects" | "profile" | "providers" | "sessions" | "resources" | "harness" | "context" | "goals" | "goal" | "schedules" | "doctor" | "help";
 export type WorkbenchLayout = "wide" | "narrow" | "compact";
 export interface ChatMessage { readonly id: string; readonly role: "user" | "assistant"; readonly content: string; }
 
 export const BRAND_PURPLE = "#A377F6";
 const SECTIONS: readonly Readonly<{ id: WorkbenchSection; label: string }>[] = Object.freeze([
   { id: "home", label: "对话" }, { id: "settings", label: "设置" }, { id: "projects", label: "项目" },
-  { id: "profile", label: "项目画像" }, { id: "providers", label: "Provider / Vault" }, { id: "sessions", label: "共享会话" },
-  { id: "resources", label: "Agent 资源" }, { id: "harness", label: "HarnessPlan" }, { id: "doctor", label: "只读诊断" }, { id: "help", label: "快捷命令" },
+  { id: "profile", label: "项目画像" }, { id: "providers", label: "Provider / 设备凭据" }, { id: "sessions", label: "共享会话" },
+  { id: "resources", label: "Agent 资源" }, { id: "harness", label: "HarnessPlan" }, { id: "context", label: "上下文优化" },
+  { id: "goals", label: "长期 Goal" }, { id: "goal", label: "Goal 操作" }, { id: "schedules", label: "定时任务" }, { id: "doctor", label: "只读诊断" }, { id: "help", label: "快捷命令" },
 ]);
 const LOGO = Object.freeze([" █████╗ ██╗     ██████╗ ██╗  ██╗██╗ ██████╗ ███╗   ██╗", "██╔══██╗██║     ██╔══██╗██║  ██║██║██╔═══██╗████╗  ██║", "███████║██║     ██████╔╝███████║██║██║   ██║██╔██╗ ██║", "██╔══██║██║     ██╔═══╝ ██╔══██║██║██║   ██║██║╚██╗██║", "██║  ██║███████╗██║     ██║  ██║██║╚██████╔╝██║ ╚████║", "╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝"]);
 
@@ -29,11 +30,11 @@ export function AppShell(props: Readonly<{ section: WorkbenchSection; layout: Wo
     {props.section === "home" ? null : <Text dimColor>Esc 返回对话 · ↑/↓ 选择 · Enter 确认 · ? 帮助 · q 退出</Text>}
   </Box>;
 }
-export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; messages?: readonly ChatMessage[]; activeBubble?: React.ReactNode; compact: boolean; slashContext?: SlashCommandContext; onSubmit: (value: string) => void }>): React.JSX.Element {
+export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; messages?: readonly ChatMessage[]; activeBubble?: React.ReactNode; compactionCount?: number; compact: boolean; slashContext?: SlashCommandContext; onSubmit: (value: string) => boolean | void }>): React.JSX.Element {
   const messages = props.messages ?? [];
   return <Box flexDirection="column" minHeight={props.compact ? 10 : 18} justifyContent="space-between">
     {messages.length === 0 && !props.activeBubble ? <Box flexDirection="column" alignItems="center" marginTop={props.compact ? 0 : 2}>{props.compact ? null : LOGO.map((line) => <Text key={line} bold {...accent()}>{line}</Text>)}<Text bold {...accent()}>ALPHION</Text><Text dimColor>{props.activeProfile ? `${props.activeProfile.name} · ${props.activeProfile.model}` : "请先使用 /providers 配置 Provider"}</Text></Box> : <Box flexDirection="column">{messages.slice(props.compact ? -4 : -10).map((message) => <Box key={message.id} flexDirection="column" marginBottom={1} borderStyle="round" paddingX={1} {...(message.role === "assistant" ? borderColor(BRAND_PURPLE) : {})}><Text bold {...(message.role === "assistant" ? accent() : {})}>{message.role === "assistant" ? "Alphion" : "你"}</Text><Text>{renderMarkdownText(parseMarkdown(message.content), 88)}</Text></Box>)}{props.activeBubble}</Box>}
-    <ChatEntry disabled={!props.activeProfile} {...(props.slashContext ? { slashContext: props.slashContext } : {})} onSubmit={props.onSubmit} />
+    {props.compactionCount ? <Text dimColor>✓ 已优化上下文 · {props.compactionCount} 次</Text> : null}<ChatEntry {...(props.slashContext ? { slashContext: props.slashContext } : {})} onSubmit={props.onSubmit} />
   </Box>;
 }
 export function SettingsCard(props: Readonly<{ onSelect: (section: WorkbenchSection) => void }>): React.JSX.Element {

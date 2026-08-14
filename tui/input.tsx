@@ -29,7 +29,7 @@ export function TextEntry(props: Readonly<{ label: string; initialValue?: string
   return <Box flexDirection="column" marginTop={1}><Text>{props.label}</Text><Text {...accent()}>› {props.masked ? "•".repeat(value.length) : sanitizeTerminalText(value)}</Text><Text dimColor>Enter 确认 · Esc 返回</Text></Box>;
 }
 
-export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: SlashCommandContext; onSubmit: (value: string) => void }>): React.JSX.Element {
+export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: SlashCommandContext; onSubmit: (value: string) => boolean | void }>): React.JSX.Element {
   const [value, setValue] = useState("");
   const [selected, setSelected] = useState(0);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
@@ -52,9 +52,9 @@ export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: S
         const parsed = parseSlashCommand(valueRef.current, props.slashContext);
         const argument = parsed.kind === "command" && parsed.descriptor.name === match.descriptor.name ? parsed.argument : "";
         const submitted = formatSlashCommand(match.descriptor, argument);
-        replaceValue(""); props.onSubmit(submitted); return;
+        if (props.onSubmit(submitted) !== false) replaceValue(""); return;
       }
-      const submitted = valueRef.current; replaceValue(""); props.onSubmit(submitted); return;
+      const submitted = valueRef.current; if (props.onSubmit(submitted) !== false) replaceValue(""); return;
     }
     if (key.backspace || key.delete) { replaceValue(valueRef.current.slice(0, -1)); return; }
     if (!key.ctrl && !key.meta && input) replaceValue(valueRef.current + input);

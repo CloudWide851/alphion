@@ -12,19 +12,21 @@ import type {
   ProviderProfile,
   ProviderProfileInput,
   ApprovalPort,
+  CompactionProjection,
 } from "../src/index.js";
 import { TuiApprovalPort } from "./approval-port.js";
 import { sanitizeTerminalText } from "./run-projection.js";
 import { TextEntry } from "./input.js";
 import { RunView, type RunViewCommand } from "./run-view.js";
 import { accent, AppShell, ChatHome, SettingsCard, textColor, selectWorkbenchLayout, type ChatMessage, type WorkbenchSection } from "./shell.js";
-import { EntryShell, LoadingView } from "./entry-shell.js";
+import { EntryShell } from "./entry-shell.js";
 import { PlatformTerminalLauncher, type TerminalLauncher } from "./terminal-launcher.js";
 import { forkTuiSession } from "./session-fork.js";
 import { AlternateScreenSurface, type TerminalSurface } from "./terminal-surface.js";
 import { ProviderModelPicker } from "./provider-model-picker.js";
 import { resolveTuiInput } from "./slash-dispatch.js";
 import { HelpCard, ProjectCard } from "./workbench-cards.js";
+import { ContextCard, GoalCard, SchedulesCard } from "./automation-cards.js";
 
 export interface RunTuiOptions {
   readonly projectRoot: string;
@@ -38,7 +40,7 @@ export { AppShell, ChatHome, SettingsCard, selectWorkbenchLayout } from "./shell
 export { ChatEntry, TextEntry } from "./input.js";
 export type { WorkbenchLayout, WorkbenchSection } from "./shell.js";
 
-type Screen = "loading" | "vault-setup" | "vault-unlock" | "workbench" | "provider-form" | "credential";
+type Screen = "workbench" | "provider-form" | "credential";
 
 interface ProviderDraft {
   readonly existing?: ProviderProfile;
@@ -83,7 +85,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
   const { stdout } = useStdout();
   const layout = selectWorkbenchLayout(stdout.columns ?? 80, stdout.rows ?? 24);
   const colorEnabled = process.env.NO_COLOR === undefined;
-  const [screen, setScreen] = useState<Screen>("loading");
+  const [screen, setScreen] = useState<Screen>("workbench");
   const [section, setSection] = useState<WorkbenchSection>("home");
   const [profiles, setProfiles] = useState<readonly ProviderProfile[]>([]);
   const [presets] = useState(() => application.providerPresets());
@@ -98,6 +100,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
   const [runCommand, setRunCommand] = useState<RunViewCommand>();
   const [chatSession, setChatSession] = useState<AgentSessionContract | undefined>(initialSession);
   const [chatMessages, setChatMessages] = useState<readonly ChatMessage[]>([]);
+  const [compaction, setCompaction] = useState<CompactionProjection>({ count: 0 });
   const approval = useMemo(() => new TuiApprovalPort(), []);
 
   const refreshProfiles = useCallback(async () => {
@@ -113,25 +116,20 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     ]);
     setSnapshot({ profile, diagnostics });
   }, [application]);
-  const acceptRunSession = useCallback((session: AgentSessionContract) => setChatSession(session), []);
+  const acceptRunSession = useCallback((session: AgentSessionContract) => { setChatSession(session); void session.compactionProjection().then(setCompaction); }, []);
   const finishRun = useCallback((answer: string) => {
     if (answer.trim()) setChatMessages((messages) => [...messages, { id: `assistant:${Date.now()}`, role: "assistant", content: answer }]);
+    const completedSession = runSession ?? chatSession;
+    if (completedSession) void completedSession.compactionProjection().then(setCompaction);
     setRunPrompt(""); setRunSession(undefined); setRunCommand(undefined); void refreshSnapshot();
-  }, [refreshSnapshot]);
+  }, [chatSession, refreshSnapshot, runSession]);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [vault] = await Promise.all([application.configuration.vaultStatus(), refreshProfiles()]);
-        if (!vault.initialized) setScreen("vault-setup");
-        else if (vault.locked) setScreen("vault-unlock");
-        else {
-          setScreen("workbench");
-          await refreshSnapshot();
-        }
+        await Promise.all([refreshProfiles(), refreshSnapshot()]);
       } catch (cause) {
         setError(safeError(cause));
-        setScreen("workbench");
       }
     })();
   }, [application, refreshProfiles, refreshSnapshot]);
@@ -153,9 +151,10 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     setRunSession(session ?? chatSession);
     setRunProviderId(activeProfile?.id);
   };
-  const submitChat = (value: string) => {
+  const submitChat = (value: string): boolean | void => {
     const action = resolveTuiInput(value, { hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) });
     if (action.kind === "message") {
+      if (!activeProfile) { setError("请先配置并激活 Provider；当前输入已保留。"); setSection("providers"); return false; }
       if (runPrompt) { if (chatSession) setRunCommand({ id: Date.now(), kind: "follow-up", content: action.content }); else setError("会话尚未准备好。"); }
       else beginRun(action.content);
       return;
@@ -170,31 +169,6 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     if (action.kind === "steer" || action.kind === "follow-up" || action.kind === "cancel") { setRunCommand({ id: Date.now(), kind: action.kind, ...(action.kind === "cancel" ? {} : { content: action.content }) }); setError(""); return; }
     setError(action.kind === "error" ? action.message : "命令需要活动 Run。");
   };
-  const completeVault = async (password: string) => {
-    await application.configuration.initializeVault(password);
-    setError("");
-    setScreen("workbench");
-    await refreshSnapshot();
-  };
-
-  if (screen === "loading") return <LoadingView colorEnabled={colorEnabled} />;
-  if (screen === "vault-setup") {
-    return <EntryShell title="初始化安全凭据库" colorEnabled={colorEnabled} error={error}>
-      <VaultSetup onComplete={completeVault} onError={(cause) => setError(safeError(cause))} />
-    </EntryShell>;
-  }
-  if (screen === "vault-unlock") {
-    return <EntryShell title="解锁本地凭据库" colorEnabled={colorEnabled} error={error}>
-      <TextEntry
-        label="主密码"
-        masked
-        onSubmit={(password) => void application.configuration.unlockVault(password)
-          .then(async () => { setError(""); setScreen("workbench"); await refreshSnapshot(); })
-          .catch((cause: unknown) => setError(safeError(cause)))}
-        onCancel={() => exit()}
-      />
-    </EntryShell>;
-  }
   if (screen === "provider-form") {
     return <EntryShell title="Provider 配置" colorEnabled={colorEnabled} error={error}>
       <ProviderForm
@@ -220,7 +194,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     </EntryShell>;
   }
   return <AppShell section={section} layout={layout} colorEnabled={colorEnabled} projectRoot={projectRoot} error={error} help={help}>
-    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} activeBubble={runPrompt ? <RunView application={application} approval={approval} prompt={runPrompt} {...(runSession ? { session: runSession } : {})} {...(runProviderId ? { providerId: runProviderId } : {})} {...(runCommand ? { command: runCommand } : {})} compact={layout === "compact"} onSession={acceptRunSession} onError={setError} onDone={finishRun} /> : null} compact={layout === "compact"} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) }} onSubmit={submitChat} /> : null}
+    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} compactionCount={compaction.count} activeBubble={runPrompt ? <RunView application={application} approval={approval} prompt={runPrompt} {...(runSession ? { session: runSession } : {})} {...(runProviderId ? { providerId: runProviderId } : {})} {...(runCommand ? { command: runCommand } : {})} compact={layout === "compact"} onSession={acceptRunSession} onError={setError} onDone={finishRun} /> : null} compact={layout === "compact"} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) }} onSubmit={submitChat} /> : null}
     {section === "settings" ? <SettingsCard onSelect={setSection} /> : null}
     {section === "projects" ? <ProjectCard projectRoot={projectRoot} /> : null}
     {section === "profile" ? <ProjectProfileView {...(snapshot.profile ? { profile: snapshot.profile } : {})} onRefresh={() => void refreshSnapshot(true).catch((cause: unknown) => setError(safeError(cause)))} /> : null}
@@ -234,12 +208,15 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
       onCredential={() => current && setScreen("credential")}
       onRemoveCredential={() => current && void application.configuration.removeCredential(current.id).then(async () => { await refreshProfiles(); await refreshSnapshot(); }).catch((cause: unknown) => setError(safeError(cause)))}
       onRun={() => current && setSection("home")}
-      onLock={() => { application.configuration.lockVault(); setScreen("vault-unlock"); }}
       onExit={() => exit()}
     /> : null}
     {section === "sessions" ? <SessionWorkbenchView application={application} approval={approval} onSend={(session, prompt) => beginRun(prompt, session)} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "resources" ? <ResourceResolutionView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "harness" ? <HarnessPlanView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
+    {section === "context" ? <ContextCard {...(chatSession ? { session: chatSession } : {})} onError={(cause) => setError(safeError(cause))} /> : null}
+    {section === "goals" ? <GoalCard application={application} onError={(cause) => setError(safeError(cause))} /> : null}
+    {section === "goal" ? <GoalCard application={application} actionMode onError={(cause) => setError(safeError(cause))} /> : null}
+    {section === "schedules" ? <SchedulesCard application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "doctor" ? <DoctorView {...(snapshot.diagnostics ? { report: snapshot.diagnostics } : {})} onRefresh={() => void refreshSnapshot().catch((cause: unknown) => setError(safeError(cause)))} /> : null}
     {section === "help" ? <HelpCard /> : null}
   </AppShell>;
@@ -363,7 +340,6 @@ export function ProviderList(props: Readonly<{
   onCredential: () => void;
   onRemoveCredential: () => void;
   onRun: () => void;
-  onLock: () => void;
   onExit: () => void;
 }>): React.JSX.Element {
   useInput((input, key) => {
@@ -375,7 +351,6 @@ export function ProviderList(props: Readonly<{
     else if (input === "k" && props.profiles.length > 0) props.onCredential();
     else if (input === "x" && props.profiles.length > 0) props.onRemoveCredential();
     else if ((input === "r" || key.return) && props.profiles.length > 0) props.onRun();
-    else if (input === "l") props.onLock();
     else if (input === "q") props.onExit();
   });
   return <Box flexDirection="column">
@@ -383,18 +358,8 @@ export function ProviderList(props: Readonly<{
     {props.profiles.map((profile, index) => <Text key={profile.id} {...(index === props.selected ? accent(process.env.NO_COLOR === undefined) : {})}>
       {index === props.selected ? "◆" : "◇"} {profile.active ? "✓ 活动" : "  待用"} · {profile.name} · {profile.kind} · {profile.model} · {authLabel(profile)}
     </Text>)}
-    <Text dimColor>↑↓ 选择 · n 新建 · e 编辑 · a 激活 · k 导入/轮换 Key · x 删除 Key · r 运行 · l 锁定 Vault</Text>
+    <Text dimColor>↑↓ 选择 · n 新建 · e 编辑 · a 激活 · k 导入/轮换 Key · x 删除 Key · r 运行</Text>
   </Box>;
-}
-
-function VaultSetup(props: Readonly<{ onComplete: (password: string) => Promise<void>; onError: (cause: unknown) => void }>): React.JSX.Element {
-  const [first, setFirst] = useState<string | undefined>();
-  return first === undefined
-    ? <TextEntry label="创建主密码（至少 12 个字符）" masked onSubmit={setFirst} />
-    : <TextEntry label="再次输入主密码" masked onSubmit={(second) => {
-        if (second !== first) { props.onError(new Error("两次输入的主密码不一致。")); setFirst(undefined); return; }
-        void props.onComplete(first).catch(props.onError);
-      }} onCancel={() => setFirst(undefined)} />;
 }
 
 export function ProviderForm(props: Readonly<{ draft: ProviderDraft; presets: readonly ProviderPreset[]; onSave: (draft: ProviderDraft) => void; onCancel: () => void }>): React.JSX.Element {
