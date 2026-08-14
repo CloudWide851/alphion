@@ -18,12 +18,16 @@ export { Agent } from "./application/agent.js";
 export type { AgentOptions } from "./application/agent.js";
 export { AgentSession } from "./application/agent-session.js";
 export { DefaultSessionManager } from "./application/session-manager.js";
+export { DefaultGoalManager } from "./application/goal-manager.js";
+export { DefaultScheduleManager } from "./application/schedule-manager.js";
+export { assertScheduleCadence, latestDueOccurrence, nextScheduleOccurrence } from "./application/schedule-time.js";
 export { CapabilityRegistry, classifyTask, planHarness } from "./application/harness.js";
 export { createAgentEnvironment } from "./application/agent-environment.js";
 export { AgentShaper } from "./application/agent-shaper.js";
 export { SystemPromptComposer } from "./application/system-prompt.js";
 export { DeterministicRoutingPolicy, InMemoryModelMetadataRegistry, ProfileModelRegistry } from "./application/model-routing.js";
-export { compactMessages, compactSessionEntries, compactSessionEntriesWithProvider } from "./application/compaction.js";
+export { buildCompactionPolicy, compactMessages, compactSessionEntries, compactSessionEntriesForModel, compactSessionEntriesWithProvider } from "./application/compaction.js";
+export type { ModelCompactionRequest } from "./application/compaction.js";
 export { planProviderConversation, projectAgentMessages } from "./application/message-projection.js";
 export type { ProviderConversationPlan, ProviderConversationPlanInput } from "./application/message-projection.js";
 export { validateJsonSchema } from "./application/json-schema.js";
@@ -106,6 +110,12 @@ export type {
   VaultStatus,
   WorkingMemorySnapshot,
 } from "./domain/contracts.js";
+export type { CompactionPolicy, CompactionProjection, CompactionRecord, CompactionResult, CompactionSummary } from "./domain/compaction-contracts.js";
+export type { SessionActivity } from "./domain/session-activity.js";
+export type {
+  GoalCreateRequest, GoalProgressRequest, GoalRecord, GoalRevision, GoalRevisionActor, GoalRootUpdateRequest, GoalStatus, GoalWriteReceipt,
+  ScheduleClaim, ScheduleCreateRequest, ScheduleExecution, ScheduleExecutionStatus, ScheduleExpression, SchedulePayload, ScheduleRecord, ScheduleStatus, ScheduleWriteOptions,
+} from "./domain/automation-contracts.js";
 export type {
   AgentApplication,
   AgentContract,
@@ -120,8 +130,11 @@ export type {
   CacheEntry,
   CacheStats,
   CacheStore,
+  AutomationStore,
   CapabilityPolicy,
   EventStore,
+  DeviceKeyProvider,
+  GoalManager,
   SessionStore,
   ResourceLoader,
   ModelResolver,
@@ -130,6 +143,7 @@ export type {
   ProviderFactory,
   ProviderResolver,
   RoutingPolicy,
+  ScheduleManager,
   CodeRecall,
   ProviderProfileStore,
   ProviderConfigurationService,

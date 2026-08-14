@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { openSqliteDatabase, probeSqliteDriver, type SqliteDatabase } from "../store/database.js";
 import { Agent } from "../../src/application/agent.js";
+import { sha256 } from "../../src/application/canonical.js";
 import { AgentSession } from "../../src/application/agent-session.js";
 import { DefaultSessionManager } from "../../src/application/session-manager.js";
 import { createAgentEnvironment } from "../../src/application/agent-environment.js";
@@ -12,6 +13,8 @@ import { TieredCache } from "../../src/application/cache.js";
 import { AlphionError } from "../../src/application/errors.js";
 import { CapabilityRegistry, planHarness } from "../../src/application/harness.js";
 import { ProviderConfigurationManager } from "../../src/application/provider-configuration.js";
+import { DefaultGoalManager } from "../../src/application/goal-manager.js";
+import { DefaultScheduleManager } from "../../src/application/schedule-manager.js";
 import { ToolRegistry } from "../../src/application/tool-registry.js";
 import type {
   AgentShapeRequest,
@@ -24,11 +27,15 @@ import type {
   ResourceLoadRequest,
   ResourceResolution,
 } from "../../src/domain/contracts.js";
+import type { SessionActivity } from "../../src/domain/session-activity.js";
 import type {
   AgentApplication,
   AgentContract,
   CacheStats,
+  DeviceKeyProvider,
+  GoalManager,
   ProviderConfigurationService,
+  ScheduleManager,
   SessionManager,
 } from "../../src/ports/index.js";
 import { MemoryLruCache } from "../cache/memory-cache.js";
@@ -37,12 +44,13 @@ import { LocalModelResolver } from "../model/local-model-resolver.js";
 import { NodeProjectProfiler } from "../project/project-profiler.js";
 import { projectRevision } from "../project/project-revision.js";
 import { CompositeSecretResolver } from "../secrets/composite-secret.js";
+import { FileDeviceKeyProvider } from "../secrets/device-key.js";
 import { EnvironmentSecretResolver } from "../secrets/environment-secret.js";
 import { LocalResourceLoader } from "../resources/local-resource-loader.js";
 import { ProjectCodeRecall } from "../recall/project-code-recall.js";
-import { SqliteStore } from "../store/sqlite-store.js";
+import { SqliteRuntimeStore } from "../store/sqlite-runtime-store.js";
 import { SQLITE_SCHEMA_VERSION } from "../store/sqlite-constants.js";
-import { EditTool, GrepTool, ReadTool, SessionSendTool, ShellTool, WriteTool } from "../tools/index.js";
+import { EditTool, GoalProgressTool, GrepTool, ReadTool, SessionSendTool, ShellTool, WriteTool } from "../tools/index.js";
 
 export interface LocalApplicationOptions {
   readonly projectRoot: string;
@@ -50,6 +58,7 @@ export interface LocalApplicationOptions {
   readonly projectId?: string;
   readonly domainId?: string;
   readonly unowned?: boolean;
+  readonly deviceKeyProvider?: DeviceKeyProvider;
 }
 
 const execFileAsync = promisify(execFile);
@@ -57,8 +66,10 @@ export class LocalAlphionApplication implements AgentApplication {
   readonly configuration: ProviderConfigurationService;
   readonly agent: AgentContract;
   readonly sessions: SessionManager;
+  readonly goals: GoalManager;
+  readonly schedules: ScheduleManager;
   readonly #projectRoot: string;
-  readonly #store: SqliteStore;
+  readonly #store: SqliteRuntimeStore;
   readonly #secrets: CompositeSecretResolver;
   readonly #cache: TieredCache;
   readonly #tools: ToolRegistry;
@@ -67,39 +78,47 @@ export class LocalAlphionApplication implements AgentApplication {
   readonly #resources = new LocalResourceLoader();
   readonly #recall = new ProjectCodeRecall();
   readonly #models: LocalModelResolver;
+  readonly #deviceKeyProvider: DeviceKeyProvider;
   readonly #unowned: boolean;
   readonly #capabilities = new CapabilityRegistry([
     { id: "project.read", description: "Read bounded project context.", taskLabels: ["explain", "diagnose", "implement", "verify", "release"], permissions: ["project:read"], defaultBudget: 20 },
     { id: "project.write", description: "Modify project files.", taskLabels: ["implement", "release"], permissions: ["project:write"], defaultBudget: 12 },
     { id: "quality.verify", description: "Run project verification.", taskLabels: ["diagnose", "verify", "release"], permissions: ["process:approved"], defaultBudget: 8 },
     { id: "session.collaborate", description: "Send bounded messages to shaped Sessions in the same Project domain.", taskLabels: ["explain", "diagnose", "implement", "verify", "release"], permissions: ["session:send"], defaultBudget: 4 },
+    { id: "goal.progress", description: "Append Evidence-backed progress to the current dedicated Goal Session.", taskLabels: ["explain", "diagnose", "implement", "verify", "release"], permissions: ["goal:progress"], defaultBudget: 4 },
   ]);
   readonly #shaper: AgentShaper;
   #closed = false;
   #closePromise: Promise<void> | undefined;
 
-  private constructor(projectRoot: string, statePath: string, store: SqliteStore, unowned: boolean) {
+  private constructor(projectRoot: string, statePath: string, store: SqliteRuntimeStore, unowned: boolean, deviceKeyProvider: DeviceKeyProvider) {
     this.#projectRoot = projectRoot;
     this.#unowned = unowned;
     this.#statePath = statePath;
     this.#store = store;
+    this.#deviceKeyProvider = deviceKeyProvider;
     this.#secrets = new CompositeSecretResolver([new EnvironmentSecretResolver(), store]);
     this.#cache = new TieredCache(new MemoryLruCache(), store);
+    this.goals = new DefaultGoalManager(store, () => this.#assertOpen());
     this.#tools = new ToolRegistry(unowned
       ? [new SessionSendTool()]
-      : [new ReadTool(), new GrepTool(), new EditTool(), new WriteTool(), new ShellTool(store), new SessionSendTool()]);
+      : [new ReadTool(), new GrepTool(), new EditTool(), new WriteTool(), new ShellTool(store), new SessionSendTool(), new GoalProgressTool(this.goals)]);
     this.#profiler = new NodeProjectProfiler({ cache: this.#cache });
     this.configuration = new ProviderConfigurationManager(store, store);
     this.#models = new LocalModelResolver(store, this.#secrets);
-    this.#shaper = new AgentShaper({ capabilities: this.#capabilities.list().map((item) => item.id).filter((id) => !unowned || id === "session.collaborate"), policies: ["default-deny", "approval-for-side-effects", "same-domain-session-collaboration", ...(unowned ? ["no-project-filesystem"] : [])], tools: this.#tools.names(), toolCapabilities: { read: "project.read", grep: "project.read", edit: "project.write", write: "project.write", shell: "quality.verify", "session.send": "session.collaborate" } });
+    this.#shaper = new AgentShaper({ capabilities: this.#capabilities.list().map((item) => item.id).filter((id) => !unowned || id === "session.collaborate"), policies: ["default-deny", "approval-for-side-effects", "same-domain-session-collaboration", ...(unowned ? ["no-project-filesystem"] : [])], tools: this.#tools.names(), toolCapabilities: { read: "project.read", grep: "project.read", edit: "project.write", write: "project.write", shell: "quality.verify", "session.send": "session.collaborate", "goal.progress": "goal.progress" } });
     this.agent = new Agent({ models: this.#models, tools: this.#tools, eventStore: store, cache: this.#cache });
-    this.sessions = new DefaultSessionManager({ store, session: (sessionId) => this.#session(sessionId), assertOpen: () => this.#assertOpen() });
+    this.sessions = new DefaultSessionManager({ store, session: (sessionId, publishActivity) => this.#session(sessionId, publishActivity), assertOpen: () => this.#assertOpen() });
+    this.schedules = new DefaultScheduleManager({ store, sessions: this.sessions, goals: this.goals, assertOpen: () => this.#assertOpen(), enabled: !unowned });
+    this.schedules.start();
   }
 
   static async open(options: LocalApplicationOptions): Promise<LocalAlphionApplication> {
     const projectRoot = await realpath(resolve(options.projectRoot));
     const statePath = resolve(options.statePath ?? join(projectRoot, ".alphion", "alphion.sqlite3"));
-    return new LocalAlphionApplication(projectRoot, statePath, new SqliteStore({ path: statePath, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.domainId ? { domainId: options.domainId } : {}) }), options.unowned === true);
+    const deviceKeyProvider = options.deviceKeyProvider ?? new FileDeviceKeyProvider();
+    const projectId = options.unowned === true ? undefined : options.projectId ?? derivedProjectId(projectRoot);
+    return new LocalAlphionApplication(projectRoot, statePath, new SqliteRuntimeStore({ path: statePath, deviceKeyProvider, ...(projectId ? { projectId } : {}), ...(options.domainId ? { domainId: options.domainId } : {}) }), options.unowned === true, deviceKeyProvider);
   }
 
   planHarness(prompt: string, overlay?: HarnessTaskOverlay): Promise<HarnessPlan> { this.#assertOpen(); return Promise.resolve(planHarness(prompt, this.#capabilities, overlay)); }
@@ -117,7 +136,7 @@ export class LocalAlphionApplication implements AgentApplication {
 
   diagnose(): Promise<DiagnosticReport> {
     this.#assertOpen();
-    return diagnoseLocalProject({ projectRoot: this.#projectRoot, statePath: this.#statePath });
+    return diagnoseLocalProject({ projectRoot: this.#projectRoot, statePath: this.#statePath, deviceKeyProvider: this.#deviceKeyProvider });
   }
 
   providerPresets(): readonly ProviderPreset[] {
@@ -135,6 +154,7 @@ export class LocalAlphionApplication implements AgentApplication {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
     this.#closePromise = (async () => {
+      await this.schedules.close();
       await this.sessions.close();
       this.#store.close();
     })();
@@ -145,7 +165,7 @@ export class LocalAlphionApplication implements AgentApplication {
     if (this.#closed) throw new AlphionError("conflict", "Local Alphion application is closed.", { stage: "application" });
   }
 
-  #session(sessionId: string): AgentSession {
+  #session(sessionId: string, publishActivity: (activity: SessionActivity) => void): AgentSession {
     return new AgentSession({ sessionId, store: this.#store, agent: this.agent, projectRoot: this.#projectRoot,
       projectProfile: () => this.#profiler.inspect({ projectRoot: this.#projectRoot }),
       environment: async (profile, shape) => createAgentEnvironment({ identity: shape.identity, projectRoot: this.#projectRoot, projectRevision: profile.projectRevision, capabilities: shape.capabilities, policies: shape.policies, loaded: { schemaVersion: 1, resources: shape.resources, shadows: [], omissions: shape.omissions, diagnostics: [], digest: shape.resourceDigest }, goal: shape.goal, behavior: shape.behavior, harnessPlan: shape.harnessPlan, systemPromptPlan: shape.systemPromptPlan }),
@@ -153,8 +173,13 @@ export class LocalAlphionApplication implements AgentApplication {
       plan: (prompt) => planHarness(prompt, this.#capabilities),
       models: this.#models,
       ...(this.#unowned ? {} : { recall: this.#recall }),
-      deliverSessionMessage: (request) => this.sessions.deliver(request) });
+      deliverSessionMessage: (request) => this.sessions.deliver(request), publishActivity });
   }
+}
+
+function derivedProjectId(projectRoot: string): string {
+  const identity = process.platform === "win32" ? projectRoot.toLocaleLowerCase("en-US") : projectRoot;
+  return `project_${sha256(identity).slice(0, 32)}`;
 }
 
 export function openLocalAlphionApplication(options: LocalApplicationOptions): Promise<LocalAlphionApplication> {
@@ -169,7 +194,7 @@ export async function diagnoseLocalProject(options: LocalApplicationOptions): Pr
   checks.push(await gitCheck(projectRoot));
   checks.push(await codeGraphCheck(projectRoot));
   const statePath = resolve(options.statePath ?? join(projectRoot, ".alphion", "alphion.sqlite3"));
-  checks.push(...await sqliteChecks(statePath));
+  checks.push(...await sqliteChecks(statePath, options.deviceKeyProvider ?? new FileDeviceKeyProvider()));
   const overall = checks.some((check) => check.status === "fail")
     ? "unhealthy"
     : checks.some((check) => check.status === "warning" || check.status === "unknown")
@@ -233,7 +258,7 @@ async function codeGraphCheck(root: string): Promise<DiagnosticCheck> {
   }
 }
 
-async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
+async function sqliteChecks(path: string, deviceKeyProvider: DeviceKeyProvider): Promise<readonly DiagnosticCheck[]> {
   try {
     probeSqliteDriver();
   } catch (error) {
@@ -264,14 +289,17 @@ async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
     if (schema < SQLITE_SCHEMA_VERSION) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "warning", summary: `SQLite schema ${schema} 尚未迁移至 ${SQLITE_SCHEMA_VERSION}；doctor 未做修改。`, remediation: "备份后通过正常应用启动执行迁移。" })];
     const providerCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles").get(), "count");
     const activeCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles WHERE active = 1").get(), "count");
-    const vaultCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM vault_metadata").get(), "count");
+    const deviceCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM device_vault_metadata").get(), "count");
+    const deviceSecretCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM device_vault_secrets").get(), "count");
+    const legacySecretCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get(), "count");
+    const deviceCheck = await deviceVaultCheck(deviceCount, deviceSecretCount, deviceKeyProvider);
     return [Object.freeze({
       id: "sqlite",
       label: "本地状态",
       status: activeCount > 0 ? "pass" : "warning",
-      summary: `schema ${schema} 完整；Provider ${providerCount} 个，活动 ${activeCount} 个，Vault ${vaultCount > 0 ? "已初始化" : "未初始化"}。`,
+      summary: `schema ${schema} 完整；Provider ${providerCount} 个，活动 ${activeCount} 个；设备凭据 ${deviceSecretCount} 个；旧凭据 ${legacySecretCount} 个${legacySecretCount > 0 ? "（已禁用）" : ""}。`,
       ...(activeCount === 0 ? { remediation: "请在 Alphion 设置中配置并激活 Provider。" } : {}),
-    })];
+    }), deviceCheck];
   } catch (error) {
     if (error instanceof AlphionError && error.code === "incompatible-schema") {
       return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: error.message, remediation: "请使用兼容版本的 Alphion。" })];
@@ -279,6 +307,18 @@ async function sqliteChecks(path: string): Promise<readonly DiagnosticCheck[]> {
     return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: "SQLite 数据库无法以只读方式验证。", remediation: "请保留并备份 .alphion 后按数据库 Runbook 检查；这与原生 ABI 错误不同。" })];
   } finally {
     database?.close();
+  }
+}
+
+async function deviceVaultCheck(metadataCount: number, secretCount: number, provider: DeviceKeyProvider): Promise<DiagnosticCheck> {
+  if (metadataCount === 0) return Object.freeze({ id: "device-vault", label: "设备凭据", status: "pass", summary: "尚未 provision；首次导入 Provider 凭据时自动创建，无需密码。" });
+  try {
+    const key = await provider.load();
+    if (!key || key.byteLength !== 32) return Object.freeze({ id: "device-vault", label: "设备凭据", status: "fail", summary: "设备密钥不可用。", remediation: "请保留数据库；确认平台配置目录中的 device.key 可由当前 OS 用户读取，然后重新导入凭据。" });
+    return Object.freeze({ id: "device-vault", label: "设备凭据", status: "pass", summary: `设备密钥可用；已保护 ${secretCount} 个 Provider 凭据。` });
+  } catch (error) {
+    const corrupt = error instanceof AlphionError && error.reason === "device-key-corrupt";
+    return Object.freeze({ id: "device-vault", label: "设备凭据", status: "fail", summary: corrupt ? "设备密钥损坏。" : "设备密钥不可用。", remediation: "不要删除 SQLite；修复平台配置目录中的 device.key，或显式重置设备凭据后重新导入。" });
   }
 }
 

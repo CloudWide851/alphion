@@ -80,7 +80,7 @@ test("SQLite v5 migrates through verified backup and enforces same-Session paren
   const right = await store.createSession({ title: "right", idempotencyKey: "create:v060:migrate:0002" });
   store.close();
   const downgrade = openSqliteDatabase(path);
-  downgrade.exec("PRAGMA user_version = 5");
+  downgrade.exec("DROP TABLE schedule_commands; DROP TABLE schedule_executions; DROP TABLE schedules; DROP TABLE goal_commands; DROP TABLE goal_revisions; DROP TABLE goals; DROP TABLE compaction_records; DROP TABLE vault_legacy_state; DROP TABLE device_vault_secrets; DROP TABLE device_vault_metadata; PRAGMA user_version = 5");
   downgrade.close();
   store = new SqliteStore({ path });
   try {

@@ -81,7 +81,7 @@ test("schema v2 migration creates backup and read-only legacy session", async ()
   let store = new SqliteStore({ path });
   store.close();
   const db = openSqliteDatabase(path);
-  db.exec("DROP TABLE session_shapes; DROP TABLE session_commands; DROP TABLE pending_messages; DROP TABLE session_entries; DROP TABLE sessions; DROP TABLE session_owners; DROP INDEX events_session_sequence; ALTER TABLE events DROP COLUMN session_sequence; ALTER TABLE events DROP COLUMN schema_version; ALTER TABLE runs DROP COLUMN shape_revision; ALTER TABLE runs DROP COLUMN shape_digest; CREATE TABLE backup_fixture (value TEXT NOT NULL); INSERT INTO backup_fixture VALUES ('wal-visible'); PRAGMA user_version = 2;");
+  db.exec("DROP TABLE schedule_commands; DROP TABLE schedule_executions; DROP TABLE schedules; DROP TABLE goal_commands; DROP TABLE goal_revisions; DROP TABLE goals; DROP TABLE compaction_records; DROP TABLE vault_legacy_state; DROP TABLE device_vault_secrets; DROP TABLE device_vault_metadata; DROP TABLE session_shapes; DROP TABLE session_commands; DROP TABLE pending_messages; DROP TABLE session_entries; DROP TABLE sessions; DROP TABLE session_owners; DROP INDEX events_session_sequence; ALTER TABLE events DROP COLUMN session_sequence; ALTER TABLE events DROP COLUMN schema_version; ALTER TABLE runs DROP COLUMN shape_revision; ALTER TABLE runs DROP COLUMN shape_digest; CREATE TABLE backup_fixture (value TEXT NOT NULL); INSERT INTO backup_fixture VALUES ('wal-visible'); PRAGMA user_version = 2;");
   db.close();
   store = new SqliteStore({ path });
   try {

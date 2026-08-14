@@ -37,6 +37,12 @@ import type {
   VaultStatus,
 } from "../domain/contracts.js";
 import type { AgentEvent, AgentEventDraft, AgentStreamEvent } from "../protocol/events.js";
+import type { CompactionProjection, CompactionRecord } from "../domain/compaction-contracts.js";
+import type { SessionActivity } from "../domain/session-activity.js";
+import type {
+  GoalCreateRequest, GoalProgressRequest, GoalRecord, GoalRootUpdateRequest, GoalWriteReceipt,
+  ScheduleClaim, ScheduleCreateRequest, ScheduleExecution, ScheduleRecord, ScheduleWriteOptions,
+} from "../domain/automation-contracts.js";
 
 export interface AgentProvider {
   readonly profile: ProviderProfile;
@@ -45,6 +51,7 @@ export interface AgentProvider {
 
 export interface ModelResolver {
   resolveModel(request: ModelSelectionRequest): Promise<AgentProvider>;
+  describeModel?(provider: AgentProvider): Promise<ModelDescriptor | undefined>;
 }
 
 export interface ModelRegistry {
@@ -82,6 +89,8 @@ export interface CodeRecall {
 
 export interface ToolExecutionContext {
   readonly projectRoot: string;
+  readonly sessionId: string;
+  readonly runId: string;
   readonly signal: AbortSignal;
   readonly reportUpdate?: (content: string) => Promise<void>;
   readonly sendSessionMessage?: (targetSessionId: string, content: string, idempotencyKey: string) => Promise<SessionMessageReceipt>;
@@ -157,6 +166,33 @@ export interface SessionStore {
   releasePendingClaims(sessionId: string, kind: PendingMessageKind, runId: string): Promise<void>;
   acquireRunLease(sessionId: string, runId: string, expectedRevision: number): Promise<AgentSessionRecord>;
   releaseRunLease(sessionId: string, runId: string): Promise<AgentSessionRecord>;
+  appendCompaction(record: CompactionRecord): Promise<void>;
+  listCompactions(sessionId: string, limit?: number): Promise<readonly CompactionRecord[]>;
+  getCompaction(compactionId: string): Promise<CompactionRecord | undefined>;
+  getCompactionProjection(sessionId: string): Promise<CompactionProjection>;
+}
+
+export interface DeviceKeyProvider {
+  load(): Promise<Uint8Array | undefined>;
+  loadOrCreate(): Promise<Uint8Array>;
+}
+
+export interface AutomationStore {
+  createGoal(request: GoalCreateRequest): Promise<GoalWriteReceipt>;
+  listGoals(includeArchived?: boolean): Promise<readonly GoalRecord[]>;
+  getGoal(goalId: string): Promise<GoalRecord | undefined>;
+  updateGoalRoot(request: GoalRootUpdateRequest): Promise<GoalWriteReceipt>;
+  appendGoalProgress(request: GoalProgressRequest): Promise<GoalWriteReceipt>;
+  setGoalStatus(goalId: string, status: "completed" | "archived" | "active", expectedRevision: number, idempotencyKey: string): Promise<GoalWriteReceipt>;
+  restoreGoalRevision(goalId: string, sourceRevision: number, expectedRevision: number, idempotencyKey: string): Promise<GoalWriteReceipt>;
+  createSchedule(request: ScheduleCreateRequest, nextRunAt: string): Promise<ScheduleRecord>;
+  listSchedules(): Promise<readonly ScheduleRecord[]>;
+  getSchedule(scheduleId: string): Promise<ScheduleRecord | undefined>;
+  setScheduleStatus(scheduleId: string, status: "active" | "paused", options: ScheduleWriteOptions, nextRunAt?: string): Promise<ScheduleRecord>;
+  claimSchedule(scheduleId: string, dueAt: string, nextRunAt: string | undefined, missedCount: number, owner: string, leaseExpiresAt: string, expectedRevision: number): Promise<ScheduleClaim | undefined>;
+  claimScheduleNow(scheduleId: string, owner: string, leaseExpiresAt: string, options: ScheduleWriteOptions): Promise<ScheduleClaim>;
+  updateScheduleExecution(executionId: string, status: ScheduleExecution["status"], details?: Readonly<{ runId?: string; reason?: string }>): Promise<ScheduleExecution>;
+  listScheduleExecutions(scheduleId: string, limit?: number): Promise<readonly ScheduleExecution[]>;
 }
 
 export interface CacheEntry {
@@ -196,13 +232,12 @@ export interface ProviderProfileStore {
 
 export interface SecretVault extends SecretResolver {
   status(): Promise<VaultStatus>;
-  initialize(masterPassword: string): Promise<void>;
-  unlock(masterPassword: string): Promise<void>;
-  lock(): void;
+  provision(): Promise<void>;
   importCredential(profileId: string, secret: string): Promise<ProviderProfile>;
   removeCredential(profileId: string): Promise<ProviderProfile>;
-  rotateMasterPassword(currentPassword: string, nextPassword: string): Promise<void>;
   reset(): Promise<number>;
+  legacyStatus(): Promise<Readonly<{ disabled: boolean; secretCount: number }>>;
+  resetLegacy(): Promise<number>;
 }
 
 export interface ProviderConfigurationService {
@@ -210,13 +245,12 @@ export interface ProviderConfigurationService {
   upsertProfile(profile: ProviderProfileInput): Promise<ProviderProfile>;
   activateProfile(idOrName: string): Promise<ProviderProfile>;
   vaultStatus(): Promise<VaultStatus>;
-  initializeVault(masterPassword: string): Promise<void>;
-  unlockVault(masterPassword: string): Promise<void>;
-  lockVault(): void;
+  provisionVault(): Promise<void>;
   importCredential(profileId: string, secret: string): Promise<ProviderProfile>;
   removeCredential(profileId: string): Promise<ProviderProfile>;
-  rotateVaultPassword(currentPassword: string, nextPassword: string): Promise<void>;
   resetVault(): Promise<number>;
+  legacyVaultStatus(): Promise<Readonly<{ disabled: boolean; secretCount: number }>>;
+  resetLegacyVault(): Promise<number>;
 }
 
 export interface ProjectProfiler {
@@ -261,6 +295,9 @@ export interface AgentSessionContract {
   followUp(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt>;
   resumePending(approval: ApprovalPort): void;
   subscribe(afterSessionSequence?: number): AsyncIterable<AgentStreamEvent>;
+  listCompactions(limit?: number): Promise<readonly CompactionRecord[]>;
+  getCompaction(compactionId: string): Promise<CompactionRecord | undefined>;
+  compactionProjection(): Promise<CompactionProjection>;
   /** Stops new work, cancels active runs, and drains all store-owning tasks. */
   close(): Promise<void>;
 }
@@ -280,7 +317,36 @@ export interface SessionManager {
   followUp(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt>;
   deliver(request: SessionMessageRequest): Promise<SessionMessageReceipt>;
   subscribe(sessionId: string, afterSessionSequence?: number): AsyncIterable<AgentStreamEvent>;
+  listCompactions(sessionId: string, limit?: number): Promise<readonly CompactionRecord[]>;
+  getCompaction(sessionId: string, compactionId: string): Promise<CompactionRecord | undefined>;
+  getCompactionProjection(sessionId: string): Promise<CompactionProjection>;
+  /** Bounded live-only fan-out for Runs started by UI, collaboration, follow-up, or Scheduler. */
+  subscribeActivity?(): AsyncIterable<SessionActivity>;
   /** Drains every materialized session before its backing store is closed. */
+  close(): Promise<void>;
+}
+
+export interface GoalManager {
+  create(request: GoalCreateRequest): Promise<GoalWriteReceipt>;
+  list(includeArchived?: boolean): Promise<readonly GoalRecord[]>;
+  get(goalId: string): Promise<GoalRecord>;
+  updateRoot(request: GoalRootUpdateRequest): Promise<GoalWriteReceipt>;
+  appendProgress(request: GoalProgressRequest): Promise<GoalWriteReceipt>;
+  suggestCompletion(request: Omit<GoalProgressRequest, "completionSuggested">): Promise<GoalWriteReceipt>;
+  confirmCompletion(goalId: string, expectedRevision: number, idempotencyKey: string): Promise<GoalWriteReceipt>;
+  archive(goalId: string, expectedRevision: number, idempotencyKey: string): Promise<GoalWriteReceipt>;
+  restoreRevision(goalId: string, sourceRevision: number, expectedRevision: number, idempotencyKey: string): Promise<GoalWriteReceipt>;
+}
+
+export interface ScheduleManager {
+  create(request: ScheduleCreateRequest): Promise<ScheduleRecord>;
+  list(): Promise<readonly ScheduleRecord[]>;
+  get(scheduleId: string): Promise<ScheduleRecord>;
+  pause(scheduleId: string, options: ScheduleWriteOptions): Promise<ScheduleRecord>;
+  resume(scheduleId: string, options: ScheduleWriteOptions): Promise<ScheduleRecord>;
+  runNow(scheduleId: string, options: ScheduleWriteOptions): Promise<ScheduleExecution>;
+  executions(scheduleId: string, limit?: number): Promise<readonly ScheduleExecution[]>;
+  start(): void;
   close(): Promise<void>;
 }
 
@@ -298,6 +364,8 @@ export interface AgentApplication {
   readonly configuration: ProviderConfigurationService;
   readonly agent: AgentContract;
   readonly sessions: SessionManager;
+  readonly goals: GoalManager;
+  readonly schedules: ScheduleManager;
   planHarness(prompt: string, overlay?: HarnessTaskOverlay): Promise<HarnessPlan>;
   loadResources(request?: Omit<ResourceLoadRequest, "projectRoot">): Promise<ResourceResolution>;
   inspectProject(options?: Readonly<{ refresh?: boolean }>): Promise<ProjectProfile>;

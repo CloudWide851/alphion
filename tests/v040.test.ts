@@ -81,7 +81,7 @@ test("SQLite v3 to v4 creates backup and requires explicit reshape for migrated 
     const fresh = await store.createSession({ title: "legacy-v3", idempotencyKey: "create:migrate:0001" });
     store.close();
     const database = openSqliteDatabase(path);
-    database.exec("DROP TABLE session_shapes; ALTER TABLE sessions DROP COLUMN shape_status; ALTER TABLE sessions DROP COLUMN shape_revision; ALTER TABLE sessions DROP COLUMN shape_digest; ALTER TABLE runs DROP COLUMN shape_revision; ALTER TABLE runs DROP COLUMN shape_digest; PRAGMA user_version = 3;");
+    database.exec("DROP TABLE schedule_commands; DROP TABLE schedule_executions; DROP TABLE schedules; DROP TABLE goal_commands; DROP TABLE goal_revisions; DROP TABLE goals; DROP TABLE compaction_records; DROP TABLE vault_legacy_state; DROP TABLE device_vault_secrets; DROP TABLE device_vault_metadata; DROP TABLE session_shapes; ALTER TABLE sessions DROP COLUMN shape_status; ALTER TABLE sessions DROP COLUMN shape_revision; ALTER TABLE sessions DROP COLUMN shape_digest; ALTER TABLE runs DROP COLUMN shape_revision; ALTER TABLE runs DROP COLUMN shape_digest; PRAGMA user_version = 3;");
     database.close();
     store = new SqliteStore({ path });
     try {

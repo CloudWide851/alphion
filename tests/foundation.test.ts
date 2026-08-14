@@ -164,7 +164,7 @@ test("safe file tools read, grep, edit, write, and reject secret or stale access
     await writeFile(source, "alpha\nbeta\n", "utf8");
     await writeFile(join(directory, ".env"), "SECRET=value", "utf8");
     await writeFile(join(directory, ".npmrc"), "token=value", "utf8");
-    const context = { projectRoot: directory, signal: new AbortController().signal };
+    const context = { projectRoot: directory, sessionId: "s", runId: "r", signal: new AbortController().signal };
 
     const read = await new ReadTool().execute({ path: "source.txt" }, context);
     assert.equal(read.content, "alpha\nbeta\n");
@@ -214,7 +214,7 @@ test("shell requires an allowlist rule and enforces executable digest", async ()
   await withTemporaryDirectory(async (directory) => {
     const store = new SqliteStore({ path: join(directory, "shell.sqlite3") });
     const shell = new ShellTool(store);
-    const context = { projectRoot: directory, signal: new AbortController().signal };
+    const context = { projectRoot: directory, sessionId: "s", runId: "r", signal: new AbortController().signal };
     await assert.rejects(shell.execute({ executable: process.execPath, args: ["-e", "process.stdout.write('ok')"] }, context), /allowlisted/i);
     await store.addShellRule({
       executablePath: process.execPath,
