@@ -6,11 +6,11 @@
 
 Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前 **v0.8.0** 将运行脊柱扩展为 `Project → shared Agent → Session → Goal/Run → ProviderConversationPlan → Tool`：新增长期 Goal、进程内持久化调度、模型感知的无感上下文压缩、设备绑定凭据，以及 Web/Desktop 统一品牌资产。SQLite 使用 user_version 7。
+当前 **v0.9.0** 将运行脊柱扩展为 `Workspace → Project → shared Agent → Session → Goal/Run → ProviderConversationPlan → Tool`：新增 Project 独立加密凭据、真实 Provider 连通性测试、固定可滚动聊天、多 token 命令与有界多项目 Run 保活。SQLite 使用 user_version 8。
 
 资源优先级固定为内置 → 用户共享 → 项目 `.alphion-resources/manifest.json` → Session overrides。扩展包仅支持声明式资源，不执行第三方 JavaScript。用户资源根可通过 `ALPHION_RESOURCE_HOME` 指定，否则使用平台标准配置目录。
 
-这是新的 0.x 能力里程碑。首次打开 v6 数据库会先 checkpoint 并创建、验证相邻 `.v6-backup`，再事务升级到 SQLite user_version 7。回滚必须停止所有 Alphion 进程、保留失败文件用于诊断、恢复 `.v6-backup` 并切回 v0.7.0；迁移后的 Goal、Schedule、Compaction 和设备凭据数据不会回写到 v6。
+这是新的 0.x 能力里程碑。首次打开 v7 数据库会先 checkpoint 并创建、验证相邻 `.v7-backup`，再事务升级到 SQLite user_version 8。回滚必须停止所有 Alphion 进程、保留失败文件用于诊断、恢复 `.v7-backup` 并切回 v0.8.0；迁移后的 Project credential envelope 和 v0.9 状态不会回写到 v7。
 
 ## 当前能力
 
@@ -18,20 +18,21 @@ Alphion 是一个面向不同软件项目、在证据和安全边界内持续优
 - 每个 Project 最多 64 个活动 Goal；Goal 拥有专属可见 Session 和 append-only revision。Agent 只能用 Evidence 推进或建议完成，根目标/验收/安全约束及最终完成确认仍由用户控制。
 - 一次性、固定间隔和标准五段 Cron Schedule 使用 IANA timezone、10 分钟租约和幂等 receipt；只在活动 Project 的 Alphion 进程内扫描，忙 Session 转为持久 follow-up，重启最多补最近一次遗漏。
 - 模型感知 Compaction 在有效窗口占用达到 85% 前触发，扣除输出、Tool schema 和安全余量；从原始分支重建并持久记录来源、保留项、损失和 digest，聊天只显示非历史“已优化上下文”状态。
-- Provider 凭据首次导入时自动 provision 设备密钥，无需启动密码。SQLite 只保存认证密文和 wrapped data key，Provider 调用时短暂解密；旧密码 Vault 保留为 `legacy-disabled`，只允许显式重置后重新导入。
+- Provider 凭据由每个 Project 的独立随机 key 加密，key 位于 SQLite 外的平台配置目录；SQLite 只保存 AES-256-GCM envelope，Provider 调用时短暂解密。密码、Device Vault 和设备凭据公共/UI 合同已删除。
 - idle、已塑形 Session 可按当前 leaf 或指定 entry 原子 Fork；目标保留 Evidence、重映射 entry/Memory 引用、重新计算身份 digest，并记录不可变 provenance。
 - 四层声明式资源解析、确定性 SystemPrompt Composer、任务分类与最小 HarnessPlan，以及 CodeGraph 优先、词法降级的有界代码召回。
 - Node/TypeScript 优先的确定性只读 Project Profile，识别语言、运行时、模块系统、包管理器、框架、质量命令、Git/CI、约束、风险和冲突；未知项目安全降级。
 - 每次运行自动注入最多 2,048 estimated tokens 的不可变 ContextPack；安全、目标、权限和强约束不会被可选画像事实挤出预算。
 - 运行期 Working Memory 仅由当前任务事件 reducer 重放，跟踪阶段、轮次、工具、Evidence、错误和用量，不写入长期记忆。
 - OpenAI-compatible Chat Completions 与 Responses 双协议；DeepSeek、Kimi、Qwen、GLM 提供内置大陆/国际 official endpoint，普通配置无需 Base URL，只有自定义兼容 Provider 接受 URL。
-- 简体中文聊天式 Ink TUI、React/Vite loopback WebUI 和 Electron Desktop；三端完整渲染共享安全 Markdown 与受限代码投影（语言、高亮、复制/裁剪、稳定 digest），reasoning 不可见。
+- 简体中文聊天式 Ink TUI、React/Vite loopback WebUI 和 Electron Desktop；三端使用固定底部输入框、可滚动消息区、用户右/Agent 左气泡，并完整渲染共享安全 Markdown 与受限代码投影，reasoning 不可见。
 - `read`、`grep`、`edit`、`write` 和 `shell` 工具；写入和进程执行必须逐次审批。
 - SQLite 权威事件写入与 SHA-256 审计链；三端先订阅再取 snapshot，按 30/60 FPS frame 合并 delta/invalidation，慢消费者通过 cursor resync，不延迟 AgentLoop。
 - ProviderConversationPlan 从当前 Run 之前的分支构建合法 user/assistant/tool 消息线；普通审计事件和 `tool.updated` 不进入 Provider 历史，当前 prompt 只追加一次。
-- TUI/Web/Desktop 共用 `/new`、`/settings`、`/projects`、`/sessions`、`/providers`、`/resources`、`/doctor`、`/help`、`/profile`、`/harness`、`/fork`、`/steer`、`/follow-up`、`/cancel`、`/context`、`/goals`、`/goal`、`/schedules` 注册表与可用性原因。
+- TUI/Web/Desktop 共用多 token 命令与补全：`/new` 创建 Session，`/new project <目录> [--name <名称>]` 创建/复用 Project，`/open projects` 与 `/open sessions` 打开选择器；`/providers`、`/resources`、`/doctor`、`/context`、`/goals`、`/schedules` 直接进入对应功能。通用 `/settings` 已移除。
 - 进程内 LRU + SQLite L2 缓存、single-flight 合并、策略/权限/项目修订失效和可选 provider prompt caching；疑似秘密不进入缓存。
-- Project 注册层保证名称/realpath 唯一、每项目独立 SQLite v7；同域 `session.send` 支持 idle 自动 Run 与 busy steering，并限制 8 hop/每 Run 4 次发送。
+- Project 注册层保证名称/realpath 唯一、每项目独立 SQLite v8；Workspace 切换时只保活已有 Run、审批或 follow-up，暂停后台 Scheduler，空闲后自动释放 writer。
+- Provider 页面支持精确指定 Profile 的“测试当前”和最多并发 2 的“一键测试全部”；测试发送真实的受限请求，不使用 routing fallback，不写 Session、Evidence 或缓存。
 - WebUI 只绑定 `127.0.0.1`，采用 HttpOnly/Origin/CSRF/SSE；Electron 开启 sandbox/contextIsolation、禁用 Node integration/任意导航，preload 仅暴露五个 allowlisted IPC 通道。
 - `alphion-icon.svg` 是唯一图标源；确定性生成 Web favicon/PNG 和 Windows 多尺寸 ICO，Web/Desktop 左上角、Electron 窗口、安装器、开始菜单与快捷方式使用同一品牌。
 
@@ -61,7 +62,7 @@ npm run desktop
 alphion.bat web
 ```
 
-启动不要求 Vault 密码；首次导入 API key 时自动创建当前设备用户专属的 device key。设备密钥丢失时 doctor 报 `device-key-unavailable`，不会把它误判为数据库损坏，也不会自动删除旧密文。reasoning 仅在 Provider 当前 Run 的工具续轮中短暂存在，不进入任何用户界面、SQLite 或重放。
+启动不要求密码或凭据解锁；首次为某 Project 导入 API key 时自动创建该 Project 的独立 key。Project key 丢失时只要求对应 Profile 重新输入，不会误判为数据库损坏，也不会自动删除旧密文。reasoning 仅在 Provider 当前 Run 的工具续轮中短暂存在，不进入任何用户界面、SQLite 或重放。
 
 ## 配置兼容服务
 
@@ -82,11 +83,11 @@ alphion.bat provider set --id hosted --preset custom-openai-compatible --base-ur
 常用命令：
 
 ```text
-provider set/list/activate
+provider set/list/activate/test/test-all
 policy shell allow/list/remove
 cache stats/clear
 doctor [--json]
-project inspect [--refresh] [--json]
+project create/open/inspect [--refresh] [--json]
 session create/list/show/shape/reshape/checkout/send/steer/follow-up/fork
 context list/show
 goal create/list/show/update/progress/confirm/archive/restore
@@ -104,7 +105,7 @@ tui [--session SESSION_ID]
 
 ```text
 src/          模型和界面无关的领域、应用、端口与协议核心
-adapters/     只读画像、OpenAI-compatible、DeepSeek、SQLite/vault、缓存、秘密和工具实现
+adapters/     只读画像、OpenAI-compatible、DeepSeek、SQLite/Project 凭据、缓存、秘密和工具实现
 cli/          命令行、Session/资源/shape 与一次性 run 适配器
 tui/          Ink 终端界面、运行投影和逐次审批适配器
 ui/           三端共享命令、事件队列与安全 Markdown AST
@@ -118,14 +119,14 @@ benchmarks/   通信、缓存和 SQLite 基线
 
 ## 公共接口
 
-根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 Agent、Project/Session、Goal/Schedule、Compaction、AgentShape、HarnessPlan、ResourceResolution、SystemPromptPlan 与 Provider/runtime 端口。稳定子路径包括 `alphion/runtime`、`alphion/providers`、`alphion/resources`、`alphion/webui`、`alphion/desktop` 及既有具体 adapter。Provider profile schema v2 继续支持环境变量或设备加密 SQLite 凭据引用；AgentSessionRecord schema v3 可携带 Fork provenance，SQLite user_version 现为 7。
+根入口保留稳定只读的 `ALPHION_BRAND`，并公开共享 Agent、Project/Session、Goal/Schedule、Compaction、AgentShape、HarnessPlan、ResourceResolution、SystemPromptPlan、ProviderTestService、ProjectCredentialStore 与 Workspace/runtime 端口。稳定子路径包括 `alphion/runtime`、`alphion/providers`、`alphion/resources`、`alphion/webui`、`alphion/desktop` 及既有具体 adapter。Provider profile schema v2 支持环境变量或 Project 加密凭据引用；AgentSessionRecord schema v3 可携带 Fork provenance，Snapshot/Frame 为 schema v2，SQLite user_version 现为 8。
 
 当当前分支接近模型 catalog 的 context window 时，会话按 85% 阈值并扣除输出、Tool schema 和安全余量，从原始分支重建压缩：保留最近两个交互周期及系统/目标/验收、权限/约束/revision、失败、Evidence 和未解决项，并可调用同一 Provider 生成禁用工具、`temperature: 0`、闭合 JSON schema 校验的结构化摘要；超时、非法输出或 Provider 失败会确定性回退。每次压缩形成 append-only `CompactionRecord`，但不产生 Session 消息或移动 leaf；模型 reasoning 仍不进入 SQLite、重放、Working Memory 或持久缓存。
 
 ## 安全和数据
 
 - HTTPS endpoint 默认允许；HTTP 只允许 localhost/loopback。
-- device vault 使用随机 32-byte 设备密钥、wrapped data key 与 AES-256-GCM；认证数据绑定 profile/secret/revision，凭据只在 Provider 调用时短暂解密并清零临时 Buffer。
+- 每个 Project 使用独立随机 32-byte key 和 AES-256-GCM；AAD 绑定 Project/profile/secret/revision，凭据只在导入或单次 Provider 调用时短暂解密并清零临时 Buffer。
 - `.git`、`.alphion`、工具生成物、依赖、构建目录和常见秘密文件不能被 Agent 文件工具读取或修改。
 - 路径同时检查词法范围、真实路径与符号链接，写入使用 revision 校验和原子替换。
 - 模型输出不是完成证据；工具观察生成 Evidence ID，最终答案可用 `[evidence:<id>]` 引用。

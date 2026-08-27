@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0] - 2026-08-27
+
+- Stabilized continuous conversations: accepted sends create waiting assistant projections immediately, parent Snapshot/Session refreshes no longer cancel stable Run controllers, and every preparation/model/stream/Tool path reaches a terminal state.
+- Rebuilt TUI, WebUI and Desktop chat around an independently scrollable message viewport, fixed bottom composer, right-aligned user and left-aligned Agent bubbles, bottom-aware auto-follow, unseen counts and Project/Session-scoped drafts.
+- Added quote-aware, longest-prefix multi-token slash completion; removed `/settings`, added direct Project/Session selectors and `/new project <path> [--name <name>]`, and kept every command out of Session history.
+- Replaced Device Vault and password/device-credential public contracts with per-Project AES-256-GCM credential envelopes whose random 32-byte keys live outside SQLite in the platform configuration directory.
+- Added exact-Profile Provider connectivity tests: current/all actions issue real bounded no-history/no-Tool requests, never route fallback, cap all-tests concurrency at two and return only sanitized transient diagnostics.
+- Added create-or-open Project navigation and a bounded Workspace controller that retains only busy background applications, pauses their Schedulers, restores active Session projections and closes writers after activity becomes idle.
+- Upgraded Surface Snapshot/Frame to schema v2 with Project identity, selected Session and bounded background Run summaries; upgraded SQLite from user_version 7 to 8 after a verified adjacent `.v7-backup`.
+
+This pre-1.0 milestone changes Provider authentication, surface and SQLite contracts. Password, Device Vault and device-credential APIs are removed; v1 Snapshot/Frame clients must upgrade. To roll back, stop every Alphion process, preserve the current v8 database and Project key directory for diagnosis, restore the verified adjacent `.v7-backup`, then run v0.8.0. v0.8.0 rejects schema v8 and cannot retain post-migration credential or Workspace writes. A missing Project key requires credential re-entry and is not database corruption.
+
 ## [0.8.0] - 2026-08-14
 
 - Replaced password-gated startup credentials with a device-bound vault: first credential import provisions a 32-byte per-user device key, Project SQLite stores authenticated envelopes, Provider calls receive short-lived plaintext, and legacy password ciphertext remains `legacy-disabled` until explicit reset.
