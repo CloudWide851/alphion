@@ -77,7 +77,7 @@ test("provider list keyboard navigation dispatches adapter intents", async () =>
   let selected = 0;
   let created = 0;
   const profile = {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     id: "deepseek",
     name: "DeepSeek",
     kind: "deepseek" as const,
@@ -85,7 +85,7 @@ test("provider list keyboard navigation dispatches adapter intents", async () =>
     model: "deepseek-chat",
     protocol: "chat-completions" as const,
     auth: { mode: "none" as const },
-    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false },
+    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false, vision: false },
     revision: 1,
     active: true,
   };

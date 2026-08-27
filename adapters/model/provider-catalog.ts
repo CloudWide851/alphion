@@ -26,6 +26,8 @@ const CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.freeze({
   "glm-4.5-air": 131_072,
 });
 
+const VISION_MODELS: ReadonlySet<string> = new Set<string>([]);
+
 export const LOCAL_PROVIDER_PRESETS: readonly ProviderPreset[] = Object.freeze(CATALOG.map(({ endpoint: _endpoint, ...preset }) => Object.freeze(preset)));
 
 function providerCatalogEntry(presetId: string): CatalogEntry {
@@ -52,7 +54,7 @@ export function describeProviderModel(profile: ProviderProfile): ModelDescriptor
     providerKind: profile.kind,
     model: profile.model,
     capabilities: profile.capabilities,
-    contextWindowTokens: cataloged ? CONTEXT_WINDOWS[profile.model] ?? 32_768 : 32_768,
+    contextWindowTokens: profile.contextWindowTokens ?? (cataloged ? CONTEXT_WINDOWS[profile.model] ?? 32_768 : 32_768),
   });
 }
 
@@ -67,7 +69,9 @@ export function validateProviderPreset(profile: ProviderProfile | ProviderProfil
 }
 
 function entry(id: string, label: string, kind: BuiltInProviderKind, region: "mainland" | "international", endpoint: string, models: readonly string[]): CatalogEntry {
-  return Object.freeze({ id, label, kind, region, requiresBaseUrl: false, endpoint, models: Object.freeze([...models]), protocol: "chat-completions" });
+  const contextWindows = Object.freeze(Object.fromEntries(models.map((model) => [model, CONTEXT_WINDOWS[model] ?? 32_768])));
+  const visionModels = Object.freeze(models.filter((model) => VISION_MODELS.has(model)));
+  return Object.freeze({ id, label, kind, region, requiresBaseUrl: false, endpoint, models: Object.freeze([...models]), contextWindows, visionModels, protocol: "chat-completions" });
 }
 
 function validateCustomEndpoint(value: string): string {

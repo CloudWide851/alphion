@@ -44,7 +44,7 @@ test("Provider test-all is bounded to two concurrent exact profiles", async () =
 
 function compatibleProfile(id: string, baseUrl: string): ProviderProfile {
   return Object.freeze({
-    schemaVersion: 2,
+    schemaVersion: 3,
     id,
     name: id,
     kind: "custom-openai-compatible",
@@ -52,7 +52,7 @@ function compatibleProfile(id: string, baseUrl: string): ProviderProfile {
     model: `model-${id}`,
     protocol: "chat-completions",
     auth: Object.freeze({ mode: "none" }),
-    capabilities: Object.freeze({ streaming: false, tools: false, promptCaching: false, reasoning: false }),
+    capabilities: Object.freeze({ streaming: false, tools: false, promptCaching: false, reasoning: false, vision: false }),
     revision: 1,
     active: id === "two",
   });

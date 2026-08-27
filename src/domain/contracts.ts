@@ -7,6 +7,7 @@ export interface ProviderCapabilities {
   readonly tools: boolean;
   readonly promptCaching: boolean;
   readonly reasoning: boolean;
+  readonly vision: boolean;
   /** Explicit operator acknowledgement for a model absent from a built-in catalog. */
   readonly unlistedModel?: boolean;
 }
@@ -18,13 +19,15 @@ export type ProviderAuth = Readonly<
 >;
 
 interface ProviderProfileBase {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 3;
   readonly id: string;
   readonly name: string;
   readonly model: string;
   readonly protocol: OpenAICompatibleProtocol;
   readonly auth: ProviderAuth;
   readonly capabilities: ProviderCapabilities;
+  /** Explicit operator override; catalog values remain the default when omitted. */
+  readonly contextWindowTokens?: number;
   readonly revision: number;
   readonly active: boolean;
 }
@@ -63,6 +66,16 @@ export interface ProviderUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cachedInputTokens: number;
+}
+
+export interface ProviderContextUsage {
+  readonly schemaVersion: 1;
+  readonly source: "estimated" | "actual";
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly occupiedTokens: number;
+  readonly contextWindowTokens: number;
 }
 
 export interface ProviderToolDefinition {
@@ -260,6 +273,8 @@ export interface ProviderPreset {
   readonly region: "mainland" | "international" | "custom";
   readonly requiresBaseUrl: boolean;
   readonly models: readonly string[];
+  readonly contextWindows?: Readonly<Record<string, number>>;
+  readonly visionModels?: readonly string[];
   readonly protocol: OpenAICompatibleProtocol;
 }
 

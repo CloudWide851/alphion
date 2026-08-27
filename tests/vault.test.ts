@@ -134,10 +134,10 @@ function openStore(path: string, projectKeyProvider: FileProjectKeyProvider): Sq
 
 function profile() {
   return {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     id: "deepseek", name: "DeepSeek", kind: "deepseek" as const, presetId: "deepseek",
     model: "deepseek-chat", protocol: "chat-completions" as const, auth: { mode: "none" as const },
-    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false }, active: true,
+    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false, vision: false }, active: true,
   };
 }
 

@@ -97,21 +97,27 @@ async function providerCommand(store: SqliteStore, command: string | undefined, 
     if (protocol !== "chat-completions" && protocol !== "responses") {
       throw new AlphionError("validation", "--protocol must be chat-completions or responses.", { stage: "cli" });
     }
+    const model = requiredFlag(parsed, "model");
+    const rawContextWindow = flagValue(parsed, "context-window");
+    const contextWindowTokens = rawContextWindow === undefined ? undefined : Number(rawContextWindow);
+    if (contextWindowTokens !== undefined && (!Number.isSafeInteger(contextWindowTokens) || contextWindowTokens < 4_096 || contextWindowTokens > 4_194_304)) throw new AlphionError("validation", "--context-window must be an integer between 4096 and 4194304.", { stage: "cli" });
     const common = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       id,
       name: flagValue(parsed, "name") ?? id,
       kind: kindValue,
-      model: requiredFlag(parsed, "model"),
+      model,
       protocol,
       auth: authEnvironment ? { mode: "bearer-env" as const, environmentVariable: authEnvironment } : { mode: "none" as const },
       capabilities: {
         streaming: booleanFlag(parsed, "streaming", true),
         tools: booleanFlag(parsed, "tools", true),
         promptCaching: booleanFlag(parsed, "prompt-caching", false),
-        reasoning: booleanFlag(parsed, "reasoning", kindValue === "deepseek" && requiredFlag(parsed, "model") === "deepseek-reasoner"),
+        reasoning: booleanFlag(parsed, "reasoning", kindValue === "deepseek" && model === "deepseek-reasoner"),
+        vision: booleanFlag(parsed, "vision", preset.visionModels?.includes(model) ?? false),
         ...(hasFlag(parsed, "allow-unlisted-model") ? { unlistedModel: true } : {}),
       },
+      ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
       active: hasFlag(parsed, "active"),
     } as const;
     const profile = await store.upsertProfile(kindValue === "custom-openai-compatible"
@@ -389,7 +395,7 @@ function safeEventMessage(payload: Readonly<Record<string, unknown>>): string {
 function printHelp(): void {
   process.stdout.write(`Alphion v0.9.0\n\n`);
   process.stdout.write(`Commands:\n`);
-  process.stdout.write(`  provider set --id ID --preset deepseek|deepseek-international|kimi|kimi-international|qwen|qwen-international|glm|glm-international|custom-openai-compatible --model MODEL [--allow-unlisted-model] [--base-url URL for custom only] [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
+  process.stdout.write(`  provider set --id ID --preset deepseek|deepseek-international|kimi|kimi-international|qwen|qwen-international|glm|glm-international|custom-openai-compatible --model MODEL [--context-window 4096..4194304] [--vision true|false] [--allow-unlisted-model] [--base-url URL for custom only] [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
   process.stdout.write(`  provider list\n  provider activate ID\n  provider test ID | provider test --all  # 真实请求，可能产生费用\n`);
   process.stdout.write(`  policy shell allow --executable ABSOLUTE_PATH [--arg-prefix VALUE ...]\n`);
   process.stdout.write(`  policy shell list\n  policy shell remove ID\n`);

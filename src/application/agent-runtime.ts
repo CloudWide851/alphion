@@ -6,6 +6,7 @@ import type {
   AgentToolCall,
   EvidenceRef,
   ProviderEvent,
+  ModelDescriptor,
   ProviderRequest,
   ToolResult,
   WorkingMemorySnapshot,
@@ -36,9 +37,11 @@ import {
   summarizeProviderEvents, validateRunRequest,
 } from "./agent-runtime-codecs.js";
 import type { TurnOutcome } from "./agent-runtime-codecs.js";
+import { actualProviderContextUsage, estimateProviderContextUsage, UNKNOWN_MODEL_CONTEXT_TOKENS } from "./provider-context-usage.js";
 
 export interface AgentLoopOptions {
   readonly provider: AgentProvider;
+  readonly model?: ModelDescriptor;
   readonly tools: ToolRegistry;
   readonly eventStore: EventStore;
   readonly approval: ApprovalPort;
@@ -70,6 +73,7 @@ interface ToolPipelineResult {
 /** Internal provider/tool loop. Public callers enter through Agent.execute(). */
 export class AgentLoop {
   readonly #provider: AgentProvider;
+  readonly #contextWindowTokens: number;
   readonly #tools: ToolRegistry;
   readonly #eventStore: EventStore;
   readonly #approval: ApprovalPort;
@@ -83,6 +87,7 @@ export class AgentLoop {
 
   constructor(options: AgentLoopOptions) {
     this.#provider = options.provider;
+    this.#contextWindowTokens = options.model?.contextWindowTokens ?? options.provider.profile.contextWindowTokens ?? UNKNOWN_MODEL_CONTEXT_TOKENS;
     this.#tools = options.tools;
     this.#eventStore = options.eventStore;
     this.#approval = options.approval;
@@ -278,6 +283,12 @@ export class AgentLoop {
   }
 
   async #runProviderTurn(request: ProviderRequest, context: RuntimeContext): Promise<TurnOutcome> {
+    await this.#emit(context, "provider.started", {
+      providerProfileId: this.#provider.profile.id,
+      protocol: this.#provider.profile.protocol,
+      model: this.#provider.profile.model,
+      contextUsage: estimateProviderContextUsage(request, this.#contextWindowTokens),
+    });
     const cacheSafe = !containsPotentialSecret(request);
     // Reasoning is in-run continuation state only and must never reach a durable cache.
     const cacheEnabled = context.request.cacheResponses !== false && cacheSafe && this.#cache !== undefined && !this.#provider.profile.capabilities.reasoning;
@@ -320,11 +331,6 @@ export class AgentLoop {
     }
 
     try {
-      await this.#emit(context, "provider.started", {
-        providerProfileId: this.#provider.profile.id,
-        protocol: this.#provider.profile.protocol,
-        model: this.#provider.profile.model,
-      });
       const timeoutSignal = AbortSignal.timeout(context.budgets.modelTimeoutMs);
       const events: ProviderEvent[] = [];
       let outputBytes = 0;
@@ -387,7 +393,7 @@ export class AgentLoop {
         // Reasoning remains only in the current Provider continuation state.
         return;
       case "usage":
-        await this.#emit(context, "model.usage", { usage: event.usage });
+        await this.#emit(context, "model.usage", { usage: event.usage, contextUsage: actualProviderContextUsage(event.usage, this.#contextWindowTokens) });
         return;
       case "degraded":
         await this.#emit(context, "provider.degraded", { reason: event.reason });

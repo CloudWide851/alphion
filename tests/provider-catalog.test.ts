@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { LOCAL_PROVIDER_PRESETS, resolveProviderEndpoint } from "../adapters/model/provider-catalog.js";
+import { describeProviderModel, LOCAL_PROVIDER_PRESETS, resolveProviderEndpoint } from "../adapters/model/provider-catalog.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
 import type { BuiltInProviderKind, ProviderProfileInput } from "../src/domain/contracts.js";
 
@@ -20,6 +20,8 @@ test("Provider catalog defaults to mainland and exposes international presets wi
     assert.equal(international?.region, "international");
   }
   assert.equal(JSON.stringify(LOCAL_PROVIDER_PRESETS).includes("https://"), false);
+  assert.equal(LOCAL_PROVIDER_PRESETS.find((preset) => preset.id === "deepseek")?.contextWindows?.["deepseek-chat"], 131_072);
+  assert.deepEqual(LOCAL_PROVIDER_PRESETS.find((preset) => preset.id === "deepseek")?.visionModels, []);
 });
 
 test("Provider catalog resolves official endpoints only inside the adapter boundary", () => {
@@ -43,6 +45,10 @@ test("Provider profiles reject mismatched presets and unsafe custom URLs", async
     assert.equal(saved.kind, "custom-openai-compatible");
     if (saved.kind !== "custom-openai-compatible") assert.fail("Expected custom Provider.");
     assert.equal(saved.baseUrl, "http://127.0.0.1:1234/v1");
+    const configured = await store.upsertProfile({ ...custom("http://127.0.0.1:1234/v1"), contextWindowTokens: 262_144, capabilities: { ...custom("http://127.0.0.1:1234/v1").capabilities, vision: true } });
+    assert.equal(describeProviderModel(configured).contextWindowTokens, 262_144);
+    assert.equal(configured.capabilities.vision, true);
+    await assert.rejects(store.upsertProfile({ ...custom("http://127.0.0.1:1234/v1"), contextWindowTokens: 4_095 }), /4096.*4194304/iu);
   } finally {
     store.close();
     await rm(directory, { recursive: true, force: true });
@@ -51,7 +57,7 @@ test("Provider profiles reject mismatched presets and unsafe custom URLs", async
 
 function builtIn(kind: BuiltInProviderKind, presetId: string): ProviderProfileInput {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: `${kind}-${presetId}`,
     name: `${kind}-${presetId}`,
     kind,
@@ -59,13 +65,13 @@ function builtIn(kind: BuiltInProviderKind, presetId: string): ProviderProfileIn
     model: kind === "deepseek" ? "deepseek-chat" : kind === "kimi" ? "moonshot-v1-8k" : kind === "qwen" ? "qwen-plus" : "glm-4.5",
     protocol: "chat-completions",
     auth: { mode: "none" },
-    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false },
+    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false, vision: false },
   };
 }
 
 function custom(baseUrl: string): ProviderProfileInput {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: "custom",
     name: "custom",
     kind: "custom-openai-compatible",
@@ -73,6 +79,6 @@ function custom(baseUrl: string): ProviderProfileInput {
     model: "custom-model",
     protocol: "chat-completions",
     auth: { mode: "none" },
-    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false },
+    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false, vision: false },
   };
 }

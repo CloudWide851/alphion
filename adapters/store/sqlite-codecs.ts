@@ -43,7 +43,7 @@ export function validateProviderProfile(
   input: ProviderProfileInput,
 ): { readonly baseUrl: string } {
   if (
-    input.schemaVersion !== 2 ||
+    input.schemaVersion !== 3 ||
     input.id.trim().length === 0 ||
     input.name.trim().length === 0 ||
     input.model.trim().length === 0 ||
@@ -51,7 +51,7 @@ export function validateProviderProfile(
     input.name.length > 256 ||
     input.model.length > 256
   ) {
-    throw new AlphionError("validation", "Provider id, name, model, and schema version 2 are required.", { stage: "config" });
+    throw new AlphionError("validation", "Provider id, name, model, and schema version 3 are required.", { stage: "config" });
   }
   if (containsPotentialSecret([input.id, input.name, input.model, ...(input.kind === "custom-openai-compatible" ? [input.baseUrl] : [])])) {
     throw new AlphionError("validation", "Provider profile fields must not contain credential material.", { stage: "config" });
@@ -70,9 +70,13 @@ export function validateProviderProfile(
     typeof input.capabilities.tools !== "boolean" ||
     typeof input.capabilities.promptCaching !== "boolean" ||
     typeof input.capabilities.reasoning !== "boolean" ||
+    typeof input.capabilities.vision !== "boolean" ||
     (input.capabilities.unlistedModel !== undefined && typeof input.capabilities.unlistedModel !== "boolean")
   ) {
     throw new AlphionError("validation", "Provider capabilities must be booleans.", { stage: "config" });
+  }
+  if (input.contextWindowTokens !== undefined && (!Number.isSafeInteger(input.contextWindowTokens) || input.contextWindowTokens < 4_096 || input.contextWindowTokens > 4_194_304)) {
+    throw new AlphionError("validation", "Provider context window override must be between 4096 and 4194304 tokens.", { stage: "config" });
   }
   if (input.auth.mode !== "none" && input.auth.mode !== "bearer-env" && input.auth.mode !== "encrypted-project") {
     throw new AlphionError("validation", "Provider authentication mode is unsupported.", { stage: "config" });
@@ -102,7 +106,10 @@ export function decodeProviderProfile(row: Readonly<Record<string, unknown>>): P
   const tools = readBoolean(capabilities, "tools");
   const promptCaching = readBoolean(capabilities, "promptCaching");
   const reasoning = readBoolean(capabilities, "reasoning");
+  const vision = capabilities.vision === undefined ? false : readBoolean(capabilities, "vision");
   const unlistedModel = capabilities.unlistedModel === undefined ? undefined : readBoolean(capabilities, "unlistedModel");
+  const contextWindowTokens = row.context_window_tokens === null || row.context_window_tokens === undefined ? undefined : readNumber(row, "context_window_tokens");
+  if (contextWindowTokens !== undefined && (contextWindowTokens < 4_096 || contextWindowTokens > 4_194_304)) throw new AlphionError("integrity-failed", "Stored Provider context window is invalid.", { stage: "database" });
   const auth = authMode === "none"
     ? ({ mode: "none" } as const)
     : authMode === "bearer-env"
@@ -113,13 +120,14 @@ export function decodeProviderProfile(row: Readonly<Record<string, unknown>>): P
   if (!auth) throw new AlphionError("integrity-failed", `Invalid provider auth mode: ${authMode}`, { stage: "database" });
   const storedEndpoint = readString(row, "base_url");
   const base = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: readString(row, "id"),
     name: readString(row, "name"),
     model: readString(row, "model"),
     protocol,
     auth,
-    capabilities: { streaming, tools, promptCaching, reasoning, ...(unlistedModel === true ? { unlistedModel: true } : {}) },
+    capabilities: { streaming, tools, promptCaching, reasoning, vision, ...(unlistedModel === true ? { unlistedModel: true } : {}) },
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
     revision: readNumber(row, "revision"),
     active: readNumber(row, "active") === 1,
   } as const;

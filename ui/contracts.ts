@@ -29,6 +29,7 @@ export type UiCommand =
   | Readonly<{ readonly kind: "schedule.pause" | "schedule.resume" | "schedule.run-now"; readonly scheduleId: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
   | Readonly<{ readonly kind: "schedule.executions"; readonly scheduleId: string; readonly limit?: number }>
   | Readonly<{ readonly kind: "provider.list" }>
+  | Readonly<{ readonly kind: "provider.configure"; readonly profileId: string; readonly contextWindowTokens?: number; readonly vision: boolean }>
   | Readonly<{ readonly kind: "provider.test"; readonly profileId: string }>
   | Readonly<{ readonly kind: "provider.test-all" }>
   | Readonly<{ readonly kind: "resource.list" }>
@@ -166,6 +167,7 @@ function decodeCommand(value: unknown): UiCommand {
     case "project.list": case "session.list": case "provider.list": case "provider.test-all": case "resource.list": case "doctor": case "schedule.list":
       exact(input, ["kind"]); return Object.freeze({ kind: input.kind });
     case "provider.test": exact(input, ["kind", "profileId"]); return Object.freeze({ kind: input.kind, profileId: requiredText(input.profileId) });
+    case "provider.configure": { exact(input, ["kind", "profileId", "contextWindowTokens", "vision"]); const contextWindowTokens = optionalInteger(input.contextWindowTokens, 4_096, 4_194_304); const vision = optionalBoolean(input.vision); if (vision === undefined) throw new Error("Provider vision capability is required."); return Object.freeze({ kind: input.kind, profileId: requiredText(input.profileId), ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }), vision }); }
     case "project.inspect": { exact(input, ["kind", "refresh"]); const refresh = optionalBoolean(input.refresh); return Object.freeze({ kind: input.kind, ...(refresh === undefined ? {} : { refresh }) }); }
     case "project.create": { exact(input, ["kind", "root", "name"]); const name = input.name === undefined ? undefined : requiredText(input.name); return Object.freeze({ kind: input.kind, root: requiredText(input.root), ...(name ? { name } : {}) }); }
     case "surface.snapshot": { exact(input, ["kind", "selectedSessionId"]); const selectedSessionId = input.selectedSessionId === undefined ? undefined : requiredText(input.selectedSessionId); return Object.freeze({ kind: input.kind, ...(selectedSessionId ? { selectedSessionId } : {}) }); }

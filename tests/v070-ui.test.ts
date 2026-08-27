@@ -90,8 +90,9 @@ test("ConversationRunState projects waiting streaming tool usage and terminal st
   assert.deepEqual([streaming.status, streaming.firstTokenReceived, streaming.text], ["streaming", true, "hello"]);
   const tool = reduceConversationRun(streaming, { kind: "agent-event", event: agentEvent("tool.requested", { toolName: "read" }) });
   assert.deepEqual([tool.status, tool.statusText], ["tool", "read 执行中"]);
-  const usage = reduceConversationRun(tool, { kind: "agent-event", event: agentEvent("model.usage", { usage: { inputTokens: 7, outputTokens: 3, cachedInputTokens: 2 } }) });
+  const usage = reduceConversationRun(tool, { kind: "agent-event", event: agentEvent("model.usage", { usage: { inputTokens: 7, outputTokens: 3, cachedInputTokens: 2 }, contextUsage: { schemaVersion: 1, source: "actual", inputTokens: 7, outputTokens: 3, cachedInputTokens: 2, occupiedTokens: 10, contextWindowTokens: 4096 } }) });
   assert.deepEqual(usage.usage, { inputTokens: 7, outputTokens: 3, cachedInputTokens: 2 });
+  assert.deepEqual([usage.contextUsage?.occupiedTokens, usage.contextUsage?.source], [10, "actual"]);
   const completed = reduceConversationRun(usage, { kind: "finish", status: "completed", finalText: "fallback" });
   assert.deepEqual([completed.status, completed.text], ["completed", "hello"]);
 });

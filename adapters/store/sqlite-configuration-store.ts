@@ -38,8 +38,8 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
       this.database
         .prepare(
           `INSERT INTO provider_profiles
-           (id, name, provider_kind, base_url, model, protocol, auth_mode, auth_environment_variable, auth_secret_id, capabilities_json, revision, active, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (id, name, provider_kind, base_url, model, protocol, auth_mode, auth_environment_variable, auth_secret_id, capabilities_json, context_window_tokens, revision, active, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
              provider_kind = excluded.provider_kind,
@@ -50,6 +50,7 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
              auth_environment_variable = excluded.auth_environment_variable,
              auth_secret_id = excluded.auth_secret_id,
              capabilities_json = excluded.capabilities_json,
+             context_window_tokens = excluded.context_window_tokens,
              revision = excluded.revision,
              active = excluded.active,
              updated_at = excluded.updated_at`,
@@ -65,6 +66,7 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
           input.auth.mode === "bearer-env" ? input.auth.environmentVariable : null,
           input.auth.mode === "encrypted-project" ? input.auth.secretId : null,
           JSON.stringify(input.capabilities),
+          input.contextWindowTokens ?? null,
           revision,
           active ? 1 : 0,
           now,

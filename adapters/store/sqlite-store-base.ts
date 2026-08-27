@@ -11,6 +11,7 @@ import { SQLITE_SCHEMA_VERSION } from "./sqlite-constants.js";
 import { createSessionForkSchemaV6 } from "./sqlite-fork-schema.js";
 import { createRuntimeSchemaV7 } from "./sqlite-v7-schema.js";
 import { createProjectCredentialSchemaV8 } from "./sqlite-v8-schema.js";
+import { createMultimodalSchemaV9 } from "./sqlite-v9-schema.js";
 import type { ProjectKeyProvider } from "../../src/ports/index.js";
 
 const OPEN_DATABASES = new Set<string>();
@@ -128,37 +129,43 @@ export abstract class SqliteStoreBase {
         createSessionForkSchemaV6(this.database);
         createRuntimeSchemaV7(this.database);
         createProjectCredentialSchemaV8(this.database);
+        createMultimodalSchemaV9(this.database);
       });
       return;
     }
     if (current === 2) {
       this.backupV2();
-      this.transaction(() => { this.createSessionSchemaV3(); this.createShapeSchemaV4(false); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); });
+      this.transaction(() => { this.createSessionSchemaV3(); this.createShapeSchemaV4(false); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); createMultimodalSchemaV9(this.database); });
       return;
     }
     if (current === 3) {
       this.backupV3();
-      this.transaction(() => { this.createShapeSchemaV4(true); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); });
+      this.transaction(() => { this.createShapeSchemaV4(true); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); createMultimodalSchemaV9(this.database); });
       return;
     }
     if (current === 4) {
       this.backupSchema(4, `${this.databasePath}.v4-backup`);
-      this.transaction(() => { this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); });
+      this.transaction(() => { this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); createMultimodalSchemaV9(this.database); });
       return;
     }
     if (current === 5) {
       this.backupSchema(5, `${this.databasePath}.v5-backup`);
-      this.transaction(() => { createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); });
+      this.transaction(() => { createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); createMultimodalSchemaV9(this.database); });
       return;
     }
     if (current === 6) {
       this.backupSchema(6, `${this.databasePath}.v6-backup`);
-      this.transaction(() => { createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); });
+      this.transaction(() => { createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); createMultimodalSchemaV9(this.database); });
       return;
     }
     if (current === 7) {
       this.backupSchema(7, `${this.databasePath}.v7-backup`);
-      this.transaction(() => createProjectCredentialSchemaV8(this.database));
+      this.transaction(() => { createProjectCredentialSchemaV8(this.database); createMultimodalSchemaV9(this.database); });
+      return;
+    }
+    if (current === 8) {
+      this.backupSchema(8, `${this.databasePath}.v8-backup`);
+      this.transaction(() => createMultimodalSchemaV9(this.database));
       return;
     }
     if (current !== 1) {
@@ -207,6 +214,7 @@ export abstract class SqliteStoreBase {
       createSessionForkSchemaV6(this.database);
       createRuntimeSchemaV7(this.database);
       createProjectCredentialSchemaV8(this.database);
+      createMultimodalSchemaV9(this.database);
     });
   }
 

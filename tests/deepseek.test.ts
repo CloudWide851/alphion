@@ -138,7 +138,7 @@ test("DeepSeek resolves credentials for each request and safely classifies rejec
 
 function profile(reasoning: boolean): ProviderProfile {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: reasoning ? "deepseek-reasoner" : "deepseek-chat",
     name: reasoning ? "DeepSeek Reasoner" : "DeepSeek Chat",
     kind: "deepseek",
@@ -146,7 +146,7 @@ function profile(reasoning: boolean): ProviderProfile {
     model: reasoning ? "deepseek-reasoner" : "deepseek-chat",
     protocol: "chat-completions",
     auth: { mode: "bearer-env", environmentVariable: "DEEPSEEK_API_KEY" },
-    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning },
+    capabilities: { streaming: true, tools: true, promptCaching: false, reasoning, vision: false },
     revision: 1,
     active: true,
   };

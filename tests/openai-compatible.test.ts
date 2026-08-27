@@ -153,7 +153,7 @@ test("caller cancellation aborts an in-flight compatible request", async () => {
 
 function profile(baseUrl: string, protocol: OpenAICompatibleProtocol): ProviderProfile {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: `fake-${protocol}`,
     name: `fake-${protocol}`,
     kind: "custom-openai-compatible",
@@ -161,7 +161,7 @@ function profile(baseUrl: string, protocol: OpenAICompatibleProtocol): ProviderP
     model: "fake-model",
     protocol,
     auth: { mode: "none" },
-    capabilities: { streaming: true, tools: true, promptCaching: true, reasoning: false },
+    capabilities: { streaming: true, tools: true, promptCaching: true, reasoning: false, vision: false },
     revision: 1,
     active: true,
   };

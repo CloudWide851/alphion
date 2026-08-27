@@ -14,6 +14,7 @@ import { AutomationPanel } from "./automation-panel.js";
 import type { SurfaceClient } from "./surface-client.js";
 import { useChatScroll } from "./chat-scroll.js";
 import { ConversationStatus, ConversationUsage, SpeakerLabel } from "./conversation-chrome.js";
+import { ProviderSettings, type ProviderSettingsItem } from "./provider-settings.js";
 import "./style.css";
 import "./enhancements.css";
 
@@ -205,15 +206,14 @@ function Info({ text }: Readonly<{ text: string }>): React.JSX.Element { return 
 function SettingsPanel({ client, sessionId, surface, sessions, projectPickerRequest, onProjectActivated }: Readonly<{ client: SurfaceClient; sessionId?: string; surface: Pick<UiSurfaceSnapshot, "compaction" | "goals" | "schedules">; sessions: readonly SessionItem[]; projectPickerRequest: number; onProjectActivated: () => void }>): React.JSX.Element {
   const [diagnostic, setDiagnostic] = useState("选择一项查看");
   const [projects, setProjects] = useState<readonly { id: string; name: string }[]>([]);
-  const [providers, setProviders] = useState<readonly { id: string; name: string; model: string }[]>([]);
+  const [providers, setProviders] = useState<readonly ProviderSettingsItem[]>([]);
   const loadProjects = () => void client.execute({ kind: "project.list" }).then((result) => { const items = result.result as readonly { id: string; name: string }[]; setProjects(items); setDiagnostic(items.length ? "选择 Project 进行切换" : "尚未注册 Project"); });
-  const loadProviders = () => void client.execute({ kind: "provider.list" }).then((result) => { const items = result.result as readonly { id: string; name: string; model: string }[]; setProviders(items); setDiagnostic(items.length ? "Provider 实测会发送真实请求并可能产生费用" : "尚未配置 Provider"); });
-  const testProvider = (profileId: string) => void client.execute({ kind: "provider.test", profileId }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)));
+  const loadProviders = () => void client.execute({ kind: "provider.list" }).then((result) => { const items = result.result as readonly ProviderSettingsItem[]; setProviders(items); setDiagnostic(items.length ? "Provider 实测会发送真实请求并可能产生费用" : "尚未配置 Provider"); });
   useEffect(() => { if (projectPickerRequest > 0) loadProjects(); }, [projectPickerRequest]);
   return <section className="settings-panel">
     <div className="settings-actions"><button onClick={loadProjects}>Projects</button><button onClick={loadProviders}>Provider</button><button onClick={() => void client.execute({ kind: "resource.list" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>资源</button><button onClick={() => void client.execute({ kind: "doctor" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>doctor</button></div>
     {projects.length ? <div className="project-list">{projects.map((project) => <button key={project.id} onClick={() => void client.execute({ kind: "project.activate", projectId: project.id }).then(() => { setProjects([]); setDiagnostic(`已切换至 ${project.name}`); onProjectActivated(); })}>{project.name}</button>)}</div> : null}
-    {providers.length ? <div className="project-list">{providers.map((profile) => <button key={profile.id} onClick={() => testProvider(profile.id)}>测试 {profile.name}</button>)}<button onClick={() => void client.execute({ kind: "provider.test-all" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>一键测试全部</button></div> : null}
+    {providers.length ? <><ProviderSettings client={client} profiles={providers} onDiagnostic={setDiagnostic} /><button onClick={() => void client.execute({ kind: "provider.test-all" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>一键测试全部</button></> : null}
     <pre>{diagnostic}</pre><AutomationPanel client={client} {...(sessionId ? { sessionId } : {})} {...(surface.compaction ? { compaction: surface.compaction } : {})} goals={surface.goals} schedules={surface.schedules} sessions={sessions} reload={onProjectActivated} /><CredentialForm client={client} /><Info text="API Key 通过 Project 独立密钥保护并经一次性表单提交；Provider 实测会发送真实请求并可能产生费用。输入不会写入浏览器存储。" />
   </section>;
 }

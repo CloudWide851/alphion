@@ -91,6 +91,7 @@ export type {
   OpenAICompatibleProtocol,
   ProviderAuth,
   ProviderCapabilities,
+  ProviderContextUsage,
   ProviderEvent,
   ProviderKind,
   ProviderProfile,

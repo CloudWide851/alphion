@@ -16,8 +16,10 @@ export function ConversationStatus(props: Readonly<{ status: string; run?: Conve
 
 export function ConversationUsage(props: Readonly<{ run?: ConversationRunState }>): React.JSX.Element | null {
   const usage = props.run?.usage;
-  if (!usage || (!usage.inputTokens && !usage.outputTokens)) return null;
-  return <div className="conversation-usage">tokens {compact(usage.inputTokens)}↓ / {compact(usage.outputTokens)}↑{usage.cachedInputTokens ? ` · cache ${compact(usage.cachedInputTokens)}` : ""}</div>;
+  const context = props.run?.contextUsage;
+  if ((!usage || (!usage.inputTokens && !usage.outputTokens)) && !context) return null;
+  const ratio = context ? Math.min(100, Math.round(context.occupiedTokens / context.contextWindowTokens * 100)) : undefined;
+  return <div className="conversation-usage">{usage && (usage.inputTokens || usage.outputTokens) ? `tokens ${compact(usage.inputTokens)}↓ / ${compact(usage.outputTokens)}↑` : ""}{context ? `${usage && (usage.inputTokens || usage.outputTokens) ? " · " : ""}上下文 ${context.source === "estimated" ? "≈" : ""}${compact(context.occupiedTokens)} / ${compact(context.contextWindowTokens)} · ${ratio}%` : ""}</div>;
 }
 
 function compact(value: number): string {

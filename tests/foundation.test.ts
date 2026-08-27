@@ -15,9 +15,8 @@ import { isAgentEvent, type AgentStreamEvent } from "../src/protocol/events.js";
 import { MemoryLruCache } from "../adapters/cache/memory-cache.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
 import { EditTool, GrepTool, ReadTool, ShellTool, WriteTool } from "../adapters/tools/index.js";
-
 const PROFILE: ProviderProfile = Object.freeze({
-  schemaVersion: 2,
+  schemaVersion: 3,
   id: "fake",
   name: "fake",
   kind: "custom-openai-compatible",
@@ -25,19 +24,17 @@ const PROFILE: ProviderProfile = Object.freeze({
   model: "fake-model",
   protocol: "chat-completions",
   auth: { mode: "none" as const },
-  capabilities: { streaming: true, tools: true, promptCaching: true, reasoning: false },
+  capabilities: { streaming: true, tools: true, promptCaching: true, reasoning: false, vision: false },
   revision: 1,
   active: true,
 });
-
 const TEST_SYSTEM_PROMPT: SystemPromptPlan = Object.freeze({ schemaVersion: 1, sections: Object.freeze([]), omissions: Object.freeze([]), budgetTokens: 256, estimatedTokens: 1, rendered: "Test system instructions.", digest: sha256("Test system instructions.") });
-
 test("SQLite profiles, cache, hash-chain events, and shell rules round-trip", async () => {
   await withTemporaryDirectory(async (directory) => {
     const path = join(directory, "state.sqlite3");
     const store = new SqliteStore({ path });
     const created = await store.upsertProfile({
-      schemaVersion: 2,
+      schemaVersion: 3,
       id: "local",
       name: "Local",
       kind: "custom-openai-compatible",
@@ -45,13 +42,12 @@ test("SQLite profiles, cache, hash-chain events, and shell rules round-trip", as
       model: "local-model",
       protocol: "chat-completions",
       auth: { mode: "bearer-env", environmentVariable: "LOCAL_MODEL_KEY" },
-      capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false },
+      capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false, vision: false },
       active: true,
     });
     assert.equal(created.baseUrl, "http://127.0.0.1:11434/v1");
     assert.equal((await store.getActiveProfile())?.id, "local");
     assert.equal((await store.listProfiles()).length, 1);
-
     const now = Date.now();
     await store.set({
       namespace: "test",
@@ -63,7 +59,6 @@ test("SQLite profiles, cache, hash-chain events, and shell rules round-trip", as
     });
     assert.equal((await store.get("test", "key"))?.value, "value");
     assert.equal((await store.stats()).entries, 1);
-
     const runBase = { runId: "run_test", sessionId: "session_test", correlationId: "correlation_test" };
     await store.append({ ...runBase, kind: "run.started", payload: { promptDigest: "digest" } });
     await store.append({ ...runBase, kind: "run.completed", payload: { ok: true } });
@@ -85,7 +80,6 @@ test("SQLite profiles, cache, hash-chain events, and shell rules round-trip", as
     reopened.close();
   });
 });
-
 test("SQLite rejects an unknown future schema", async () => {
   await withTemporaryDirectory(async (directory) => {
     const path = join(directory, "future.sqlite3");
@@ -95,7 +89,6 @@ test("SQLite rejects an unknown future schema", async () => {
     assert.throws(() => new SqliteStore({ path }), /newer than supported/);
   });
 });
-
 test("SQLite rejects duplicate in-process writers and corrupt state", async () => {
   await withTemporaryDirectory(async (directory) => {
     const path = join(directory, "writer.sqlite3");
@@ -104,13 +97,11 @@ test("SQLite rejects duplicate in-process writers and corrupt state", async () =
     first.close();
     const reopened = new SqliteStore({ path });
     reopened.close();
-
     const corruptPath = join(directory, "corrupt.sqlite3");
     await writeFile(corruptPath, "this is not sqlite", "utf8");
     assert.throws(() => new SqliteStore({ path: corruptPath }), /SQLite state|integrity/i);
   });
 });
-
 test("memory cache evicts, expires, and single-flight shares one result", async () => {
   const cache = new MemoryLruCache({ maxEntries: 1, maxBytes: 1024 });
   const now = Date.now();
@@ -518,7 +509,7 @@ class WriteThenStopProvider implements AgentProvider {
 
 class ReasoningThenAnswerProvider implements AgentProvider {
   readonly profile: ProviderProfile = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: PROFILE.id,
     name: PROFILE.name,
     kind: "deepseek",

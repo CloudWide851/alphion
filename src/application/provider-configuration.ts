@@ -22,6 +22,13 @@ export class ProviderConfigurationManager implements ProviderConfigurationServic
     return this.#profiles.activateProfile(idOrName);
   }
 
+  async updateModelSettings(profileId: string, settings: Readonly<{ contextWindowTokens?: number; vision: boolean }>): Promise<ProviderProfile> {
+    const profile = await this.#profiles.getProfile(profileId);
+    if (!profile) throw new Error(`Unknown Provider profile: ${profileId}`);
+    const { revision: _revision, contextWindowTokens: _contextWindowTokens, ...input } = profile;
+    return this.#profiles.upsertProfile({ ...input, ...(settings.contextWindowTokens === undefined ? {} : { contextWindowTokens: settings.contextWindowTokens }), capabilities: { ...profile.capabilities, vision: settings.vision } });
+  }
+
   credentialStatus(): Promise<ProjectCredentialStatus> { return this.#credentials.credentialStatus(); }
 
   importCredential(profileId: string, secret: string): Promise<ProviderProfile> {

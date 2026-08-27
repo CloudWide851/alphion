@@ -42,9 +42,9 @@ export function reduceWorkingMemory(
     case "model.usage": {
       phase = "model";
       const usage = recordValue(event.payload.usage);
-      inputTokens = safeNumber(usage?.inputTokens, inputTokens);
-      outputTokens = safeNumber(usage?.outputTokens, outputTokens);
-      cachedInputTokens = safeNumber(usage?.cachedInputTokens, cachedInputTokens);
+      inputTokens += safeNumber(usage?.inputTokens, 0);
+      outputTokens += safeNumber(usage?.outputTokens, 0);
+      cachedInputTokens += safeNumber(usage?.cachedInputTokens, 0);
       break;
     }
     case "tool.requested":

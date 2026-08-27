@@ -114,7 +114,7 @@ test("compaction persistence is append-only and snapshot projection hides summar
 });
 
 function model(contextWindowTokens: number): ModelDescriptor {
-  return { id: `model_${contextWindowTokens}`, providerKind: "deepseek", model: "deepseek-chat", capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false }, contextWindowTokens };
+  return { id: `model_${contextWindowTokens}`, providerKind: "deepseek", model: "deepseek-chat", capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false, vision: false }, contextWindowTokens };
 }
 
 function cycles(sessionId: string, count: number, size: number): SessionEntry[] {
@@ -141,7 +141,7 @@ function observation(id: string, isError: boolean, evidenceId?: string): AgentMe
 }
 
 function providerProfile(): ProviderProfile {
-  return { schemaVersion: 2, id: "summary", name: "Summary", kind: "deepseek", presetId: "deepseek", model: "deepseek-chat", protocol: "chat-completions", auth: { mode: "none" }, capabilities: { streaming: true, tools: false, promptCaching: false, reasoning: false }, revision: 1, active: true };
+  return { schemaVersion: 3, id: "summary", name: "Summary", kind: "deepseek", presetId: "deepseek", model: "deepseek-chat", protocol: "chat-completions", auth: { mode: "none" }, capabilities: { streaming: true, tools: false, promptCaching: false, reasoning: false, vision: false }, revision: 1, active: true };
 }
 
 function summaryProvider(requests: unknown[]): AgentProvider {

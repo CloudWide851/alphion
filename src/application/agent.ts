@@ -14,8 +14,10 @@ export class Agent implements AgentContract {
   async execute(request: AgentExecutionRequest, approval: ApprovalPort, hooks?: AgentExecutionHooks): Promise<AgentRunHandle> {
     const tools = request.shape ? this.options.tools.select(request.shape.toolIds) : this.options.tools;
     const provider = await this.options.models.resolveModel({ sessionId: request.sessionId ?? "unbound", ...(request.providerId ? { providerId: request.providerId } : {}), requiredCapabilities: request.shape?.requiredProviderCapabilities ?? (tools.definitions().length > 0 ? ["tools"] : []) });
+    const model = await this.options.models.describeModel?.(provider);
     const runtime = new AgentLoop({
       provider,
+      ...(model ? { model } : {}),
       tools,
       eventStore: this.options.eventStore,
       approval,

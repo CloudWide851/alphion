@@ -244,6 +244,7 @@ export interface ProviderConfigurationService {
   listProfiles(): Promise<readonly ProviderProfile[]>;
   upsertProfile(profile: ProviderProfileInput): Promise<ProviderProfile>;
   activateProfile(idOrName: string): Promise<ProviderProfile>;
+  updateModelSettings(profileId: string, settings: Readonly<{ contextWindowTokens?: number; vision: boolean }>): Promise<ProviderProfile>;
   credentialStatus(): Promise<ProjectCredentialStatus>;
   importCredential(profileId: string, secret: string): Promise<ProviderProfile>;
   removeCredential(profileId: string): Promise<ProviderProfile>;
