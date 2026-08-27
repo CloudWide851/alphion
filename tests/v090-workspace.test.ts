@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceController } from "../adapters/project/active-project-controller.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
+import { canonicalJson, sha256 } from "../src/application/canonical.js";
 import type { AgentApplication, ProjectManager } from "../src/ports/index.js";
-import type { AgentSessionRecord, ProjectRecord } from "../src/domain/contracts.js";
+import type { AgentSessionRecord, AgentShape, ProjectRecord } from "../src/domain/contracts.js";
 
 test("Workspace keeps a busy Project alive, pauses its Scheduler, and evicts it when idle", async () => {
   const first = project("project_first", "First");
@@ -75,7 +76,8 @@ test("SQLite activity probe includes Run leases and durable follow-ups", async (
   try {
     const created = await store.createSession({ title: "Activity", idempotencyKey: "workspace_activity_create" });
     assert.equal(await store.hasActiveSessionWork(), false);
-    const leased = await store.acquireRunLease(created.id, "run-activity", created.revision);
+    const shaped = await store.reshapeSession(created.id, testShape(created.id), { expectedRevision: created.revision, idempotencyKey: "workspace_activity_shape" });
+    await store.acquireRunLease(created.id, "run-activity", shaped.revision);
     assert.equal(await store.hasActiveSessionWork(), true);
     const idle = await store.releaseRunLease(created.id, "run-activity");
     const queued = await store.enqueuePending(created.id, "follow-up", { schemaVersion: 1, kind: "user", id: "message-activity", createdAt: new Date(0).toISOString(), content: "next" }, { expectedRevision: idle.revision, idempotencyKey: "workspace_activity_follow" });
@@ -96,5 +98,6 @@ class FakeApplication {
 
 function project(id: string, name: string): ProjectRecord { return Object.freeze({ schemaVersion: 1, id, name, root: `C:\\${name}`, statePath: `C:\\${name}\\.alphion\\alphion.sqlite3`, domainId: `domain_${id}`, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }); }
 function session(projectId: string): AgentSessionRecord { return Object.freeze({ schemaVersion: 3, id: `session_${projectId}`, domainId: `domain_${projectId}`, projectId, title: "Background", revision: 2, status: "running", activeRunId: `run_${projectId}`, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", auditOnly: false, shapeStatus: "shaped", shapeRevision: 1, shapeDigest: "a".repeat(64) }); }
+function testShape(sessionId: string): AgentShape { const systemPromptPlan = { schemaVersion: 1 as const, sections: [], omissions: [], budgetTokens: 2048, estimatedTokens: 1, rendered: "test", digest: "prompt" }; const harnessPlan = { schemaVersion: 1 as const, task: "implement" as const, taskLabels: ["implement" as const], risk: "low" as const, capabilities: [], reasons: [], permissions: [], budgets: {}, evaluator: "test", omissions: [], digest: "plan" }; const base = { schemaVersion: 1 as const, sessionId, revision: 1, goal: "activity", identity: { id: "test", name: "test", description: "test" }, systemPromptPlan, resources: [], resourceIds: [], resourceDigest: "resources", toolIds: [], capabilities: [], policies: [], behavior: { compaction: "hybrid" as const, steering: true, followUps: true }, requiredProviderCapabilities: [], harnessPlan, omissions: [], diagnostics: [] }; return Object.freeze({ ...base, digest: sha256(canonicalJson(base)) }); }
 function projectManager(...projects: readonly ProjectRecord[]): ProjectManager { let current = projects[0]; return { register: () => Promise.reject(new Error("unused")), create: () => Promise.reject(new Error("unused")), open: () => Promise.reject(new Error("unused")), list: () => Promise.resolve(projects), get: (id) => Promise.resolve(projects.find((item) => item.id === id)), activate: (id) => { const selected = projects.find((item) => item.id === id); if (!selected) return Promise.reject(new Error("missing")); current = selected; return Promise.resolve(selected); }, remove: () => Promise.resolve(false), current: () => Promise.resolve(current) }; }
 async function waitFor(predicate: () => boolean): Promise<void> { const deadline = Date.now() + 2_000; while (!predicate()) { if (Date.now() > deadline) throw new Error("Timed out waiting for Workspace eviction."); await new Promise((resolveValue) => setTimeout(resolveValue, 25)); } }

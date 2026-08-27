@@ -32,8 +32,8 @@ function App(): React.JSX.Element {
   const [activeRunId, setActiveRunId] = useState<string>();
   const [surface, setSurface] = useState<Pick<UiSurfaceSnapshot, "project" | "compaction" | "goals" | "schedules" | "backgroundRuns">>({ goals: [], schedules: [], backgroundRuns: [] });
   const cursor = useRef(0);
-  const selectedProjectId = useRef<string>();
-  const activeRef = useRef<SessionItem>();
+  const selectedProjectId = useRef<string | undefined>(undefined);
+  const activeRef = useRef<SessionItem | undefined>(undefined);
   const draftRef = useRef("");
   const drafts = useRef(new Map<string, string>());
   const scroll = useChatScroll(messages.length, messages.at(-1)?.content.length ?? 0, active?.id ?? "new");

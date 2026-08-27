@@ -30,7 +30,7 @@ export function RunView(props: Readonly<{
   const handledCommand = useRef(0);
   const started = useRef(false);
   const callbacks = useRef({ onSession: props.onSession, onDone: props.onDone, onError: props.onError });
-  const request = useRef({ application: props.application, prompt: props.prompt, providerId: props.providerId, session: props.session });
+  const request = useRef({ application: props.application, prompt: props.prompt, providerId: props.providerId, session: props.session, approval: props.approval });
   callbacks.current = { onSession: props.onSession, onDone: props.onDone, onError: props.onError };
 
   useEffect(() => props.approval.subscribe(setPendingApproval), [props.approval]);
@@ -51,7 +51,7 @@ export function RunView(props: Readonly<{
     void sessionPromise.then(async (session) => {
       activeSession.current = session; callbacks.current.onSession?.(session);
       const record = await session.get();
-      return session.send(start.prompt, { expectedRevision: record.revision, idempotencyKey: `tui:send:${Date.now()}` }, props.approval);
+      return session.send(start.prompt, { expectedRevision: record.revision, idempotencyKey: `tui:send:${Date.now()}` }, start.approval);
     }).then(async (run) => {
       handle.current = run; dispatch({ kind: "start", runId: run.runId, sessionId: run.sessionId });
       for await (const event of run.events) {
@@ -62,7 +62,7 @@ export function RunView(props: Readonly<{
       if (active) { dispatch({ kind: "finish", status: result.status, finalText: result.finalText }); callbacks.current.onDone(result.finalText); }
     }).catch((cause: unknown) => { const message = safeError(cause); if (active) { dispatch({ kind: "error", message }); callbacks.current.onError?.(message); } });
     return () => { active = false; if (timer) clearTimeout(timer); handle.current?.cancel("TUI conversation closed."); };
-  }, [props.approval]);
+  }, []);
   useEffect(() => {
     const command = props.command;
     if (!command || handledCommand.current === command.id) return;

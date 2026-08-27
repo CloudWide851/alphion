@@ -150,7 +150,7 @@ export class LocalUiCommandClient implements UiCommandClient {
     this.#events.push(event);
     if (this.#events.length > 1_000) this.#events.splice(0, this.#events.length - 1_000);
     this.#pendingFrame.push(event);
-    if (!this.#frameTimer) { this.#frameTimer = setTimeout(() => this.#flushFrame(), 16); this.#frameTimer.unref(); }
+    if (!this.#frameTimer) this.#frameTimer = setTimeout(() => this.#flushFrame(), 16);
   }
 
   #bindActivity(application: AgentApplication): void {
