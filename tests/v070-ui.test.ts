@@ -9,6 +9,7 @@ import { LocalUiCommandClient } from "../ui/local-command-client.js";
 import { SLASH_COMMANDS, formatSlashCommand, matchSlashCommands, parseSlashCommand } from "../ui/slash-commands.js";
 import { createConversationRunState, createSubmittedConversationRunState, reduceConversationRun } from "../ui/conversation-run.js";
 import type { AgentEvent, AgentEventKind } from "../src/index.js";
+import { projectChatRows, selectChatViewport } from "../ui/chat-viewport.js";
 
 test("shared slash registry matches names aliases and descriptions deterministically", () => {
   assert.equal(SLASH_COMMANDS.length, 18);
@@ -93,6 +94,16 @@ test("ConversationRunState requires a start and strips controls from failures", 
   assert.throws(() => reduceConversationRun(undefined, { kind: "delta", delta: "orphan" }), /must start/u);
   const failed = reduceConversationRun(createConversationRunState("run_0002", "session_0002"), { kind: "error", message: "bad\u001b[2J" });
   assert.deepEqual([failed.status, failed.statusText], ["failed", "bad[2J"]);
+});
+
+test("shared chat viewport scrolls deterministic wrapped rows", () => {
+  const rows = projectChatRows([{ id: "user_1", role: "user", displayText: "123456789" }, { id: "agent_1", role: "assistant", displayText: "answer" }], 4);
+  const latest = selectChatViewport(rows, 4, 0);
+  assert.equal(latest.offset, 0);
+  assert.equal(latest.segments.at(-1)?.role, "assistant");
+  const history = selectChatViewport(rows, 4, 2);
+  assert.equal(history.offset, 2);
+  assert.ok(history.segments.some((segment) => segment.role === "user"));
 });
 
 function agentEvent(kind: AgentEventKind, payload: Readonly<Record<string, unknown>>): AgentEvent {

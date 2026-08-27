@@ -29,7 +29,7 @@ export function TextEntry(props: Readonly<{ label: string; initialValue?: string
   return <Box flexDirection="column" marginTop={1}><Text>{props.label}</Text><Text {...accent()}>› {props.masked ? "•".repeat(value.length) : sanitizeTerminalText(value)}</Text><Text dimColor>Enter 确认 · Esc 返回</Text></Box>;
 }
 
-export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: SlashCommandContext; onSubmit: (value: string) => boolean | void }>): React.JSX.Element {
+export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: SlashCommandContext; onPaletteOpenChange?: (open: boolean) => void; onSubmit: (value: string) => boolean | void }>): React.JSX.Element {
   const [value, setValue] = useState("");
   const [selected, setSelected] = useState(0);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
@@ -39,6 +39,7 @@ export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: S
   const matches = value.startsWith("/") && !paletteDismissed ? matchSlashCommands(value, props.slashContext) : [];
   const move = (next: number) => { const bounded = matches.length ? (next + matches.length) % matches.length : 0; selectedRef.current = bounded; setSelected(bounded); };
   useEffect(() => () => { valueRef.current = ""; }, []);
+  useEffect(() => { props.onPaletteOpenChange?.(matches.length > 0); return () => props.onPaletteOpenChange?.(false); }, [matches.length, props.onPaletteOpenChange]);
   useInput((input, key) => {
     if (matches.length && (key.upArrow || key.downArrow || key.tab)) { move(selectedRef.current + (key.upArrow ? -1 : 1)); return; }
     if (matches.length && key.escape) { setPaletteDismissed(true); return; }
@@ -62,7 +63,7 @@ export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: S
   return <Box flexDirection="column" marginTop={1}>
     {matches.length ? <Box flexDirection="column" borderStyle="round" paddingX={1} {...border()}>{matches.slice(0, 8).map((match, index) => <Text key={match.descriptor.name} dimColor={!match.availability.available} {...(index === selected ? accent() : {})}>{index === selected ? "◆" : "◇"} /{match.descriptor.name}{match.descriptor.argumentHint ? ` ${match.descriptor.argumentHint}` : ""} · {match.availability.reason ?? match.descriptor.description}</Text>)}</Box> : null}
     <Box flexDirection="column" borderStyle="round" paddingX={1} {...border()}>
-    <Text {...accent()}>› {sanitizeTerminalText(value) || (props.disabled ? "先使用 /providers 配置并激活 Provider" : "输入消息，或使用 /settings")}</Text>
+    <Text {...accent()}>› {sanitizeTerminalText(value) || "请输入内容…"}</Text>
     <Text dimColor>{matches.length ? "↑/↓ 或 Tab 选择 · Enter 执行 · Esc 收起" : "Enter 发送 · Alt+Enter / Ctrl+J 换行"}</Text>
     </Box>
   </Box>;

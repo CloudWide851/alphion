@@ -9,9 +9,10 @@ import type { DesktopRendererBridge } from "../../../desktop/contracts.js";
 import { forkAndSelectSession } from "../../../ui/session-actions.js";
 import { parseSlashCommand } from "../../../ui/slash-commands.js";
 import { SlashComposer } from "./slash-palette.js";
-import { createConversationRunState, reduceConversationRun, type ConversationRunState } from "../../../ui/conversation-run.js";
+import { createConversationRunState, createSubmittedConversationRunState, reduceConversationRun, type ConversationRunState } from "../../../ui/conversation-run.js";
 import { AutomationPanel } from "./automation-panel.js";
 import type { SurfaceClient } from "./surface-client.js";
+import { useChatScroll } from "./chat-scroll.js";
 import "./style.css";
 import "./enhancements.css";
 
@@ -30,6 +31,7 @@ function App(): React.JSX.Element {
   const [activeRunId, setActiveRunId] = useState<string>();
   const [surface, setSurface] = useState<Pick<UiSurfaceSnapshot, "compaction" | "goals" | "schedules">>({ goals: [], schedules: [] });
   const cursor = useRef(0);
+  const scroll = useChatScroll(messages.length, messages.at(-1)?.content.length ?? 0, active?.id ?? "new");
 
   const desktop = window.alphionDesktop;
   const api = useMemo<SurfaceClient>(() => ({
@@ -105,16 +107,19 @@ function App(): React.JSX.Element {
 
   const send = async () => {
     const content = draft.trim(); if (!content || !api.ready) return;
+    const submissionId = requestId(); const userId = requestId();
+    setDraft(""); setStatus("准备上下文"); setMessages((items) => beginSubmittedMessages(items, userId, content, submissionId, active?.id));
     let session = active;
-    if (!session) { const created = await api.execute({ kind: "session.create", title: content.slice(0, 80), idempotencyKey: requestId() }); session = created.result as SessionItem; setActive(session); setSessions((items) => [session!, ...items]); }
     try {
+      if (!session) { const created = await api.execute({ kind: "session.create", title: content.slice(0, 80), idempotencyKey: requestId() }); session = created.result as SessionItem; setActive(session); setSessions((items) => [session!, ...items]); }
       const result = await api.execute({ kind: "session.send", sessionId: session.id, message: content, expectedRevision: session.revision, idempotencyKey: requestId() });
       const runId = (result.result as { runId: string }).runId;
-      setDraft(""); setStatus("运行中"); setActiveRunId(runId);
-      setMessages((items) => beginRunMessages(items, requestId(), content, runId, session.id));
+      setStatus("等待模型"); setActiveRunId(runId);
+      setMessages((items) => startSubmittedRun(items, submissionId, runId, session!.id));
     } catch (error) {
       setStatus(error instanceof UiApiError && error.status === 409 ? "修订冲突，已刷新" : "发送失败");
-      if (error instanceof UiApiError && error.status === 409) await reloadSessions(session.id);
+      setMessages((items) => failSubmittedRun(items, submissionId, error instanceof Error ? error.message : "发送失败"));
+      if (error instanceof UiApiError && error.status === 409 && session) await reloadSessions(session.id);
     }
   };
 
@@ -167,7 +172,7 @@ function App(): React.JSX.Element {
       <div className="conversation-head"><h1>{active?.title ?? "新对话"}</h1><div><button className="quiet" disabled={!active || active.status !== "idle"} onClick={() => void forkActive()}>Fork</button><span className="connection"><i />{status}</span></div></div>
       {settings ? <SettingsPanel client={api} {...(active ? { sessionId: active.id } : {})} surface={surface} sessions={sessions} onProjectActivated={() => void reloadSessions()} /> : null}
       {approval ? <ApprovalCard challenge={approval} onDecide={(approved) => void decideApproval(approved)} /> : null}
-      <section className="messages" aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role} ${message.run?.status ?? ""}`} key={message.id}><span className="speaker">{message.role === "assistant" ? "Alphion" : "你"}</span>{message.run?.status === "waiting" && !message.content ? <WaitingDots /> : <div className={message.run?.status === "streaming" ? "stream-content" : undefined}><Markdown content={message.content || message.run?.statusText || "…"} /></div>}{message.run ? <RunMeta run={message.run} /> : null}</article>)}</section>
+      <section className="messages" ref={scroll.viewportRef} onScroll={scroll.onScroll} aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role} ${message.run?.status ?? ""}`} key={message.id}><span className="speaker">{message.role === "assistant" ? "Alphion" : "你"}</span>{message.run?.status === "waiting" && !message.content ? <WaitingDots /> : <div className={message.run?.status === "streaming" ? "stream-content" : undefined}><Markdown content={message.content || message.run?.statusText || "…"} /></div>}{message.run ? <RunMeta run={message.run} /> : null}</article>)}{scroll.unseenCount ? <button className="new-message" onClick={scroll.returnToLatest}>{scroll.unseenCount} 条新消息 · 返回最新</button> : null}</section>
       <SlashComposer value={draft} context={{ hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) }} disabled={!api.ready} onChange={setDraft} onSubmitMessage={() => void send()} onCommand={(command) => void executeSlash(command).catch(() => setStatus("命令执行失败"))} />
     </main>
   </div>;
@@ -199,7 +204,9 @@ function CodeBlock({ projection }: Readonly<{ projection: CodeProjection }>): Re
 function inline(items: readonly MarkdownInline[]): React.ReactNode { return items.map((item, index) => { switch (item.kind) { case "text": return item.value; case "break": return <br key={index} />; case "code": return <code key={index}>{item.value}</code>; case "math": return <MathFragment key={index} value={item.value} />; case "link": return <a key={index} href={item.href} onClick={(event) => openExternal(event, item.href, item.domain)} rel="noreferrer">{inline(item.children)} <span aria-label={`域名 ${item.domain}`}>↗</span></a>; case "strong": return <strong key={index}>{inline(item.children)}</strong>; case "emphasis": return <em key={index}>{inline(item.children)}</em>; } }); }
 function MathFragment({ value, display = false }: Readonly<{ value: string; display?: boolean }>): React.JSX.Element { const ref = useRef<HTMLSpanElement>(null); useEffect(() => { if (ref.current) katex.render(value, ref.current, { displayMode: display, throwOnError: false, strict: "error", trust: false }); }, [display, value]); return <span className={display ? "math-block" : "math-inline"} ref={ref} />; }
 
-function beginRunMessages(items: readonly ChatItem[], userId: string, content: string, runId: string, sessionId: string): readonly ChatItem[] { const live = items.find((item) => item.id === runId); return [...items.filter((item) => item.id !== runId), { id: userId, role: "user", content }, live ?? { id: runId, role: "assistant", content: "", run: createConversationRunState(runId, sessionId) }]; }
+function beginSubmittedMessages(items: readonly ChatItem[], userId: string, content: string, submissionId: string, sessionId?: string): readonly ChatItem[] { return [...items, { id: userId, role: "user", content }, { id: `pending:${submissionId}`, role: "assistant", content: "", run: createSubmittedConversationRunState(submissionId, sessionId) }]; }
+function startSubmittedRun(items: readonly ChatItem[], submissionId: string, runId: string, sessionId: string): readonly ChatItem[] { return items.map((item) => item.id === `pending:${submissionId}` ? { ...item, id: runId, run: createConversationRunState(runId, sessionId) } : item); }
+function failSubmittedRun(items: readonly ChatItem[], submissionId: string, message: string): readonly ChatItem[] { return items.map((item) => item.id === `pending:${submissionId}` ? updateRunItem(item, { kind: "error", message }) : item); }
 function appendAssistantDelta(items: readonly ChatItem[], runId: string, delta: string): readonly ChatItem[] { const index = items.findIndex((item) => item.id === runId); if (index < 0) { const run = reduceConversationRun(createConversationRunState(runId, "unknown"), { kind: "delta", delta }); return [...items, { id: runId, role: "assistant", content: run.text, run }]; } return items.map((item) => item.id === runId ? updateRunItem(item, { kind: "delta", delta }) : item); }
 function applyAssistantEvent(items: readonly ChatItem[], event: Extract<UiEventEnvelope["payload"], { kind: "agent.event" }>["event"]): readonly ChatItem[] { if ("delivery" in event) return items; const index = items.findIndex((item) => item.id === event.runId); if (index < 0) { const run = reduceConversationRun(createConversationRunState(event.runId, event.sessionId), { kind: "agent-event", event }); return [...items, { id: event.runId, role: "assistant", content: run.text, run }]; } return items.map((item) => item.id === event.runId ? updateRunItem(item, { kind: "agent-event", event }) : item); }
 function finalizeAssistant(items: readonly ChatItem[], runId: string, status: string, finalText: string): readonly ChatItem[] { return items.map((item) => item.id === runId ? updateRunItem(item, { kind: "finish", status, finalText }) : item); }

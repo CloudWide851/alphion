@@ -25,7 +25,7 @@ export function SlashComposer(props: Readonly<{
   };
   return <div className="composer">
     {matches.length ? <div className="slash-palette" role="listbox" aria-label="快捷命令">{matches.map((match, index) => <button type="button" role="option" aria-selected={index === selected} disabled={!match.availability.available} className={index === selected ? "slash-option selected" : "slash-option"} key={match.descriptor.name} onMouseDown={(event) => event.preventDefault()} onClick={() => run(index)}><strong>/{match.descriptor.name}{match.descriptor.argumentHint ? ` ${match.descriptor.argumentHint}` : ""}</strong><span>{match.availability.reason ?? match.descriptor.description}</span></button>)}</div> : null}
-    <textarea aria-label="消息" placeholder="输入消息，或输入 / 查看命令…" value={props.value} onChange={(event) => props.onChange(event.target.value)} onKeyDown={(event) => {
+    <textarea aria-label="消息" placeholder="请输入内容…" value={props.value} onChange={(event) => props.onChange(event.target.value)} onKeyDown={(event) => {
       if (matches.length && (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "Tab")) { event.preventDefault(); move(event.key === "ArrowUp" ? -1 : 1); return; }
       if (matches.length && event.key === "Escape") { event.preventDefault(); setDismissed(true); return; }
       if (event.key === "Enter" && !event.altKey && !event.shiftKey) { event.preventDefault(); if (matches.length) run(); else if (props.value.trimStart().startsWith("/")) props.onCommand(props.value); else props.onSubmitMessage(); }

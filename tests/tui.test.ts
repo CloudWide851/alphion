@@ -140,8 +140,23 @@ test("TUI chat shell selects wide, narrow and compact layouts without the workbe
   }));
   const frame = view.lastFrame() ?? "";
   assert.match(frame, /ALPHION/u);
-  assert.match(frame, /输入消息|配置并激活 Provider/u);
+  assert.match(frame, /请输入内容/u);
   assert.doesNotMatch(frame, /工程工作台|首页概览|HarnessPlan/u);
+  view.unmount();
+});
+
+test("TUI chat viewport keeps the composer fixed and scrolls history by line", async () => {
+  const messages = Array.from({ length: 8 }, (_, index) => ({ id: `message_${index}`, role: (index % 2 ? "assistant" : "user") as "user" | "assistant", content: `line ${index}\nmore ${index}` }));
+  const view = render(React.createElement(ChatHome, { compact: true, heightRows: 12, viewportRows: 4, contentWidth: 30, messages, onSubmit: () => undefined }));
+  assert.match(view.lastFrame() ?? "", /请输入内容/u);
+  assert.match(view.lastFrame() ?? "", /line 7/u);
+  view.stdin.write("\u001b[A");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.match(view.lastFrame() ?? "", /正在查看历史/u);
+  assert.match(view.lastFrame() ?? "", /请输入内容/u);
+  view.stdin.write("\u001b[4~");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.doesNotMatch(view.lastFrame() ?? "", /正在查看历史/u);
   view.unmount();
 });
 
