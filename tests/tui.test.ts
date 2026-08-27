@@ -98,6 +98,8 @@ test("provider list keyboard navigation dispatches adapter intents", async () =>
     onActivate: () => undefined,
     onCredential: () => undefined,
     onRemoveCredential: () => undefined,
+    onTest: () => undefined,
+    onTestAll: () => undefined,
     onRun: () => undefined,
     onExit: () => undefined,
   }));

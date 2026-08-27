@@ -105,6 +105,8 @@ export class LocalUiCommandClient implements UiCommandClient {
       }
       case "run.cancel": { const run = this.#runs.get(command.runId); if (!run) throw new AlphionError("validation", "Unknown active run.", { stage: "ui" }); run.cancel(command.reason); return { cancelled: true }; }
       case "provider.list": return application.configuration.listProfiles().then((profiles) => profiles.map(({ auth: _auth, ...profile }) => profile));
+      case "provider.test": return application.providerTests.test(command.profileId);
+      case "provider.test-all": return application.providerTests.testAll();
       case "resource.list": return application.loadResources();
       case "doctor": return application.diagnose();
       case "harness.plan": return application.planHarness(command.prompt);

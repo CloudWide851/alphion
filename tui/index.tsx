@@ -207,6 +207,8 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
       onActivate={() => current && void application.configuration.activateProfile(current.id).then(async () => { await refreshProfiles(); await refreshSnapshot(); }).catch((cause: unknown) => setError(safeError(cause)))}
       onCredential={() => current && setScreen("credential")}
       onRemoveCredential={() => current && void application.configuration.removeCredential(current.id).then(async () => { await refreshProfiles(); await refreshSnapshot(); }).catch((cause: unknown) => setError(safeError(cause)))}
+      onTest={() => current && void application.providerTests.test(current.id).then((result) => setError(providerTestLabel(result))).catch((cause: unknown) => setError(safeError(cause)))}
+      onTestAll={() => void application.providerTests.testAll().then((results) => setError(`实测完成：${results.filter((item) => item.status === "success").length}/${results.length} 成功`)).catch((cause: unknown) => setError(safeError(cause)))}
       onRun={() => current && setSection("home")}
       onExit={() => exit()}
     /> : null}
@@ -339,6 +341,8 @@ export function ProviderList(props: Readonly<{
   onActivate: () => void;
   onCredential: () => void;
   onRemoveCredential: () => void;
+  onTest: () => void;
+  onTestAll: () => void;
   onRun: () => void;
   onExit: () => void;
 }>): React.JSX.Element {
@@ -350,6 +354,8 @@ export function ProviderList(props: Readonly<{
     else if (input === "a" && props.profiles.length > 0) props.onActivate();
     else if (input === "k" && props.profiles.length > 0) props.onCredential();
     else if (input === "x" && props.profiles.length > 0) props.onRemoveCredential();
+    else if (input === "t" && props.profiles.length > 0) props.onTest();
+    else if (input === "y" && props.profiles.length > 0) props.onTestAll();
     else if ((input === "r" || key.return) && props.profiles.length > 0) props.onRun();
     else if (input === "q") props.onExit();
   });
@@ -358,7 +364,7 @@ export function ProviderList(props: Readonly<{
     {props.profiles.map((profile, index) => <Text key={profile.id} {...(index === props.selected ? accent(process.env.NO_COLOR === undefined) : {})}>
       {index === props.selected ? "◆" : "◇"} {profile.active ? "✓ 活动" : "  待用"} · {profile.name} · {profile.kind} · {profile.model} · {authLabel(profile)}
     </Text>)}
-    <Text dimColor>↑↓ 选择 · n 新建 · e 编辑 · a 激活 · k 导入/轮换 Key · x 删除 Key · r 运行</Text>
+    <Text dimColor>↑↓ 选择 · n 新建 · e 编辑 · a 激活 · k 导入 Key · x 删除 Key · t 实测当前 · y 实测全部 · r 运行</Text>
   </Box>;
 }
 
@@ -434,6 +440,10 @@ function authLabel(profile: ProviderProfile): string {
   if (profile.auth.mode === "encrypted-project") return "✓ Project 独立加密";
   if (profile.auth.mode === "bearer-env") return `✓ 环境引用 ${profile.auth.environmentVariable}`;
   return "! 未配置凭据";
+}
+
+function providerTestLabel(result: Awaited<ReturnType<AgentApplication["providerTests"]["test"]>>): string {
+  return result.status === "success" ? `实测成功 · ${result.model} · ${result.latencyMs}ms · ${result.response ?? "无文本"}` : `实测失败 · ${result.errorReason ?? result.errorCode ?? "未知错误"}`;
 }
 
 function shortRevision(value: string): string {

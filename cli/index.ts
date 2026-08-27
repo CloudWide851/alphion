@@ -55,6 +55,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   if (group === "desktop") { const { launchDesktop } = await import("../desktop/launcher.js"); await launchDesktop(); return 0; }
   if (group === "harness" && command === "plan") return harnessPlanCommand(parsed, projectRoot, statePath);
   if (group === "run") return runCommand(parsed, projectRoot, statePath);
+  if (group === "provider" && command === "test") return providerTestCommand(projectRoot, statePath, parsed);
   const { SqliteStore: Store } = await import("../adapters/store/sqlite-store.js");
   const store = new Store({ path: statePath });
   try {
@@ -65,6 +66,21 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   } finally {
     store.close();
   }
+}
+
+async function providerTestCommand(projectRoot: string, statePath: string, parsed: ParsedArguments): Promise<number> {
+  const { openLocalAlphionApplication } = await import("../adapters/local/local-application.js");
+  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  try {
+    if (hasFlag(parsed, "all")) {
+      const results = await application.providerTests.testAll();
+      process.stdout.write(`${JSON.stringify(results, null, 2)}\n`);
+      return results.every((item) => item.status === "success") ? 0 : 1;
+    }
+    const result = await application.providerTests.test(parsed.positionals[2] ?? "");
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return result.status === "success" ? 0 : 1;
+  } finally { await application.close(); }
 }
 
 async function providerCommand(store: SqliteStore, command: string | undefined, parsed: ParsedArguments): Promise<number> {
@@ -115,7 +131,7 @@ async function providerCommand(store: SqliteStore, command: string | undefined, 
     process.stdout.write(`${JSON.stringify(await store.activateProfile(idOrName), null, 2)}\n`);
     return 0;
   }
-  throw new AlphionError("validation", "provider command must be set, list, or activate.", { stage: "cli" });
+  throw new AlphionError("validation", "provider command must be set, list, activate, or test.", { stage: "cli" });
 }
 
 async function shellPolicyCommand(store: SqliteStore, parsed: ParsedArguments): Promise<number> {
@@ -373,7 +389,7 @@ function printHelp(): void {
   process.stdout.write(`Alphion v0.8.0\n\n`);
   process.stdout.write(`Commands:\n`);
   process.stdout.write(`  provider set --id ID --preset deepseek|deepseek-international|kimi|kimi-international|qwen|qwen-international|glm|glm-international|custom-openai-compatible --model MODEL [--allow-unlisted-model] [--base-url URL for custom only] [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
-  process.stdout.write(`  provider list\n  provider activate ID\n`);
+  process.stdout.write(`  provider list\n  provider activate ID\n  provider test ID | provider test --all  # 真实请求，可能产生费用\n`);
   process.stdout.write(`  policy shell allow --executable ABSOLUTE_PATH [--arg-prefix VALUE ...]\n`);
   process.stdout.write(`  policy shell list\n  policy shell remove ID\n`);
   process.stdout.write(`  cache stats\n  cache clear [--namespace NAME]\n`);

@@ -111,6 +111,7 @@ export type {
   WorkingMemorySnapshot,
 } from "./domain/contracts.js";
 export type { CompactionPolicy, CompactionProjection, CompactionRecord, CompactionResult, CompactionSummary } from "./domain/compaction-contracts.js";
+export type { ProviderTestResult } from "./domain/provider-test-contracts.js";
 export type { SessionActivity } from "./domain/session-activity.js";
 export type {
   GoalCreateRequest, GoalProgressRequest, GoalRecord, GoalRevision, GoalRevisionActor, GoalRootUpdateRequest, GoalStatus, GoalWriteReceipt,
@@ -147,6 +148,7 @@ export type {
   CodeRecall,
   ProviderProfileStore,
   ProviderConfigurationService,
+  ProviderTestService,
   ProjectProfiler,
   ProjectManager,
   SecretResolver,

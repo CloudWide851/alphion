@@ -38,6 +38,7 @@ import type {
 } from "../domain/contracts.js";
 import type { AgentEvent, AgentEventDraft, AgentStreamEvent } from "../protocol/events.js";
 import type { CompactionProjection, CompactionRecord } from "../domain/compaction-contracts.js";
+import type { ProviderTestResult } from "../domain/provider-test-contracts.js";
 import type { SessionActivity } from "../domain/session-activity.js";
 import type {
   GoalCreateRequest, GoalProgressRequest, GoalRecord, GoalRootUpdateRequest, GoalWriteReceipt,
@@ -246,6 +247,11 @@ export interface ProviderConfigurationService {
   removeCredential(profileId: string): Promise<ProviderProfile>;
 }
 
+export interface ProviderTestService {
+  test(profileId: string, signal?: AbortSignal): Promise<ProviderTestResult>;
+  testAll(signal?: AbortSignal): Promise<readonly ProviderTestResult[]>;
+}
+
 export interface ProjectProfiler {
   inspect(options: Readonly<{ projectRoot: string; refresh?: boolean }>): Promise<ProjectProfile>;
 }
@@ -356,6 +362,7 @@ export interface ProjectManager {
 
 export interface AgentApplication {
   readonly configuration: ProviderConfigurationService;
+  readonly providerTests: ProviderTestService;
   readonly agent: AgentContract;
   readonly sessions: SessionManager;
   readonly goals: GoalManager;

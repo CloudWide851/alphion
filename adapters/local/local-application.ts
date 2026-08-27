@@ -13,6 +13,7 @@ import { TieredCache } from "../../src/application/cache.js";
 import { AlphionError } from "../../src/application/errors.js";
 import { CapabilityRegistry, planHarness } from "../../src/application/harness.js";
 import { ProviderConfigurationManager } from "../../src/application/provider-configuration.js";
+import { DefaultProviderTestService } from "../../src/application/provider-test.js";
 import { DefaultGoalManager } from "../../src/application/goal-manager.js";
 import { DefaultScheduleManager } from "../../src/application/schedule-manager.js";
 import { ToolRegistry } from "../../src/application/tool-registry.js";
@@ -35,12 +36,13 @@ import type {
   ProjectKeyProvider,
   GoalManager,
   ProviderConfigurationService,
+  ProviderTestService,
   ScheduleManager,
   SessionManager,
 } from "../../src/ports/index.js";
 import { MemoryLruCache } from "../cache/memory-cache.js";
 import { LOCAL_PROVIDER_PRESETS } from "../model/provider-catalog.js";
-import { LocalModelResolver } from "../model/local-model-resolver.js";
+import { LocalModelResolver, LocalProviderFactory } from "../model/local-model-resolver.js";
 import { NodeProjectProfiler } from "../project/project-profiler.js";
 import { projectRevision } from "../project/project-revision.js";
 import { CompositeSecretResolver } from "../secrets/composite-secret.js";
@@ -65,6 +67,7 @@ export interface LocalApplicationOptions {
 const execFileAsync = promisify(execFile);
 export class LocalAlphionApplication implements AgentApplication {
   readonly configuration: ProviderConfigurationService;
+  readonly providerTests: ProviderTestService;
   readonly agent: AgentContract;
   readonly sessions: SessionManager;
   readonly goals: GoalManager;
@@ -108,6 +111,7 @@ export class LocalAlphionApplication implements AgentApplication {
       : [new ReadTool(), new GrepTool(), new EditTool(), new WriteTool(), new ShellTool(store), new SessionSendTool(), new GoalProgressTool(this.goals)]);
     this.#profiler = new NodeProjectProfiler({ cache: this.#cache });
     this.configuration = new ProviderConfigurationManager(store, store);
+    this.providerTests = new DefaultProviderTestService(store, new LocalProviderFactory(this.#secrets));
     this.#models = new LocalModelResolver(store, this.#secrets);
     this.#shaper = new AgentShaper({ capabilities: this.#capabilities.list().map((item) => item.id).filter((id) => !unowned || id === "session.collaborate"), policies: ["default-deny", "approval-for-side-effects", "same-domain-session-collaboration", ...(unowned ? ["no-project-filesystem"] : [])], tools: this.#tools.names(), toolCapabilities: { read: "project.read", grep: "project.read", edit: "project.write", write: "project.write", shell: "quality.verify", "session.send": "session.collaborate", "goal.progress": "goal.progress" } });
     this.agent = new Agent({ models: this.#models, tools: this.#tools, eventStore: store, cache: this.#cache });

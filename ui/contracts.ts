@@ -29,6 +29,8 @@ export type UiCommand =
   | Readonly<{ readonly kind: "schedule.pause" | "schedule.resume" | "schedule.run-now"; readonly scheduleId: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
   | Readonly<{ readonly kind: "schedule.executions"; readonly scheduleId: string; readonly limit?: number }>
   | Readonly<{ readonly kind: "provider.list" }>
+  | Readonly<{ readonly kind: "provider.test"; readonly profileId: string }>
+  | Readonly<{ readonly kind: "provider.test-all" }>
   | Readonly<{ readonly kind: "resource.list" }>
   | Readonly<{ readonly kind: "doctor" }>
   | Readonly<{ readonly kind: "harness.plan"; readonly prompt: string }>
@@ -102,8 +104,9 @@ function decodeCommand(value: unknown): UiCommand {
   const input = record(value, "UI command");
   if (typeof input.kind !== "string") throw new Error("UI command kind is required.");
   switch (input.kind) {
-    case "project.list": case "session.list": case "provider.list": case "resource.list": case "doctor": case "schedule.list":
+    case "project.list": case "session.list": case "provider.list": case "provider.test-all": case "resource.list": case "doctor": case "schedule.list":
       exact(input, ["kind"]); return Object.freeze({ kind: input.kind });
+    case "provider.test": exact(input, ["kind", "profileId"]); return Object.freeze({ kind: input.kind, profileId: requiredText(input.profileId) });
     case "project.inspect": { exact(input, ["kind", "refresh"]); const refresh = optionalBoolean(input.refresh); return Object.freeze({ kind: input.kind, ...(refresh === undefined ? {} : { refresh }) }); }
     case "project.create": { exact(input, ["kind", "root", "name"]); const name = input.name === undefined ? undefined : requiredText(input.name); return Object.freeze({ kind: input.kind, root: requiredText(input.root), ...(name ? { name } : {}) }); }
     case "surface.snapshot": { exact(input, ["kind", "selectedSessionId"]); const selectedSessionId = input.selectedSessionId === undefined ? undefined : requiredText(input.selectedSessionId); return Object.freeze({ kind: input.kind, ...(selectedSessionId ? { selectedSessionId } : {}) }); }
