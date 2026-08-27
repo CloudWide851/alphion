@@ -5,9 +5,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, normalize, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 import { AlphionError } from "../src/index.js";
-import { decodeUiCommandEnvelope, type UiCommandClient } from "../ui/contracts.js";
+import { decodeUiCommandEnvelope, type UiAttachmentClient, type UiCommandClient } from "../ui/contracts.js";
 
 const MAX_BODY_BYTES = 256 * 1024;
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
 export interface WebUiServer {
@@ -15,17 +16,17 @@ export interface WebUiServer {
   close(): Promise<void>;
 }
 
-export async function createWebUiServer(options: Readonly<{ client: UiCommandClient; port?: number; assetsRoot?: string }>): Promise<WebUiServer> {
+export async function createWebUiServer(options: Readonly<{ client: UiCommandClient; attachments?: UiAttachmentClient; port?: number; assetsRoot?: string }>): Promise<WebUiServer> {
   const sessions = new Map<string, Readonly<{ csrf: string; expiresAt: number }>>();
   let expectedOrigin = "";
-  const server = createServer((request, response) => void route(request, response, options.client, sessions, expectedOrigin, options.assetsRoot));
+  const server = createServer((request, response) => void route(request, response, options.client, options.attachments, sessions, expectedOrigin, options.assetsRoot));
   await new Promise<void>((done, reject) => { server.once("error", reject); server.listen(options.port ?? 0, "127.0.0.1", () => { server.off("error", reject); done(); }); });
   const address = server.address() as AddressInfo;
   expectedOrigin = `http://127.0.0.1:${address.port}`;
   return Object.freeze({ origin: expectedOrigin, close: () => closeServer(server, options.client) });
 }
 
-async function route(request: IncomingMessage, response: ServerResponse, client: UiCommandClient, sessions: Map<string, Readonly<{ csrf: string; expiresAt: number }>>, origin: string, assetsRoot?: string): Promise<void> {
+async function route(request: IncomingMessage, response: ServerResponse, client: UiCommandClient, attachments: UiAttachmentClient | undefined, sessions: Map<string, Readonly<{ csrf: string; expiresAt: number }>>, origin: string, assetsRoot?: string): Promise<void> {
   try {
     setSecurityHeaders(response);
     const url = new URL(request.url ?? "/", origin);
@@ -42,6 +43,22 @@ async function route(request: IncomingMessage, response: ServerResponse, client:
       const session = authorize(request, sessions, origin, true);
       assertCsrf(request, session.csrf);
       return json(response, 200, await client.execute(decodeUiCommandEnvelope(await readJson(request))));
+    }
+    if (request.method === "POST" && url.pathname === "/api/attachment") {
+      const session = authorize(request, sessions, origin, true); assertCsrf(request, session.csrf);
+      if (!attachments) throw new AlphionError("forbidden", "Image attachments are unavailable.", { stage: "webui" });
+      const encodedName = request.headers["x-alphion-file-name"];
+      const fileName = typeof encodedName === "string" ? decodeURIComponent(encodedName) : "image";
+      const ref = await attachments.importAttachment({ fileName, bytes: await readBinary(request, MAX_IMAGE_BYTES) });
+      return json(response, 200, ref);
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/api/attachment/")) {
+      authorize(request, sessions, origin, false);
+      if (!attachments) throw new AlphionError("forbidden", "Image attachments are unavailable.", { stage: "webui" });
+      const id = decodeURIComponent(url.pathname.slice("/api/attachment/".length));
+      if (!/^[A-Za-z0-9:_-]{4,200}$/u.test(id)) throw new AlphionError("validation", "Image attachment ID is invalid.", { stage: "webui" });
+      const image = await attachments.readAttachment(id);
+      response.writeHead(200, { "content-type": image.ref.mediaType, "content-length": image.bytes.byteLength, "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" }); response.end(image.bytes); return;
     }
     if (request.method === "POST" && url.pathname.startsWith("/api/secret/provider/")) {
       const session = authorize(request, sessions, origin, true); assertCsrf(request, session.csrf);
@@ -101,6 +118,7 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   for await (const chunk of request) { const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); bytes += buffer.byteLength; if (bytes > MAX_BODY_BYTES) throw new Error("WebUI request is too large."); chunks.push(buffer); }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
+async function readBinary(request: IncomingMessage, maximum: number): Promise<Uint8Array> { const chunks: Buffer[] = []; let bytes = 0; for await (const chunk of request) { const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); bytes += buffer.byteLength; if (bytes > maximum) throw new AlphionError("validation", "Image upload exceeds 20 MiB.", { stage: "webui" }); chunks.push(buffer); } if (bytes === 0) throw new AlphionError("validation", "Image upload is empty.", { stage: "webui" }); return Uint8Array.from(Buffer.concat(chunks)); }
 
 function deleteExpiredSessions(sessions: Map<string, Readonly<{ csrf: string; expiresAt: number }>>): void { const now = Date.now(); for (const [key, session] of sessions) if (session.expiresAt <= now) sessions.delete(key); }
 function record(value: unknown): Readonly<Record<string, unknown>> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new AlphionError("validation", "WebUI request body must be an object.", { stage: "webui" }); return value as Readonly<Record<string, unknown>>; }

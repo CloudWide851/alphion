@@ -1,4 +1,5 @@
-import type { AgentEvent, AgentSessionRecord, AgentStreamControlEvent, CompactionProjection, GoalRecord, ProjectRecord, ScheduleExpression, SchedulePayload, ScheduleRecord, SessionView } from "../src/index.js";
+import type { AgentEvent, AgentSessionRecord, AgentStreamControlEvent, AttachmentImportInput, CompactionProjection, GoalRecord, ImageAttachmentRef, ProjectRecord, ScheduleExpression, SchedulePayload, ScheduleRecord, SessionMessageInput, SessionView } from "../src/index.js";
+import { decodeSessionMessageInput } from "../src/application/attachments.js";
 
 export type UiCommand =
   | Readonly<{ readonly kind: "surface.snapshot"; readonly selectedSessionId?: string }>
@@ -9,8 +10,8 @@ export type UiCommand =
   | Readonly<{ readonly kind: "session.list" }>
   | Readonly<{ readonly kind: "session.create"; readonly title: string; readonly idempotencyKey: string }>
   | Readonly<{ readonly kind: "session.show"; readonly sessionId: string }>
-  | Readonly<{ readonly kind: "session.send"; readonly sessionId: string; readonly message: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
-  | Readonly<{ readonly kind: "session.steer" | "session.follow-up"; readonly sessionId: string; readonly message: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
+  | Readonly<{ readonly kind: "session.send"; readonly sessionId: string; readonly message: string | SessionMessageInput; readonly expectedRevision: number; readonly idempotencyKey: string }>
+  | Readonly<{ readonly kind: "session.steer" | "session.follow-up"; readonly sessionId: string; readonly message: string | SessionMessageInput; readonly expectedRevision: number; readonly idempotencyKey: string }>
   | Readonly<{ readonly kind: "session.checkout"; readonly sessionId: string; readonly entryId?: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
   | Readonly<{ readonly kind: "session.reshape"; readonly sessionId: string; readonly goal: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
   | Readonly<{ readonly kind: "session.fork"; readonly sessionId: string; readonly entryId?: string; readonly title?: string; readonly expectedRevision: number; readonly idempotencyKey: string }>
@@ -108,6 +109,11 @@ export interface UiCommandClient {
   close(): Promise<void>;
 }
 
+export interface UiAttachmentClient {
+  importAttachment(input: AttachmentImportInput): Promise<ImageAttachmentRef>;
+  readAttachment(attachmentId: string): Promise<Readonly<{ ref: ImageAttachmentRef; bytes: Uint8Array }>>;
+}
+
 export function decodeUiCommandEnvelope(value: unknown): UiCommandEnvelope {
   const envelope = record(value, "UI command envelope");
   exact(envelope, ["schemaVersion", "requestId", "command"]);
@@ -176,7 +182,7 @@ function decodeCommand(value: unknown): UiCommand {
     case "session.show": exact(input, ["kind", "sessionId"]); return Object.freeze({ kind: input.kind, sessionId: requiredText(input.sessionId) });
     case "session.send": case "session.steer": case "session.follow-up":
       exact(input, ["kind", "sessionId", "message", "expectedRevision", "idempotencyKey"]);
-      return Object.freeze({ kind: input.kind, sessionId: requiredText(input.sessionId), message: requiredText(input.message), expectedRevision: revision(input.expectedRevision), idempotencyKey: commandKey(input.idempotencyKey) });
+      return Object.freeze({ kind: input.kind, sessionId: requiredText(input.sessionId), message: typeof input.message === "string" ? requiredText(input.message) : decodeSessionMessageInput(input.message), expectedRevision: revision(input.expectedRevision), idempotencyKey: commandKey(input.idempotencyKey) });
     case "session.checkout": {
       exact(input, ["kind", "sessionId", "entryId", "expectedRevision", "idempotencyKey"]);
       const entryId = input.entryId === undefined ? undefined : requiredText(input.entryId);

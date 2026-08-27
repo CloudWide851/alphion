@@ -8,7 +8,7 @@ import type { AgentApplication } from "../src/ports/index.js";
 import { decodeUiCommandEnvelope } from "../ui/contracts.js";
 import { LocalUiCommandClient } from "../ui/local-command-client.js";
 import { parseExternalHttpUrl } from "../ui/markdown.js";
-import { decodeDesktopApprovalDecision, decodeDesktopCredential, DESKTOP_IPC_CHANNELS } from "./contracts.js";
+import { decodeDesktopApprovalDecision, decodeDesktopAttachmentId, decodeDesktopAttachmentImport, decodeDesktopCredential, DESKTOP_IPC_CHANNELS } from "./contracts.js";
 
 const moduleDirectory = fileURLToPath(new URL(".", import.meta.url));
 const rendererFile = normalize(join(moduleDirectory, "..", "webui", "client", "index.html"));
@@ -38,7 +38,7 @@ export async function runElectronDesktop(): Promise<void> {
   app.on("before-quit", (event) => {
     if (shuttingDown) return;
     event.preventDefault(); shuttingDown = true;
-    void (async () => { ipcMain.removeHandler(DESKTOP_IPC_CHANNELS.command); ipcMain.removeHandler(DESKTOP_IPC_CHANNELS.credential); ipcMain.removeHandler(DESKTOP_IPC_CHANNELS.approval); ipcMain.removeHandler(DESKTOP_IPC_CHANNELS.external); eventAbort.abort(); await client.close(); await events; await projects.close(); app.quit(); })();
+    void (async () => { for (const channel of [DESKTOP_IPC_CHANNELS.command, DESKTOP_IPC_CHANNELS.credential, DESKTOP_IPC_CHANNELS.approval, DESKTOP_IPC_CHANNELS.external, DESKTOP_IPC_CHANNELS.attachmentImport, DESKTOP_IPC_CHANNELS.attachmentRead]) ipcMain.removeHandler(channel); eventAbort.abort(); await client.close(); await events; await projects.close(); app.quit(); })();
   });
 }
 
@@ -60,6 +60,8 @@ function registerDesktopIpc(client: LocalUiCommandClient, allowedRendererUrl: st
   ipcMain.handle(DESKTOP_IPC_CHANNELS.credential, async (event, value: unknown) => { assertTrustedSender(event, allowedRendererUrl); const input = decodeDesktopCredential(value); try { await client.importProviderCredential(input.profileId, input.secret); } finally { value = undefined; } });
   ipcMain.handle(DESKTOP_IPC_CHANNELS.approval, (event, value: unknown) => { assertTrustedSender(event, allowedRendererUrl); client.decideApproval(decodeDesktopApprovalDecision(value)); });
   ipcMain.handle(DESKTOP_IPC_CHANNELS.external, async (event, value: unknown) => { assertTrustedSender(event, allowedRendererUrl); const safe = typeof value === "string" ? parseExternalHttpUrl(value) : undefined; if (!safe) throw new AlphionError("forbidden", "Desktop external URL is not allowed.", { stage: "desktop" }); await shell.openExternal(safe.href, { activate: true }); return true; });
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.attachmentImport, (event, value: unknown) => { assertTrustedSender(event, allowedRendererUrl); return client.importAttachment(decodeDesktopAttachmentImport(value)); });
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.attachmentRead, (event, value: unknown) => { assertTrustedSender(event, allowedRendererUrl); return client.readAttachment(decodeDesktopAttachmentId(value)); });
 }
 
 async function pumpEvents(client: LocalUiCommandClient, window: BrowserWindow, signal: AbortSignal): Promise<void> {

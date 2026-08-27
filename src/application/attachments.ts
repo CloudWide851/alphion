@@ -22,6 +22,14 @@ export function normalizeSessionMessageInput(value: string | SessionMessageInput
   return Object.freeze({ schemaVersion: 1, ...(text ? { text } : {}), ...(attachments.length ? { attachments: Object.freeze(attachments) } : {}) });
 }
 
+export function decodeSessionMessageInput(value: unknown): SessionMessageInput {
+  if (typeof value === "string") return normalizeSessionMessageInput(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid("Session message input must be an object.");
+  const input = value as Readonly<Record<string, unknown>>;
+  if (Object.keys(input).some((key) => !["schemaVersion", "text", "attachments"].includes(key)) || input.schemaVersion !== 1 || (input.text !== undefined && typeof input.text !== "string") || (input.attachments !== undefined && !Array.isArray(input.attachments))) throw invalid("Session message input contains an unsupported field.");
+  return normalizeSessionMessageInput({ schemaVersion: 1, ...(typeof input.text === "string" ? { text: input.text } : {}), ...(Array.isArray(input.attachments) ? { attachments: input.attachments } : {}) });
+}
+
 export function createUserMessage(input: SessionMessageInput, id: string, createdAt: string): Extract<AgentMessage, { readonly kind: "user" }> {
   const normalized = normalizeSessionMessageInput(input);
   if (!normalized.attachments?.length) return Object.freeze({ schemaVersion: 1, kind: "user", id, createdAt, content: normalized.text ?? "" });

@@ -1,23 +1,26 @@
 import React, { useEffect, useReducer, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import type { AgentApplication, AgentRunHandle, AgentSessionContract } from "../src/index.js";
+import type { AgentApplication, AgentRunHandle, AgentSessionContract, ImageAttachmentRef } from "../src/index.js";
 import { reduceConversationRun, type ConversationRunState } from "../ui/conversation-run.js";
 import { parseMarkdown, renderMarkdownText } from "../ui/markdown.js";
 import { TuiApprovalPort, type PendingApproval } from "./approval-port.js";
 import { accent, borderColor, textColor } from "./shell.js";
 import { sanitizeTerminalText } from "./run-projection.js";
 
-export interface RunViewCommand { readonly id: number; readonly kind: "steer" | "follow-up" | "cancel"; readonly content?: string; }
+export interface RunViewCommand { readonly id: number; readonly kind: "steer" | "follow-up" | "cancel"; readonly content?: string; readonly attachments?: readonly ImageAttachmentRef[]; }
 
 export function RunView(props: Readonly<{
   application: AgentApplication;
   approval: TuiApprovalPort;
   prompt: string;
+  attachments?: readonly ImageAttachmentRef[];
   providerId?: string;
   session?: AgentSessionContract;
   command?: RunViewCommand;
   compact?: boolean;
   onSession?: (session: AgentSessionContract) => void;
+  onAccepted?: () => void;
+  onCommandAccepted?: (commandId: number) => void;
   onDone: (answer: string) => void;
   onError?: (message: string) => void;
   onExit?: () => void;
@@ -29,9 +32,9 @@ export function RunView(props: Readonly<{
   const activeSession = useRef<AgentSessionContract | undefined>(props.session);
   const handledCommand = useRef(0);
   const started = useRef(false);
-  const callbacks = useRef({ onSession: props.onSession, onDone: props.onDone, onError: props.onError });
-  const request = useRef({ application: props.application, prompt: props.prompt, providerId: props.providerId, session: props.session, approval: props.approval });
-  callbacks.current = { onSession: props.onSession, onDone: props.onDone, onError: props.onError };
+  const callbacks = useRef({ onSession: props.onSession, onAccepted: props.onAccepted, onCommandAccepted: props.onCommandAccepted, onDone: props.onDone, onError: props.onError });
+  const request = useRef({ application: props.application, prompt: props.prompt, attachments: props.attachments, providerId: props.providerId, session: props.session, approval: props.approval });
+  callbacks.current = { onSession: props.onSession, onAccepted: props.onAccepted, onCommandAccepted: props.onCommandAccepted, onDone: props.onDone, onError: props.onError };
 
   useEffect(() => props.approval.subscribe(setPendingApproval), [props.approval]);
   useEffect(() => {
@@ -51,9 +54,9 @@ export function RunView(props: Readonly<{
     void sessionPromise.then(async (session) => {
       activeSession.current = session; callbacks.current.onSession?.(session);
       const record = await session.get();
-      return session.send(start.prompt, { expectedRevision: record.revision, idempotencyKey: `tui:send:${Date.now()}` }, start.approval);
+      return session.send({ schemaVersion: 1, ...(start.prompt ? { text: start.prompt } : {}), ...(start.attachments?.length ? { attachments: start.attachments } : {}) }, { expectedRevision: record.revision, idempotencyKey: `tui:send:${Date.now()}` }, start.approval);
     }).then(async (run) => {
-      handle.current = run; dispatch({ kind: "start", runId: run.runId, sessionId: run.sessionId });
+      handle.current = run; callbacks.current.onAccepted?.(); dispatch({ kind: "start", runId: run.runId, sessionId: run.sessionId });
       for await (const event of run.events) {
         if (event.kind === "model.delta" && typeof event.payload.delta === "string") { buffer += event.payload.delta; schedule(); }
         else if (!("delivery" in event)) { flush(); dispatch({ kind: "agent-event", event }); }
@@ -69,10 +72,12 @@ export function RunView(props: Readonly<{
     handledCommand.current = command.id;
     if (command.kind === "cancel") { handle.current?.cancel("Cancelled from TUI."); return; }
     const session = activeSession.current;
-    if (!session || !command.content) { callbacks.current.onError?.("会话尚未准备好。"); return; }
+    if (!session || (!command.content?.trim() && !command.attachments?.length)) { callbacks.current.onError?.("会话尚未准备好。"); return; }
+    const message = { schemaVersion: 1 as const, ...(command.content?.trim() ? { text: command.content } : {}), ...(command.attachments?.length ? { attachments: command.attachments } : {}) };
     void session.get().then((record) => command.kind === "steer"
-      ? session.steer(command.content!, { expectedRevision: record.revision, idempotencyKey: `tui:steer:${command.id}` })
-      : session.followUp(command.content!, { expectedRevision: record.revision, idempotencyKey: `tui:follow-up:${command.id}` }, props.approval))
+      ? session.steer(message, { expectedRevision: record.revision, idempotencyKey: `tui:steer:${command.id}` })
+      : session.followUp(message, { expectedRevision: record.revision, idempotencyKey: `tui:follow-up:${command.id}` }, props.approval))
+      .then(() => callbacks.current.onCommandAccepted?.(command.id))
       .catch((cause: unknown) => callbacks.current.onError?.(safeError(cause)));
   }, [props.approval, props.command]);
   useInput((input) => { if (pendingApproval && (input === "y" || input === "n")) pendingApproval.decide(input === "y"); });

@@ -5,7 +5,7 @@ import type { DesktopApprovalDecision, DesktopRendererBridge } from "./contracts
 
 // Sandboxed Electron preloads are CommonJS and may only require Electron's
 // supported preload modules. Keep runtime channel constants self-contained.
-const channels = Object.freeze({ command: "alphion:command", event: "alphion:event", credential: "alphion:credential", approval: "alphion:approval", external: "alphion:external" });
+const channels = Object.freeze({ command: "alphion:command", event: "alphion:event", credential: "alphion:credential", approval: "alphion:approval", external: "alphion:external", attachmentImport: "alphion:attachment-import", attachmentRead: "alphion:attachment-read" });
 const bridge: DesktopRendererBridge = Object.freeze({
   schemaVersion: 1,
   invoke: (envelope: UiCommandEnvelope) => ipcRenderer.invoke(channels.command, envelope) as Promise<UiCommandResult>,
@@ -17,5 +17,7 @@ const bridge: DesktopRendererBridge = Object.freeze({
   importProviderCredential: (profileId: string, secret: string) => ipcRenderer.invoke(channels.credential, { profileId, secret }) as Promise<void>,
   decideApproval: (decision: DesktopApprovalDecision) => ipcRenderer.invoke(channels.approval, decision) as Promise<void>,
   openExternal: (href: string) => ipcRenderer.invoke(channels.external, href) as Promise<boolean>,
+  importAttachment: (fileName: string, bytes: Uint8Array) => ipcRenderer.invoke(channels.attachmentImport, { fileName, bytes }) as ReturnType<DesktopRendererBridge["importAttachment"]>,
+  readAttachment: (attachmentId: string) => ipcRenderer.invoke(channels.attachmentRead, attachmentId) as ReturnType<DesktopRendererBridge["readAttachment"]>,
 });
 contextBridge.exposeInMainWorld("alphionDesktop", bridge);

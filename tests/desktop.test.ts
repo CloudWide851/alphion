@@ -2,16 +2,21 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
-import { decodeDesktopApprovalDecision, decodeDesktopCredential, DESKTOP_IPC_CHANNELS, DESKTOP_IPC_SCHEMA_VERSION } from "../desktop/index.js";
+import { decodeDesktopApprovalDecision, decodeDesktopAttachmentId, decodeDesktopAttachmentImport, decodeDesktopCredential, DESKTOP_IPC_CHANNELS, DESKTOP_IPC_SCHEMA_VERSION } from "../desktop/index.js";
 
 test("Desktop IPC contract is versioned, allowlisted, and strict", () => {
   assert.equal(DESKTOP_IPC_SCHEMA_VERSION, 1);
-  assert.deepEqual(Object.keys(DESKTOP_IPC_CHANNELS).sort(), ["approval", "command", "credential", "event", "external"]);
+  assert.deepEqual(Object.keys(DESKTOP_IPC_CHANNELS).sort(), ["approval", "attachmentImport", "attachmentRead", "command", "credential", "event", "external"]);
   assert.deepEqual(decodeDesktopCredential({ profileId: "profile_0001", secret: "temporary" }), { profileId: "profile_0001", secret: "temporary" });
   assert.throws(() => decodeDesktopCredential({ profileId: "profile_0001", secret: "temporary", persist: true }), /unknown/iu);
   assert.throws(() => decodeDesktopApprovalDecision({ requestId: "approval_0001", actionDigest: "bad", approved: true }), /invalid/iu);
   const digest = "a".repeat(64);
   assert.deepEqual(decodeDesktopApprovalDecision({ requestId: "approval_0001", actionDigest: digest, shapeDigest: digest, approved: false }), { requestId: "approval_0001", actionDigest: digest, shapeDigest: digest, approved: false });
+  const bytes = Uint8Array.from([137, 80, 78, 71]);
+  assert.deepEqual(decodeDesktopAttachmentImport({ fileName: "sample.png", bytes }), { fileName: "sample.png", bytes });
+  assert.throws(() => decodeDesktopAttachmentImport({ fileName: "../sample.png", bytes }), /invalid/iu);
+  assert.equal(decodeDesktopAttachmentId("attachment_0001"), "attachment_0001");
+  assert.throws(() => decodeDesktopAttachmentId("../secret"), /invalid/iu);
 });
 
 test("Electron Main and preload retain hardened process boundaries", async () => {
@@ -26,6 +31,8 @@ test("Electron Main and preload retain hardened process boundaries", async () =>
   assert.match(main, /assertTrustedSender/u);
   assert.match(main, /window\.webContents\.send\(DESKTOP_IPC_CHANNELS\.event, frame\)/u);
   assert.match(main, /for await \(const frame of client\.subscribe\(\)\)/u);
+  assert.match(main, /DESKTOP_IPC_CHANNELS\.attachmentImport/u);
+  assert.match(main, /DESKTOP_IPC_CHANNELS\.attachmentRead/u);
   assert.doesNotMatch(preload, /(?:node:fs|node:path|child_process|better-sqlite3|LocalAlphionApplication)/u);
   assert.match(preload, /contextBridge\.exposeInMainWorld\("alphionDesktop"/u);
 });

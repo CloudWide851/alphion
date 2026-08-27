@@ -4,22 +4,23 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "../../../ui/markdown.js";
 import type { CodeProjection } from "../../../ui/code-projection.js";
-import { decodeUiEventFrame, decodeUiSurfaceSnapshot, type UiCommand, type UiCommandEnvelope, type UiCommandResult, type UiEventEnvelope, type UiSurfaceSnapshot } from "../../../ui/contracts.js";
+import { decodeUiSurfaceSnapshot, type UiCommand, type UiEventEnvelope, type UiSurfaceSnapshot } from "../../../ui/contracts.js";
 import type { DesktopRendererBridge } from "../../../desktop/contracts.js";
 import { forkAndSelectSession } from "../../../ui/session-actions.js";
 import { parseNewProjectArguments, parseSlashCommand } from "../../../ui/slash-commands.js";
 import { SlashComposer } from "./slash-palette.js";
-import { createConversationRunState, createSubmittedConversationRunState, reduceConversationRun, type ConversationRunState } from "../../../ui/conversation-run.js";
+import type { ImageAttachmentRef } from "../../../src/index.js";
 import { AutomationPanel } from "./automation-panel.js";
-import type { SurfaceClient } from "./surface-client.js";
+import { createSurfaceClient, UiApiError, type SurfaceClient } from "./surface-client.js";
 import { useChatScroll } from "./chat-scroll.js";
 import { ConversationStatus, ConversationUsage, SpeakerLabel } from "./conversation-chrome.js";
 import { ProviderSettings, type ProviderSettingsItem } from "./provider-settings.js";
+import { AttachmentStrip } from "./attachment-strip.js";
+import { appendAssistantDelta, applyAssistantEvent, beginSubmittedMessages, failSubmittedRun, finalizeAssistant, preserveLiveAssistant, sessionMessages, startSubmittedRun, type ChatItem } from "./chat-items.js";
 import "./style.css";
 import "./enhancements.css";
 
 interface SessionItem { readonly id: string; readonly title: string; readonly revision: number; readonly status: string; readonly activeRunId?: string; }
-interface ChatItem { readonly id: string; readonly role: "user" | "assistant"; readonly content: string; readonly run?: ConversationRunState; }
 interface ApprovalChallenge { readonly requestId: string; readonly runId: string; readonly toolName: string; readonly actionDigest: string; readonly shapeDigest?: string; readonly summary: string; }
 function App(): React.JSX.Element {
   const [csrf, setCsrf] = useState("");
@@ -27,6 +28,7 @@ function App(): React.JSX.Element {
   const [active, setActive] = useState<SessionItem | undefined>();
   const [messages, setMessages] = useState<readonly ChatItem[]>([]);
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<readonly ImageAttachmentRef[]>([]);
   const [status, setStatus] = useState("正在连接");
   const [settings, setSettings] = useState(false);
   const [projectPickerRequest, setProjectPickerRequest] = useState(0);
@@ -38,39 +40,16 @@ function App(): React.JSX.Element {
   const activeRef = useRef<SessionItem | undefined>(undefined);
   const draftRef = useRef("");
   const drafts = useRef(new Map<string, string>());
+  const attachmentDrafts = useRef(new Map<string, readonly ImageAttachmentRef[]>());
+  const attachmentsRef = useRef<readonly ImageAttachmentRef[]>([]);
   const scroll = useChatScroll(messages.length, messages.at(-1)?.content.length ?? 0, active?.id ?? "new");
 
   const desktop = window.alphionDesktop;
-  const api = useMemo<SurfaceClient>(() => ({
-    ready: desktop !== undefined || csrf !== "",
-    execute: async (command: UiCommand): Promise<UiCommandResult> => {
-      const envelope: UiCommandEnvelope = { schemaVersion: 1, requestId: requestId(), command };
-      if (desktop) return desktop.invoke(envelope);
-      const response = await fetch("/api/command", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-alphion-csrf": csrf }, body: JSON.stringify(envelope) });
-      const value = await response.json() as UiCommandResult & { error?: { message?: string } };
-      if (!response.ok) throw new UiApiError(response.status, value.error?.message ?? "命令失败");
-      return value;
-    },
-    subscribe: (listener) => {
-      if (desktop) return desktop.subscribe((frame) => listener(decodeUiEventFrame(frame)));
-      const source = new EventSource(`/api/events?cursor=${cursor.current}`, { withCredentials: true });
-      source.addEventListener("surface.frame", (event) => listener(decodeUiEventFrame(JSON.parse((event as MessageEvent<string>).data))));
-      return () => source.close();
-    },
-    importProviderCredential: async (profileId, secret) => {
-      if (desktop) return desktop.importProviderCredential(profileId, secret);
-      const response = await fetch(`/api/secret/provider/${encodeURIComponent(profileId)}`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-alphion-csrf": csrf }, body: JSON.stringify({ secret }) });
-      if (!response.ok) throw new Error("凭据导入失败");
-    },
-    decideApproval: async (decision) => {
-      if (desktop) return desktop.decideApproval(decision);
-      const response = await fetch("/api/approval", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-alphion-csrf": csrf }, body: JSON.stringify(decision) });
-      if (!response.ok) throw new Error("审批决定未被接受");
-    },
-  }), [csrf, desktop]);
+  const api = useMemo<SurfaceClient>(() => createSurfaceClient(desktop, csrf, cursor), [csrf, desktop]);
 
   const showSession = useCallback(async (session: SessionItem): Promise<void> => {
     drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), draftRef.current);
+    attachmentDrafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), attachmentsRef.current);
     const result = await api.execute({ kind: "session.show", sessionId: session.id });
     const view = result.result as { session?: SessionItem };
     const current = view.session ?? session;
@@ -79,6 +58,7 @@ function App(): React.JSX.Element {
     setActiveRunId(current.status === "running" ? current.activeRunId : undefined);
     const restored = drafts.current.get(draftKey(selectedProjectId.current, current.id)) ?? "";
     draftRef.current = restored; setDraft(restored);
+    const restoredAttachments = attachmentDrafts.current.get(draftKey(selectedProjectId.current, current.id)) ?? []; attachmentsRef.current = restoredAttachments; setAttachments(restoredAttachments);
     setSessions((items) => items.map((item) => item.id === current.id ? current : item));
     setMessages(sessionMessages(result.result));
   }, [api]);
@@ -90,12 +70,13 @@ function App(): React.JSX.Element {
     const values: readonly SessionItem[] = snapshot.sessions;
     const previousProjectId = selectedProjectId.current; const previousSessionId = activeRef.current?.id;
     drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), draftRef.current);
+    attachmentDrafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), attachmentsRef.current);
     selectedProjectId.current = snapshot.selectedProjectId;
     setSurface({ ...(snapshot.project ? { project: snapshot.project } : {}), ...(snapshot.compaction ? { compaction: snapshot.compaction } : {}), goals: snapshot.goals, schedules: snapshot.schedules, backgroundRuns: snapshot.backgroundRuns });
     setSessions(values);
     const selected = values.find((item) => item.id === snapshot.selectedSessionId) ?? values[0];
-    if (selected && snapshot.selectedView) { const next = snapshot.selectedView.session as SessionItem; setActive(next); activeRef.current = next; setActiveRunId(next.status === "running" ? next.activeRunId : undefined); const restored = drafts.current.get(draftKey(selectedProjectId.current, next.id)) ?? ""; draftRef.current = restored; setDraft(restored); const history = sessionMessages(snapshot.selectedView); setMessages((items) => previousProjectId === snapshot.selectedProjectId && previousSessionId === next.id ? preserveLiveAssistant(history, items) : history); }
-    else if (selected) await showSession(selected); else { setActive(undefined); activeRef.current = undefined; setActiveRunId(undefined); const restored = drafts.current.get(draftKey(selectedProjectId.current)) ?? ""; draftRef.current = restored; setDraft(restored); setMessages([]); }
+    if (selected && snapshot.selectedView) { const next = snapshot.selectedView.session as SessionItem; setActive(next); activeRef.current = next; setActiveRunId(next.status === "running" ? next.activeRunId : undefined); const key = draftKey(selectedProjectId.current, next.id); const restored = drafts.current.get(key) ?? ""; draftRef.current = restored; setDraft(restored); const restoredAttachments = attachmentDrafts.current.get(key) ?? []; attachmentsRef.current = restoredAttachments; setAttachments(restoredAttachments); const history = sessionMessages(snapshot.selectedView); setMessages((items) => previousProjectId === snapshot.selectedProjectId && previousSessionId === next.id ? preserveLiveAssistant(history, items) : history); }
+    else if (selected) await showSession(selected); else { setActive(undefined); activeRef.current = undefined; setActiveRunId(undefined); const key = draftKey(selectedProjectId.current); const restored = drafts.current.get(key) ?? ""; draftRef.current = restored; setDraft(restored); const restoredAttachments = attachmentDrafts.current.get(key) ?? []; attachmentsRef.current = restoredAttachments; setAttachments(restoredAttachments); setMessages([]); }
   }, [api, showSession]);
 
   useEffect(() => { if (desktop) { setStatus("已连接"); return; } void fetch("/api/bootstrap", { method: "POST" }).then((response) => response.json()).then((value: { csrf: string }) => { setCsrf(value.csrf); setStatus("已连接"); }); }, [desktop]);
@@ -125,22 +106,32 @@ function App(): React.JSX.Element {
   }, [active?.id, api, reloadSessions]);
 
   const send = async () => {
-    const content = draft.trim(); if (!content || !api.ready) return;
+    const content = draft.trim(); const submittedAttachments = attachmentsRef.current; if ((!content && !submittedAttachments.length) || !api.ready) return;
     const submissionId = requestId(); const userId = requestId();
-    draftRef.current = ""; drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), ""); setDraft(""); setStatus("准备上下文"); setMessages((items) => beginSubmittedMessages(items, userId, content, submissionId, active?.id));
+    const queueFollowUp = activeRunId !== undefined && active !== undefined;
+    setStatus(queueFollowUp ? "正在排队后续消息" : "准备上下文"); setMessages((items) => queueFollowUp ? [...items, { id: userId, role: "user", content, ...(submittedAttachments.length ? { attachments: submittedAttachments } : {}) }] : beginSubmittedMessages(items, userId, content, submittedAttachments, submissionId, active?.id));
     let session = active;
     try {
-      if (!session) { const created = await api.execute({ kind: "session.create", title: content.slice(0, 80), idempotencyKey: requestId() }); session = created.result as SessionItem; setActive(session); activeRef.current = session; setSessions((items) => [session!, ...items]); }
-      const result = await api.execute({ kind: "session.send", sessionId: session.id, message: content, expectedRevision: session.revision, idempotencyKey: requestId() });
+      if (!session) { const created = await api.execute({ kind: "session.create", title: (content || submittedAttachments[0]?.fileName || "图片会话").slice(0, 80), idempotencyKey: requestId() }); session = created.result as SessionItem; setActive(session); activeRef.current = session; setSessions((items) => [session!, ...items]); }
+      const message = { schemaVersion: 1 as const, ...(content ? { text: content } : {}), ...(submittedAttachments.length ? { attachments: submittedAttachments } : {}) };
+      if (queueFollowUp) {
+        const shown = await api.execute({ kind: "session.show", sessionId: session.id }); const current = (shown.result as { session: SessionItem }).session;
+        await api.execute({ kind: "session.follow-up", sessionId: session.id, message, expectedRevision: current.revision, idempotencyKey: requestId() });
+        draftRef.current = ""; setDraft(""); attachmentsRef.current = []; setAttachments([]); const key = draftKey(selectedProjectId.current, session.id); drafts.current.set(key, ""); attachmentDrafts.current.set(key, []); setStatus("后续消息已排队"); return;
+      }
+      const result = await api.execute({ kind: "session.send", sessionId: session.id, message, expectedRevision: session.revision, idempotencyKey: requestId() });
       const runId = (result.result as { runId: string }).runId;
+      draftRef.current = ""; setDraft(""); attachmentsRef.current = []; setAttachments([]); const key = draftKey(selectedProjectId.current, session.id); drafts.current.set(key, ""); attachmentDrafts.current.set(key, []);
       setStatus("等待模型"); setActiveRunId(runId);
       setMessages((items) => startSubmittedRun(items, submissionId, runId, session!.id));
     } catch (error) {
       setStatus(error instanceof UiApiError && error.status === 409 ? "修订冲突，已刷新" : "发送失败");
-      setMessages((items) => failSubmittedRun(items, submissionId, error instanceof Error ? error.message : "发送失败"));
+      setMessages((items) => queueFollowUp ? items.filter((item) => item.id !== userId) : failSubmittedRun(items, submissionId, error instanceof Error ? error.message : "发送失败"));
       if (error instanceof UiApiError && error.status === 409 && session) await reloadSessions(session.id);
     }
   };
+  const importFiles = async (files: readonly File[]): Promise<void> => { try { for (const file of files.slice(0, Math.max(0, 8 - attachmentsRef.current.length))) { const ref = await api.importAttachment(file); const next = [...attachmentsRef.current, ref]; attachmentsRef.current = next; setAttachments(next); attachmentDrafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), next); } } catch (error) { setStatus(error instanceof Error ? error.message : "图片导入失败"); } };
+  const removeAttachment = (id: string): void => { const next = attachmentsRef.current.filter((item) => item.id !== id); attachmentsRef.current = next; setAttachments(next); attachmentDrafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), next); };
 
   const decideApproval = async (approved: boolean): Promise<void> => {
     if (!approval) return;
@@ -172,8 +163,9 @@ function App(): React.JSX.Element {
     if ((id === "steer" || id === "follow-up") && active) {
       if (!parsed.argument) { setStatus(`/${id} 需要消息参数`); return; }
       const shown = await api.execute({ kind: "session.show", sessionId: active.id }); const current = (shown.result as { session: SessionItem }).session;
-      await api.execute({ kind: id === "steer" ? "session.steer" : "session.follow-up", sessionId: active.id, message: parsed.argument, expectedRevision: current.revision, idempotencyKey: requestId() });
-      clearDraft(); setStatus(id === "steer" ? "已注入下一模型边界" : "后续消息已排队"); return;
+      const commandAttachments = attachmentsRef.current;
+      await api.execute({ kind: id === "steer" ? "session.steer" : "session.follow-up", sessionId: active.id, message: { schemaVersion: 1, text: parsed.argument, ...(commandAttachments.length ? { attachments: commandAttachments } : {}) }, expectedRevision: current.revision, idempotencyKey: requestId() });
+      clearDraft(); attachmentsRef.current = []; setAttachments([]); attachmentDrafts.current.set(draftKey(selectedProjectId.current, active.id), []); setStatus(id === "steer" ? "已注入下一模型边界" : "后续消息已排队"); return;
     }
     const command: UiCommand | undefined = id === "profile" ? { kind: "project.inspect" }
       : id === "doctor" ? { kind: "doctor" }
@@ -192,11 +184,11 @@ function App(): React.JSX.Element {
     <aside className="rail"><span className="rail-label">Sessions</span>{sessions.map((session) => <button className={session.id === active?.id ? "session active" : "session"} key={session.id} onClick={() => void showSession(session)}>{session.title}<small>{session.status}</small></button>)}<button className="new-session" onClick={() => { drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), draftRef.current); setActive(undefined); activeRef.current = undefined; setMessages([]); const restored = drafts.current.get(draftKey(selectedProjectId.current)) ?? ""; draftRef.current = restored; setDraft(restored); }}>＋ 新对话</button>{surface.backgroundRuns.length ? <><span className="rail-label">后台运行</span>{surface.backgroundRuns.map((run) => <span className="background-run" key={`${run.projectId}:${run.runId}`}>{run.projectName}<small>{run.title}</small></span>)}</> : null}</aside>
     <main className="conversation">
       <div className="conversation-head"><h1>{active?.title ?? "新对话"}</h1><div><button className="quiet" disabled={!active || active.status !== "idle"} onClick={() => void forkActive()}>Fork</button><span className="connection"><i />本机</span></div></div>
-      <div className="conversation-viewport">{settings ? <SettingsPanel client={api} {...(active ? { sessionId: active.id } : {})} surface={surface} sessions={sessions} projectPickerRequest={projectPickerRequest} onProjectActivated={() => { setSettings(false); void reloadSessions(); }} /> : <section className="messages" ref={scroll.viewportRef} onScroll={scroll.onScroll} aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role} ${message.run?.status ?? ""}`} key={message.id}><SpeakerLabel role={message.role} {...(message.run ? { run: message.run } : {})} /><div><Markdown content={message.content || message.run?.statusText || "…"} /></div></article>)}{scroll.unseenCount ? <button className="new-message" onClick={scroll.returnToLatest}>{scroll.unseenCount} 条新消息 · 返回最新</button> : null}</section>}</div>
+      <div className="conversation-viewport">{settings ? <SettingsPanel client={api} {...(active ? { sessionId: active.id } : {})} surface={surface} sessions={sessions} projectPickerRequest={projectPickerRequest} onProjectActivated={() => { setSettings(false); void reloadSessions(); }} /> : <section className="messages" ref={scroll.viewportRef} onScroll={scroll.onScroll} aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role} ${message.run?.status ?? ""}`} key={message.id}><SpeakerLabel role={message.role} {...(message.run ? { run: message.run } : {})} />{message.attachments ? <AttachmentStrip attachments={message.attachments} client={api} /> : null}<div><Markdown content={message.content || message.run?.statusText || (message.attachments?.length ? "" : "…")} /></div></article>)}{scroll.unseenCount ? <button className="new-message" onClick={scroll.returnToLatest}>{scroll.unseenCount} 条新消息 · 返回最新</button> : null}</section>}</div>
       {approval ? <ApprovalCard challenge={approval} onDecide={(approved) => void decideApproval(approved)} /> : null}
       <ConversationStatus status={status} {...(latestRun ? { run: latestRun } : {})} />
       <ConversationUsage {...(latestRun ? { run: latestRun } : {})} />
-      <SlashComposer value={draft} context={{ hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) }} disabled={!api.ready} onChange={(value) => { draftRef.current = value; drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), value); setDraft(value); }} onSubmitMessage={() => void send()} onCommand={(command) => void executeSlash(command).catch(() => setStatus("命令执行失败"))} />
+      <SlashComposer value={draft} client={api} attachments={attachments} onFiles={(files) => void importFiles(files)} onRemoveAttachment={removeAttachment} context={{ hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) }} disabled={!api.ready} onChange={(value) => { draftRef.current = value; drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), value); setDraft(value); }} onSubmitMessage={() => void send()} onCommand={(command) => void executeSlash(command).catch(() => setStatus("命令执行失败"))} />
     </main>
   </div>;
 }
@@ -233,20 +225,9 @@ function CodeBlock({ projection }: Readonly<{ projection: CodeProjection }>): Re
 function inline(items: readonly MarkdownInline[]): React.ReactNode { return items.map((item, index) => { switch (item.kind) { case "text": return item.value; case "break": return <br key={index} />; case "code": return <code key={index}>{item.value}</code>; case "math": return <MathFragment key={index} value={item.value} />; case "link": return <a key={index} href={item.href} onClick={(event) => openExternal(event, item.href, item.domain)} rel="noreferrer">{inline(item.children)} <span aria-label={`域名 ${item.domain}`}>↗</span></a>; case "strong": return <strong key={index}>{inline(item.children)}</strong>; case "emphasis": return <em key={index}>{inline(item.children)}</em>; } }); }
 function MathFragment({ value, display = false }: Readonly<{ value: string; display?: boolean }>): React.JSX.Element { const ref = useRef<HTMLSpanElement>(null); useEffect(() => { if (ref.current) katex.render(value, ref.current, { displayMode: display, throwOnError: false, strict: "error", trust: false }); }, [display, value]); return <span className={display ? "math-block" : "math-inline"} ref={ref} />; }
 
-function beginSubmittedMessages(items: readonly ChatItem[], userId: string, content: string, submissionId: string, sessionId?: string): readonly ChatItem[] { return [...items, { id: userId, role: "user", content }, { id: `pending:${submissionId}`, role: "assistant", content: "", run: createSubmittedConversationRunState(submissionId, sessionId) }]; }
-function startSubmittedRun(items: readonly ChatItem[], submissionId: string, runId: string, sessionId: string): readonly ChatItem[] { return items.map((item) => item.id === `pending:${submissionId}` ? { ...item, id: runId, run: createConversationRunState(runId, sessionId) } : item); }
-function failSubmittedRun(items: readonly ChatItem[], submissionId: string, message: string): readonly ChatItem[] { return items.map((item) => item.id === `pending:${submissionId}` ? updateRunItem(item, { kind: "error", message }) : item); }
-function appendAssistantDelta(items: readonly ChatItem[], runId: string, delta: string): readonly ChatItem[] { const index = items.findIndex((item) => item.id === runId); if (index < 0) { const run = reduceConversationRun(createConversationRunState(runId, "unknown"), { kind: "delta", delta }); return [...items, { id: runId, role: "assistant", content: run.text, run }]; } return items.map((item) => item.id === runId ? updateRunItem(item, { kind: "delta", delta }) : item); }
-function applyAssistantEvent(items: readonly ChatItem[], event: Extract<UiEventEnvelope["payload"], { kind: "agent.event" }>["event"]): readonly ChatItem[] { if ("delivery" in event) return items; const index = items.findIndex((item) => item.id === event.runId); if (index < 0) { const run = reduceConversationRun(createConversationRunState(event.runId, event.sessionId), { kind: "agent-event", event }); return [...items, { id: event.runId, role: "assistant", content: run.text, run }]; } return items.map((item) => item.id === event.runId ? updateRunItem(item, { kind: "agent-event", event }) : item); }
-function finalizeAssistant(items: readonly ChatItem[], runId: string, status: string, finalText: string): readonly ChatItem[] { return items.map((item) => item.id === runId ? updateRunItem(item, { kind: "finish", status, finalText }) : item); }
-function updateRunItem(item: ChatItem, action: Parameters<typeof reduceConversationRun>[1]): ChatItem { const run = reduceConversationRun(item.run ?? createConversationRunState(item.id, "unknown"), action); return { ...item, content: run.text, run }; }
-function sessionMessages(value: unknown): readonly ChatItem[] { const entries = (value as { entries?: Array<{ id: string; message: { kind: string; content?: string } }> }).entries ?? []; return entries.filter((entry) => (entry.message.kind === "user" || entry.message.kind === "assistant") && typeof entry.message.content === "string").map((entry) => ({ id: entry.id, role: entry.message.kind as "user" | "assistant", content: entry.message.content ?? "" })); }
-function preserveLiveAssistant(history: readonly ChatItem[], current: readonly ChatItem[]): readonly ChatItem[] { const live = current.filter((item) => item.role === "assistant" && item.run && ["waiting", "streaming", "tool"].includes(item.run.status)); return [...history, ...live.filter((item) => !history.some((entry) => entry.id === item.id))]; }
 function requestId(): string { return `web_${crypto.randomUUID().replaceAll("-", "")}`; }
 function draftKey(projectId?: string, sessionId?: string): string { return `${projectId ?? "unowned"}:${sessionId ?? "new"}`; }
 function openExternal(event: React.MouseEvent<HTMLAnchorElement>, href: string, domain: string): void { event.preventDefault(); if (!confirm(`打开外部链接 ${domain}？`)) return; const desktop = (window as Window & { alphionDesktop?: { openExternal(href: string): Promise<boolean> } }).alphionDesktop; if (desktop) void desktop.openExternal(href); else window.open(href, "_blank", "noopener,noreferrer"); }
-class UiApiError extends Error { constructor(readonly status: number, message: string) { super(message); this.name = "UiApiError"; } }
-
 createRoot(document.getElementById("root")!).render(<React.StrictMode><App /></React.StrictMode>);
 
 declare global { interface Window { readonly alphionDesktop?: DesktopRendererBridge } }

@@ -7,7 +7,7 @@ export async function runWebUi(options: Readonly<{ port?: number }> = {}): Promi
   const projects = new WorkspaceController();
   await projects.openCurrentOrDefault();
   const client = new LocalUiCommandClient({ application: () => { const current = projects.current(); if (!current) throw new Error("WebUI Project is not open."); return current.application; }, projects: projects.projects, activateProject: async (projectId) => { await projects.activate(projectId); }, currentProjectId: () => projects.current()?.project?.id, backgroundRuns: () => projects.backgroundRuns() });
-  const server = await createWebUiServer({ client, ...(options.port === undefined ? {} : { port: options.port }) });
+  const server = await createWebUiServer({ client, attachments: client, ...(options.port === undefined ? {} : { port: options.port }) });
   process.stdout.write(`Alphion WebUI: ${server.origin}\n`);
   try { await stopSignal(); }
   finally { await server.close(); await projects.close(); }

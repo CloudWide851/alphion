@@ -1,5 +1,5 @@
-import { AlphionError, type AgentApplication, type AgentRunHandle, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type ProjectManager, type SessionActivity } from "../src/index.js";
-import type { UiBackgroundRunSummary, UiCommand, UiCommandClient, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiEventPayload, UiSurfaceSnapshot } from "./contracts.js";
+import { AlphionError, type AgentApplication, type AgentRunHandle, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type AttachmentImportInput, type ImageAttachmentRef, type ProjectManager, type SessionActivity } from "../src/index.js";
+import type { UiAttachmentClient, UiBackgroundRunSummary, UiCommand, UiCommandClient, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiEventPayload, UiSurfaceSnapshot } from "./contracts.js";
 import { frameEvents, historyFrames, resyncFrame, UiFrameQueue } from "./event-frames.js";
 
 export interface LocalUiCommandClientOptions {
@@ -11,7 +11,7 @@ export interface LocalUiCommandClientOptions {
   readonly approvalTimeoutMs?: number;
 }
 
-export class LocalUiCommandClient implements UiCommandClient {
+export class LocalUiCommandClient implements UiCommandClient, UiAttachmentClient {
   readonly #runs = new Map<string, AgentRunHandle>();
   readonly #runProjects = new Map<string, string>();
   readonly #events: UiEventEnvelope[] = [];
@@ -49,6 +49,13 @@ export class LocalUiCommandClient implements UiCommandClient {
     if (!profileId.trim() || !secret || secret.length > 16 * 1024) throw new AlphionError("validation", "A bounded Provider credential is required.", { stage: "ui" });
     try { await this.options.application().configuration.importCredential(profileId, secret); }
     finally { secret = ""; }
+  }
+
+  importAttachment(input: AttachmentImportInput): Promise<ImageAttachmentRef> { return this.options.application().attachments.importBytes(input); }
+  async readAttachment(attachmentId: string): Promise<Readonly<{ ref: ImageAttachmentRef; bytes: Uint8Array }>> {
+    const ref = await this.options.application().attachments.get(attachmentId);
+    if (!ref) throw new AlphionError("validation", "Unknown image attachment.", { stage: "ui" });
+    return Object.freeze({ ref, bytes: await this.options.application().attachments.readAttachment(ref) });
   }
 
   decideApproval(input: Readonly<{ requestId: string; actionDigest: string; shapeDigest?: string; approved: boolean }>): void { this.#approval.decide(input); }

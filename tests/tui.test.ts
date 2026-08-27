@@ -7,6 +7,8 @@ import { AppShell, ChatEntry, ChatHome, HarnessPlanView, ProviderForm, ProviderL
 import type { AgentApplication, AgentSessionContract } from "../src/index.js";
 import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "../tui/run-projection.js";
 
+const IMAGE_REF = Object.freeze({ schemaVersion: 1 as const, id: "attachment_tui_0001", domainId: "domain_tui_0001", digest: "b".repeat(64), mediaType: "image/png" as const, byteSize: 8, width: 1, height: 1, fileName: "pasted.png" });
+
 test("TUI strips terminal controls without exposing reasoning", () => {
   assert.equal(sanitizeTerminalText("safe\u001b[31m red\u0000"), "safe[31m red");
   const running = reduceRunProjection(EMPTY_RUN_PROJECTION, { type: "reset" });
@@ -171,6 +173,18 @@ test("TUI chat input clears after every successful send", async () => {
   assert.deepEqual(submitted, ["first message"]);
   assert.doesNotMatch(view.lastFrame() ?? "", /first message/u);
   view.unmount();
+});
+
+test("TUI image drafts render placeholders and support paste and empty-input removal", async () => {
+  let pasted = 0; let removed = 0;
+  const view = render(React.createElement(ChatEntry, { attachments: [IMAGE_REF], onPasteImage: () => { pasted += 1; }, onRemoveLastAttachment: () => { removed += 1; }, onSubmit: () => undefined }));
+  assert.match(view.lastFrame() ?? "", /\[图片 1：pasted\.png\]/u);
+  assert.match(view.lastFrame() ?? "", /请输入内容/u);
+  view.stdin.write("\u007f"); await new Promise((resolve) => setTimeout(resolve, 10)); assert.equal(removed, 1);
+  view.stdin.write("\u0016"); await new Promise((resolve) => setTimeout(resolve, 10)); assert.equal(pasted, 1);
+  view.unmount();
+  const history = render(React.createElement(ChatHome, { compact: true, messages: [{ id: "image-message", role: "user", content: "", attachments: [IMAGE_REF] }], onSubmit: () => undefined }));
+  assert.match(history.lastFrame() ?? "", /\[图片 1：pasted\.png\]/u); history.unmount();
 });
 
 test("TUI controlled chat input restores a Project and Session scoped draft", async () => {

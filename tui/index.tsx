@@ -12,6 +12,7 @@ import type {
   ProviderProfile,
   ApprovalPort,
   CompactionProjection,
+  ImageAttachmentRef,
 } from "../src/index.js";
 import { TuiApprovalPort } from "./approval-port.js";
 import { sanitizeTerminalText } from "./run-projection.js";
@@ -26,6 +27,7 @@ import { ProviderForm, ProviderList, presetDraft, profileDraft, providerTestLabe
 import { resolveTuiInput } from "./slash-dispatch.js";
 import { HelpCard, ProjectCard, SettingsCard } from "./workbench-cards.js";
 import { ContextCard, GoalCard, SchedulesCard } from "./automation-cards.js";
+import { readClipboardImage } from "./clipboard-image.js";
 
 export interface RunTuiOptions {
   readonly projectRoot: string;
@@ -90,6 +92,7 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot>({});
   const [draft, setDraft] = useState<ProviderDraft>(() => presetDraft(presets[0]));
   const [runPrompt, setRunPrompt] = useState("");
+  const [runAttachments, setRunAttachments] = useState<readonly ImageAttachmentRef[]>([]);
   const [runProviderId, setRunProviderId] = useState<string | undefined>();
   const [runSession, setRunSession] = useState<AgentSessionContract | undefined>(initialSession);
   const [runCommand, setRunCommand] = useState<RunViewCommand>();
@@ -97,14 +100,17 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
   const [chatMessages, setChatMessages] = useState<readonly ChatMessage[]>(initialMessages);
   const [compaction, setCompaction] = useState<CompactionProjection>(initialCompaction);
   const [chatDraft, setChatDraft] = useState("");
+  const [chatAttachments, setChatAttachments] = useState<readonly ImageAttachmentRef[]>([]);
   const drafts = useRef(new Map<string, string>());
+  const attachmentDrafts = useRef(new Map<string, readonly ImageAttachmentRef[]>());
   const approval = useMemo(() => new TuiApprovalPort(), []);
 
   const refreshProjects = useCallback(async () => { const [values, running] = await Promise.all([workspace.projects.list(), workspace.backgroundRuns()]); setRegisteredProjects(values); setBackgroundRuns(running); return values; }, [workspace]);
   const selectWorkspace = useCallback(async (next: ActiveProjectSnapshot) => {
     drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), chatDraft);
-    setWorkspaceSnapshot(next); setChatSession(undefined); setChatMessages([]); setChatDraft(drafts.current.get(tuiDraftKey(next.project?.id)) ?? ""); setCompaction({ count: 0 }); setSection("sessions"); setError(""); await refreshProjects();
-  }, [chatDraft, chatSession?.id, refreshProjects, workspaceSnapshot.project?.id]);
+    attachmentDrafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), chatAttachments);
+    const key = tuiDraftKey(next.project?.id); setWorkspaceSnapshot(next); setChatSession(undefined); setChatMessages([]); setChatDraft(drafts.current.get(key) ?? ""); setChatAttachments(attachmentDrafts.current.get(key) ?? []); setCompaction({ count: 0 }); setSection("sessions"); setError(""); await refreshProjects();
+  }, [chatAttachments, chatDraft, chatSession?.id, refreshProjects, workspaceSnapshot.project?.id]);
   const activateProject = useCallback((projectId: string) => { void workspace.activate(projectId).then(selectWorkspace).catch((cause: unknown) => setError(safeError(cause))); }, [selectWorkspace, workspace]);
 
   const refreshProfiles = useCallback(async () => {
@@ -120,12 +126,12 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
     ]);
     setSnapshot({ profile, diagnostics });
   }, [application]);
-  const acceptRunSession = useCallback((session: AgentSessionContract) => { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), chatDraft); setChatSession(session); setChatDraft(drafts.current.get(tuiDraftKey(workspaceSnapshot.project?.id, session.id)) ?? ""); void session.compactionProjection().then(setCompaction); }, [chatDraft, chatSession?.id, workspaceSnapshot.project?.id]);
+  const acceptRunSession = useCallback((session: AgentSessionContract) => { const oldKey = tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id); drafts.current.set(oldKey, chatDraft); attachmentDrafts.current.set(oldKey, chatAttachments); const key = tuiDraftKey(workspaceSnapshot.project?.id, session.id); setChatSession(session); setChatDraft(drafts.current.get(key) ?? chatDraft); setChatAttachments(attachmentDrafts.current.get(key) ?? chatAttachments); void session.compactionProjection().then(setCompaction); }, [chatAttachments, chatDraft, chatSession?.id, workspaceSnapshot.project?.id]);
   const finishRun = useCallback((answer: string) => {
     if (answer.trim()) setChatMessages((messages) => [...messages, { id: `assistant:${Date.now()}`, role: "assistant", content: answer }]);
     const completedSession = runSession ?? chatSession;
     if (completedSession) void completedSession.compactionProjection().then(setCompaction);
-    setRunPrompt(""); setRunSession(undefined); setRunCommand(undefined); void refreshSnapshot();
+    setRunPrompt(""); setRunAttachments([]); setRunSession(undefined); setRunCommand(undefined); void refreshSnapshot();
   }, [chatSession, refreshSnapshot, runSession]);
 
   useEffect(() => {
@@ -149,30 +155,31 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
 
   const current = profiles[selected];
   const activeProfile = profiles.find((profile) => profile.active);
-  const beginRun = (prompt: string, session?: AgentSessionContract) => {
+  const beginRun = (prompt: string, session?: AgentSessionContract, images = chatAttachments) => {
     if (session) setChatSession(session);
-    setChatMessages((messages) => [...messages, { id: `user:${Date.now()}`, role: "user", content: prompt }]);
-    setRunPrompt(prompt);
+    setChatMessages((messages) => [...messages, { id: `user:${Date.now()}`, role: "user", content: prompt, ...(images.length ? { attachments: images } : {}) }]);
+    setRunPrompt(prompt || " "); setRunAttachments(images);
     setRunSession(session ?? chatSession);
     setRunProviderId(activeProfile?.id);
   };
   const submitChat = (value: string): boolean | void => {
     const action = resolveTuiInput(value, { hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) });
     if (action.kind === "message") {
+      const path = droppedImagePath(action.content); if (path) { if (chatAttachments.length >= 8) { setError("每条消息最多 8 张图片。"); return false; } void application.attachments.importFile(path).then((image) => { setChatAttachments((items) => items.length >= 8 ? items : [...items, image]); setError(""); }).catch((cause: unknown) => setError(safeError(cause))); return false; }
       if (!activeProfile) { setError("请先配置并激活 Provider；当前输入已保留。"); setSection("providers"); return false; }
-      if (runPrompt) { if (chatSession) setRunCommand({ id: Date.now(), kind: "follow-up", content: action.content }); else setError("会话尚未准备好。"); }
+      if (runPrompt) { if (chatSession) setRunCommand({ id: Date.now(), kind: "follow-up", content: action.content, ...(chatAttachments.length ? { attachments: chatAttachments } : {}) }); else setError("会话尚未准备好。"); }
       else beginRun(action.content);
-      return;
+      return false;
     }
     if (action.kind === "fork") {
       if (!chatSession) { setError("/fork 需要当前会话；可使用 alphion tui --session <ID> 打开。"); return; }
       void forkTuiSession(chatSession, action.title, terminalLauncher).then((outcome) => setError(outcome.message)).catch((cause: unknown) => setError(safeError(cause)));
       return;
     }
-    if (action.kind === "new") { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), chatDraft); setChatSession(undefined); setChatMessages([]); setChatDraft(drafts.current.get(tuiDraftKey(workspaceSnapshot.project?.id)) ?? ""); setError(""); return; }
+    if (action.kind === "new") { const oldKey = tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id); const nextKey = tuiDraftKey(workspaceSnapshot.project?.id); drafts.current.set(oldKey, chatDraft); attachmentDrafts.current.set(oldKey, chatAttachments); setChatSession(undefined); setChatMessages([]); setChatDraft(drafts.current.get(nextKey) ?? ""); setChatAttachments(attachmentDrafts.current.get(nextKey) ?? []); setError(""); return; }
     if (action.kind === "new-project") { setError("正在创建或打开 Project…"); void workspace.openProject({ root: action.root, create: true, ...(action.name ? { name: action.name } : {}) }).then(selectWorkspace).catch((cause: unknown) => setError(safeError(cause))); return; }
     if (action.kind === "navigate") { setError(""); setSection(action.section); return; }
-    if (action.kind === "steer" || action.kind === "follow-up" || action.kind === "cancel") { setRunCommand({ id: Date.now(), kind: action.kind, ...(action.kind === "cancel" ? {} : { content: action.content }) }); setError(""); return; }
+    if (action.kind === "steer" || action.kind === "follow-up" || action.kind === "cancel") { setRunCommand({ id: Date.now(), kind: action.kind, ...(action.kind === "cancel" ? {} : { content: action.content, ...(chatAttachments.length ? { attachments: chatAttachments } : {}) }) }); setError(""); return; }
     setError(action.kind === "error" ? action.message : "命令需要活动 Run。");
   };
   if (screen === "provider-form") {
@@ -200,7 +207,7 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
     </EntryShell>;
   }
   return <AppShell section={section} layout={layout} colorEnabled={colorEnabled} projectRoot={projectRoot} error={error} help={help}>
-    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} draft={chatDraft} onDraftChange={(value) => { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), value); setChatDraft(value); }} compactionCount={compaction.count} activeBubble={runPrompt ? <RunView application={application} approval={approval} prompt={runPrompt} {...(runSession ? { session: runSession } : {})} {...(runProviderId ? { providerId: runProviderId } : {})} {...(runCommand ? { command: runCommand } : {})} compact={layout === "compact"} onSession={acceptRunSession} onError={setError} onDone={finishRun} /> : null} compact={layout === "compact"} heightRows={Math.max(10, (stdout.rows ?? 24) - 2)} viewportRows={Math.max(4, (stdout.rows ?? 24) - (layout === "compact" ? 8 : 11))} contentWidth={Math.max(20, Math.min(88, (stdout.columns ?? 80) - 8))} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) }} onSubmit={submitChat} /> : null}
+    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} attachments={chatAttachments} draft={chatDraft} onDraftChange={(value) => { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), value); setChatDraft(value); }} onPasteImage={() => { if (chatAttachments.length >= 8) { setError("每条消息最多 8 张图片。"); return; } void readClipboardImage().then((input) => application.attachments.importBytes(input)).then((image) => setChatAttachments((items) => items.length >= 8 ? items : [...items, image])).catch((cause: unknown) => setError(safeError(cause))); }} onRemoveLastAttachment={() => setChatAttachments((items) => items.slice(0, -1))} compactionCount={compaction.count} activeBubble={runPrompt ? <RunView application={application} approval={approval} prompt={runPrompt} attachments={runAttachments} {...(runSession ? { session: runSession } : {})} {...(runProviderId ? { providerId: runProviderId } : {})} {...(runCommand ? { command: runCommand } : {})} compact={layout === "compact"} onSession={acceptRunSession} onAccepted={() => { setChatDraft(""); setChatAttachments([]); }} onCommandAccepted={(commandId) => { if (runCommand?.id === commandId) { setChatDraft(""); setChatAttachments([]); } }} onError={setError} onDone={finishRun} /> : null} compact={layout === "compact"} heightRows={Math.max(10, (stdout.rows ?? 24) - 2)} viewportRows={Math.max(4, (stdout.rows ?? 24) - (layout === "compact" ? 8 : 11))} contentWidth={Math.max(20, Math.min(88, (stdout.columns ?? 80) - 8))} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) }} onSubmit={submitChat} /> : null}
     {section === "settings" ? <SettingsCard onSelect={setSection} /> : null}
     {section === "projects" ? <ProjectCard projectRoot={projectRoot} projects={registeredProjects} backgroundRuns={backgroundRuns} {...(workspaceSnapshot.project ? { currentProjectId: workspaceSnapshot.project.id } : {})} onActivate={activateProject} /> : null}
     {section === "profile" ? <ProjectProfileView {...(snapshot.profile ? { profile: snapshot.profile } : {})} onRefresh={() => void refreshSnapshot(true).catch((cause: unknown) => setError(safeError(cause)))} /> : null}
@@ -218,7 +225,7 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
       onRun={() => current && setSection("home")}
       onExit={() => exit()}
     /> : null}
-    {section === "sessions" ? <SessionWorkbenchView application={application} approval={approval} onSelect={(session, messages) => { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), chatDraft); setChatSession(session); setChatMessages(messages); setChatDraft(drafts.current.get(tuiDraftKey(workspaceSnapshot.project?.id, session.id)) ?? ""); void session.compactionProjection().then(setCompaction); setSection("home"); }} onSend={(session, prompt) => beginRun(prompt, session)} onError={(cause) => setError(safeError(cause))} /> : null}
+    {section === "sessions" ? <SessionWorkbenchView application={application} approval={approval} onSelect={(session, messages) => { const oldKey = tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id); const nextKey = tuiDraftKey(workspaceSnapshot.project?.id, session.id); drafts.current.set(oldKey, chatDraft); attachmentDrafts.current.set(oldKey, chatAttachments); setChatSession(session); setChatMessages(messages); setChatDraft(drafts.current.get(nextKey) ?? ""); setChatAttachments(attachmentDrafts.current.get(nextKey) ?? []); void session.compactionProjection().then(setCompaction); setSection("home"); }} onSend={(session, prompt) => beginRun(prompt, session)} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "resources" ? <ResourceResolutionView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "harness" ? <HarnessPlanView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "context" ? <ContextCard {...(chatSession ? { session: chatSession } : {})} onError={(cause) => setError(safeError(cause))} /> : null}
@@ -347,5 +354,6 @@ function safeError(value: unknown): string {
   return sanitizeTerminalText(value instanceof Error ? value.message : "TUI 发生未预期错误。");
 }
 
-function chatMessagesFromView(view: Awaited<ReturnType<AgentSessionContract["view"]>>): readonly ChatMessage[] { return view.entries.flatMap((item) => (item.message.kind === "user" || item.message.kind === "assistant") ? [{ id: item.id, role: item.message.kind, content: item.message.content }] : []); }
+function chatMessagesFromView(view: Awaited<ReturnType<AgentSessionContract["view"]>>): readonly ChatMessage[] { return view.entries.flatMap((item) => (item.message.kind === "user" || item.message.kind === "assistant") ? [{ id: item.id, role: item.message.kind, content: item.message.content, ...(item.message.kind === "user" && item.message.schemaVersion === 3 ? { attachments: item.message.attachments } : {}) }] : []); }
 function tuiDraftKey(projectId?: string, sessionId?: string): string { return `${projectId ?? "unowned"}:${sessionId ?? "new"}`; }
+function droppedImagePath(value: string): string | undefined { const path = value.trim().replace(/^("|')|("|')$/gu, ""); return /\.(png|jpe?g|webp|gif)$/iu.test(path) ? path : undefined; }

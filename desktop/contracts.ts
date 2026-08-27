@@ -1,3 +1,4 @@
+import type { ImageAttachmentRef } from "../src/index.js";
 import type { UiCommandEnvelope, UiCommandResult, UiEventFrame } from "../ui/contracts.js";
 
 export const DESKTOP_IPC_SCHEMA_VERSION = 1 as const;
@@ -7,6 +8,8 @@ export const DESKTOP_IPC_CHANNELS = Object.freeze({
   credential: "alphion:credential",
   approval: "alphion:approval",
   external: "alphion:external",
+  attachmentImport: "alphion:attachment-import",
+  attachmentRead: "alphion:attachment-read",
 } as const);
 
 export interface DesktopApprovalDecision {
@@ -24,6 +27,8 @@ export interface DesktopRendererBridge {
   importProviderCredential(profileId: string, secret: string): Promise<void>;
   decideApproval(decision: DesktopApprovalDecision): Promise<void>;
   openExternal(href: string): Promise<boolean>;
+  importAttachment(fileName: string, bytes: Uint8Array): Promise<ImageAttachmentRef>;
+  readAttachment(attachmentId: string): Promise<Readonly<{ ref: ImageAttachmentRef; bytes: Uint8Array }>>;
 }
 
 export function decodeDesktopApprovalDecision(value: unknown): DesktopApprovalDecision {
@@ -41,6 +46,14 @@ export function decodeDesktopCredential(value: unknown): Readonly<{ profileId: s
   if (!/^[A-Za-z0-9:_-]{1,200}$/u.test(profileId) || !secret || secret.length > 16 * 1024) throw new Error("Desktop credential payload is invalid.");
   return Object.freeze({ profileId, secret });
 }
+
+export function decodeDesktopAttachmentImport(value: unknown): Readonly<{ fileName: string; bytes: Uint8Array }> {
+  const input = record(value, "Desktop image attachment"); exact(input, ["fileName", "bytes"]);
+  const fileName = text(input.fileName); const bytes = input.bytes;
+  if (!fileName || fileName.length > 255 || /[\u0000-\u001f\u007f/\\]/u.test(fileName) || !(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > 20 * 1024 * 1024) throw new Error("Desktop image attachment is invalid.");
+  return Object.freeze({ fileName, bytes: Uint8Array.from(bytes) });
+}
+export function decodeDesktopAttachmentId(value: unknown): string { const id = text(value); if (!/^[A-Za-z0-9:_-]{4,200}$/u.test(id)) throw new Error("Desktop image attachment ID is invalid."); return id; }
 
 function record(value: unknown, label: string): Readonly<Record<string, unknown>> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object.`); return value as Readonly<Record<string, unknown>>; }
 function exact(value: Readonly<Record<string, unknown>>, keys: readonly string[]): void { if (Object.keys(value).some((key) => !keys.includes(key))) throw new Error("Unknown Desktop IPC field."); }
