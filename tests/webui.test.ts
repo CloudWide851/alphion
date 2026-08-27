@@ -10,6 +10,7 @@ test("shared UI decoder rejects unknown envelope and command fields", () => {
   assert.throws(() => decodeUiCommandEnvelope({ schemaVersion: 1, requestId: "request_web_0000", command: { kind: "session.list", secret: "must-not-pass" } }), /unknown/ui);
   assert.throws(() => decodeUiCommandEnvelope({ schemaVersion: 1, requestId: "request_web_0000", command: { kind: "session.list" }, extra: true }), /unknown/ui);
   assert.deepEqual(decodeUiCommandEnvelope({ schemaVersion: 1, requestId: "request_web_0004", command: { kind: "surface.snapshot", selectedSessionId: "session_0001" } }).command, { kind: "surface.snapshot", selectedSessionId: "session_0001" });
+  assert.deepEqual(decodeUiCommandEnvelope({ schemaVersion: 1, requestId: "request_web_0005", command: { kind: "project.create", root: "C:\\work space\\demo", name: "Demo" } }).command, { kind: "project.create", root: "C:\\work space\\demo", name: "Demo" });
 });
 
 test("WebUI binds loopback and enforces Origin, HttpOnly session, and CSRF", async () => {

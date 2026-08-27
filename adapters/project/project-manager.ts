@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { canonicalJson, createId, sha256 } from "../../src/application/canonical.js";
 import { AlphionError } from "../../src/application/errors.js";
 import type { ProjectRecord } from "../../src/domain/contracts.js";
@@ -20,6 +20,8 @@ export class LocalProjectManager implements ProjectManager {
     return this.#mutate(async (registry) => {
       const name = validateProjectName(input.name);
       const root = await realpath(resolve(input.root));
+      const existing = registry.projects.find((item) => normalizePath(item.root) === normalizePath(root));
+      if (existing) return { registry, result: existing };
       assertUniqueProject(registry.projects, name, root);
       const now = new Date().toISOString();
       const id = createId("project");
@@ -28,9 +30,23 @@ export class LocalProjectManager implements ProjectManager {
     });
   }
 
-  async create(input: Readonly<{ name: string; root: string }>): Promise<ProjectRecord> {
+  async create(input: Readonly<{ name?: string; root: string }>): Promise<ProjectRecord> {
     await mkdir(resolve(input.root), { recursive: true });
-    return this.register(input);
+    return this.register({ name: input.name ?? defaultProjectName(input.root), root: input.root });
+  }
+
+  async open(input: Readonly<{ name?: string; root: string; create?: boolean }>): Promise<ProjectRecord> {
+    if (input.create) await mkdir(resolve(input.root), { recursive: true });
+    const root = await realpath(resolve(input.root)).catch((error) => { throw new AlphionError("dependency-unavailable", "Project root is unavailable.", { stage: "project", cause: error }); });
+    return this.#mutate(async (registry) => {
+      const existing = registry.projects.find((item) => normalizePath(item.root) === normalizePath(root));
+      if (existing) return { registry: { ...registry, activeProjectId: existing.id }, result: existing };
+      const name = validateProjectName(input.name ?? defaultProjectName(root));
+      assertUniqueProject(registry.projects, name, root);
+      const now = new Date().toISOString(); const id = createId("project");
+      const record = Object.freeze({ schemaVersion: 1 as const, id, name, root, statePath: join(root, ".alphion", "alphion.sqlite3"), domainId: projectDomainId(root), createdAt: now, updatedAt: now });
+      return { registry: { schemaVersion: 1 as const, activeProjectId: id, projects: Object.freeze([...registry.projects, record].sort(compareProjects)) }, result: record };
+    });
   }
 
   async list(): Promise<readonly ProjectRecord[]> { return (await this.#read()).projects; }
@@ -124,6 +140,7 @@ function decodeProject(value: unknown): ProjectRecord {
 }
 
 function validateProjectName(value: string): string { const name = value.trim(); if (name.length < 1 || name.length > 80 || /[\u0000-\u001f]/u.test(name)) throw new AlphionError("validation", "Project name must be 1-80 printable characters.", { stage: "project" }); return name; }
+function defaultProjectName(root: string): string { return basename(resolve(root)) || "Alphion Project"; }
 function assertUniqueProject(projects: readonly ProjectRecord[], name: string, root: string): void { if (projects.some((item) => item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) throw new AlphionError("conflict", "Project name already exists.", { stage: "project" }); if (projects.some((item) => normalizePath(item.root) === normalizePath(root))) throw new AlphionError("conflict", "Project root is already registered.", { stage: "project" }); }
 function normalizePath(value: string): string { const normalized = resolve(value).replaceAll("\\", "/"); return process.platform === "win32" ? normalized.toLowerCase() : normalized; }
 function compareProjects(left: ProjectRecord, right: ProjectRecord): number { return left.name.localeCompare(right.name) || left.id.localeCompare(right.id); }

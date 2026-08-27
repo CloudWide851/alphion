@@ -3,6 +3,7 @@ import type { AgentEvent, AgentSessionRecord, AgentStreamControlEvent, Compactio
 export type UiCommand =
   | Readonly<{ readonly kind: "surface.snapshot"; readonly selectedSessionId?: string }>
   | Readonly<{ readonly kind: "project.list" }>
+  | Readonly<{ readonly kind: "project.create"; readonly root: string; readonly name?: string }>
   | Readonly<{ readonly kind: "project.inspect"; readonly refresh?: boolean }>
   | Readonly<{ readonly kind: "project.activate"; readonly projectId: string }>
   | Readonly<{ readonly kind: "session.list" }>
@@ -104,6 +105,7 @@ function decodeCommand(value: unknown): UiCommand {
     case "project.list": case "session.list": case "provider.list": case "resource.list": case "doctor": case "schedule.list":
       exact(input, ["kind"]); return Object.freeze({ kind: input.kind });
     case "project.inspect": { exact(input, ["kind", "refresh"]); const refresh = optionalBoolean(input.refresh); return Object.freeze({ kind: input.kind, ...(refresh === undefined ? {} : { refresh }) }); }
+    case "project.create": { exact(input, ["kind", "root", "name"]); const name = input.name === undefined ? undefined : requiredText(input.name); return Object.freeze({ kind: input.kind, root: requiredText(input.root), ...(name ? { name } : {}) }); }
     case "surface.snapshot": { exact(input, ["kind", "selectedSessionId"]); const selectedSessionId = input.selectedSessionId === undefined ? undefined : requiredText(input.selectedSessionId); return Object.freeze({ kind: input.kind, ...(selectedSessionId ? { selectedSessionId } : {}) }); }
     case "project.activate": exact(input, ["kind", "projectId"]); return Object.freeze({ kind: input.kind, projectId: requiredText(input.projectId) });
     case "session.create": exact(input, ["kind", "title", "idempotencyKey"]); return Object.freeze({ kind: input.kind, title: requiredText(input.title), idempotencyKey: commandKey(input.idempotencyKey) });

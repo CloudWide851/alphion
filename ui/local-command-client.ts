@@ -68,6 +68,12 @@ export class LocalUiCommandClient implements UiCommandClient {
   async #dispatch(command: UiCommand): Promise<unknown> {
     if (command.kind === "surface.snapshot") return this.#snapshot(command.selectedSessionId);
     if (command.kind === "project.list") return this.options.projects?.list() ?? [];
+    if (command.kind === "project.create") {
+      if (!this.options.projects || !this.options.activateProject) throw new AlphionError("forbidden", "Project creation is unavailable.", { stage: "ui" });
+      const project = await this.options.projects.open({ root: command.root, create: true, ...(command.name ? { name: command.name } : {}) });
+      await this.options.activateProject(project.id); this.#bindActivity(this.options.application()); this.#publish({ kind: "stream.resync-required", cursor: this.#cursor });
+      return project;
+    }
     if (command.kind === "project.inspect") return this.options.application().inspectProject({ ...(command.refresh === undefined ? {} : { refresh: command.refresh }) });
     if (command.kind === "project.activate") {
       if (!this.options.activateProject) throw new AlphionError("forbidden", "Project activation is unavailable.", { stage: "ui" });
@@ -218,7 +224,7 @@ function writes(command: Extract<UiCommand, { readonly expectedRevision: number 
 function assertNever(value: never): never { throw new AlphionError("internal", `Unhandled UI command: ${JSON.stringify(value)}`, { stage: "ui" }); }
 
 function invalidationFor(command: UiCommand, result: unknown): UiEventPayload | undefined {
-  if (command.kind === "project.activate") return { kind: "surface.invalidate", scopes: ["projects", "sessions", "session-view"], sessionIds: [] };
+  if (command.kind === "project.activate" || command.kind === "project.create") return { kind: "surface.invalidate", scopes: ["projects", "sessions", "session-view"], sessionIds: [] };
   if (command.kind === "session.create") return { kind: "surface.invalidate", scopes: ["sessions"], sessionIds: [] };
   if (command.kind === "session.fork") { const sessionId = (result as { session?: { id?: unknown } }).session?.id; return { kind: "surface.invalidate", scopes: ["sessions", "session-view"], sessionIds: typeof sessionId === "string" ? [sessionId] : [] }; }
   switch (command.kind) {

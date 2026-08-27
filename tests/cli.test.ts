@@ -110,6 +110,18 @@ test("compiled live smoke is guarded and Windows batch launcher shows help", asy
   assert.match(batch, /if not "%~1"=="" goto explicit/iu);
 });
 
+test("compiled CLI creates and opens Projects from positional paths", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "alphion-cli-project-"));
+  const registry = join(directory, "config", "projects.json"); const root = join(directory, "work space", "demo");
+  try {
+    const created = await runCli(["project", "create", root, "--registry", registry]);
+    assert.equal(created.code, 0, created.stderr); const project = JSON.parse(created.stdout) as { id: string; name: string; root: string };
+    assert.equal(project.name, "demo"); assert.equal(project.root, root);
+    const opened = await runCli(["project", "open", root, "--registry", registry]);
+    assert.equal(opened.code, 0, opened.stderr); assert.equal((JSON.parse(opened.stdout) as { id: string }).id, project.id);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("compiled TUI refuses a non-interactive terminal", async () => {
   const directory = await mkdtemp(join(tmpdir(), "alphion-tui-nontty-"));
   try {

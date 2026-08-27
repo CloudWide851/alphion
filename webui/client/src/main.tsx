@@ -7,7 +7,7 @@ import type { CodeProjection } from "../../../ui/code-projection.js";
 import type { UiCommand, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiSurfaceSnapshot } from "../../../ui/contracts.js";
 import type { DesktopRendererBridge } from "../../../desktop/contracts.js";
 import { forkAndSelectSession } from "../../../ui/session-actions.js";
-import { parseSlashCommand } from "../../../ui/slash-commands.js";
+import { parseNewProjectArguments, parseSlashCommand } from "../../../ui/slash-commands.js";
 import { SlashComposer } from "./slash-palette.js";
 import { createConversationRunState, createSubmittedConversationRunState, reduceConversationRun, type ConversationRunState } from "../../../ui/conversation-run.js";
 import { AutomationPanel } from "./automation-panel.js";
@@ -27,6 +27,7 @@ function App(): React.JSX.Element {
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState("正在连接");
   const [settings, setSettings] = useState(false);
+  const [projectPickerRequest, setProjectPickerRequest] = useState(0);
   const [approval, setApproval] = useState<ApprovalChallenge>();
   const [activeRunId, setActiveRunId] = useState<string>();
   const [surface, setSurface] = useState<Pick<UiSurfaceSnapshot, "compaction" | "goals" | "schedules">>({ goals: [], schedules: [] });
@@ -140,37 +141,37 @@ function App(): React.JSX.Element {
     const parsed = parseSlashCommand(input, { hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) });
     if (parsed.kind !== "command") { setStatus("未知快捷命令"); return; }
     if (!parsed.availability.available) { setStatus(parsed.availability.reason ?? "命令当前不可用"); return; }
-    const name = parsed.descriptor.name;
-    if (name === "new") { setActive(undefined); setMessages([]); setDraft(""); setStatus("新对话"); return; }
-    if (name === "settings") { setSettings((value) => !value); setDraft(""); return; }
-    if (["context", "goals", "goal", "schedules"].includes(name)) { setSettings(true); setStatus(`/${name}`); setDraft(""); return; }
-    if (name === "fork") { setDraft(""); await forkActive(); return; }
-    if (name === "cancel" && activeRunId) { await api.execute({ kind: "run.cancel", runId: activeRunId, reason: "Cancelled from slash command." }); setDraft(""); return; }
-    if ((name === "steer" || name === "follow-up") && active) {
-      if (!parsed.argument) { setStatus(`/${name} 需要消息参数`); return; }
+    const id = parsed.descriptor.id;
+    if (id === "new") { setActive(undefined); setMessages([]); setDraft(""); setStatus("新对话"); return; }
+    if (id === "new-project") { const project = parseNewProjectArguments(parsed.argumentTokens); setDraft(""); setStatus("正在创建 Project"); const result = await api.execute({ kind: "project.create", root: project.root, ...(project.name ? { name: project.name } : {}) }); setProjectPickerRequest((value) => value + 1); setSettings(true); await reloadSessions(); setStatus(`已打开 ${(result.result as { name?: string }).name ?? "Project"}`); return; }
+    if (id === "open-projects") { setSettings(true); setProjectPickerRequest((value) => value + 1); setDraft(""); setStatus("Project 选择器"); return; }
+    if (id === "open-sessions") { setSettings(false); setDraft(""); setStatus("Session 选择器"); return; }
+    if (["context", "goals", "goal", "schedules"].includes(id)) { setSettings(true); setStatus(`/${id}`); setDraft(""); return; }
+    if (id === "fork") { setDraft(""); await forkActive(); return; }
+    if (id === "cancel" && activeRunId) { await api.execute({ kind: "run.cancel", runId: activeRunId, reason: "Cancelled from slash command." }); setDraft(""); return; }
+    if ((id === "steer" || id === "follow-up") && active) {
+      if (!parsed.argument) { setStatus(`/${id} 需要消息参数`); return; }
       const shown = await api.execute({ kind: "session.show", sessionId: active.id }); const current = (shown.result as { session: SessionItem }).session;
-      await api.execute({ kind: name === "steer" ? "session.steer" : "session.follow-up", sessionId: active.id, message: parsed.argument, expectedRevision: current.revision, idempotencyKey: requestId() });
-      setDraft(""); setStatus(name === "steer" ? "已注入下一模型边界" : "后续消息已排队"); return;
+      await api.execute({ kind: id === "steer" ? "session.steer" : "session.follow-up", sessionId: active.id, message: parsed.argument, expectedRevision: current.revision, idempotencyKey: requestId() });
+      setDraft(""); setStatus(id === "steer" ? "已注入下一模型边界" : "后续消息已排队"); return;
     }
-    const command: UiCommand | undefined = name === "profile" ? { kind: "project.inspect" }
-      : name === "doctor" ? { kind: "doctor" }
-      : name === "resources" ? { kind: "resource.list" }
-      : name === "providers" ? { kind: "provider.list" }
-      : name === "projects" ? { kind: "project.list" }
-      : name === "sessions" ? { kind: "session.list" }
-      : name === "harness" ? { kind: "harness.plan", prompt: parsed.argument || "检查当前任务" }
+    const command: UiCommand | undefined = id === "profile" ? { kind: "project.inspect" }
+      : id === "doctor" ? { kind: "doctor" }
+      : id === "resources" ? { kind: "resource.list" }
+      : id === "providers" ? { kind: "provider.list" }
+      : id === "harness" ? { kind: "harness.plan", prompt: parsed.argument || "检查当前任务" }
       : undefined;
-    if (name === "help") { setSettings(true); setStatus("命令面板可直接通过 / 打开"); setDraft(""); return; }
-    if (!command) { setStatus(`/${name} 暂无可执行动作`); return; }
-    setSettings(true); setStatus("正在执行命令"); await api.execute(command); setDraft(""); setStatus(`/${name} 已完成`);
+    if (id === "help") { setSettings(true); setStatus("命令面板可直接通过 / 打开"); setDraft(""); return; }
+    if (!command) { setStatus(`/${id} 暂无可执行动作`); return; }
+    setSettings(true); setStatus("正在执行命令"); await api.execute(command); setDraft(""); setStatus(`/${id} 已完成`);
   };
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand"><img className="brand-mark" src="./alphion-icon.svg" alt="" /><span>Alphion</span></div><nav><button className="quiet" onClick={() => setSettings((value) => !value)}>设置</button><Info text="Alphion 只在本机 127.0.0.1 提供服务；修改依赖 revision 与幂等键。" /></nav></header>
+    <header className="topbar"><div className="brand"><img className="brand-mark" src="./alphion-icon.svg" alt="" /><span>Alphion</span></div><nav><button className="quiet" onClick={() => setSettings((value) => !value)}>管理</button><Info text="Alphion 只在本机 127.0.0.1 提供服务；修改依赖 revision 与幂等键。" /></nav></header>
     <aside className="rail"><span className="rail-label">Sessions</span>{sessions.map((session) => <button className={session.id === active?.id ? "session active" : "session"} key={session.id} onClick={() => void showSession(session)}>{session.title}<small>{session.status}</small></button>)}<button className="new-session" onClick={() => { setActive(undefined); setMessages([]); }}>＋ 新对话</button></aside>
     <main className="conversation">
       <div className="conversation-head"><h1>{active?.title ?? "新对话"}</h1><div><button className="quiet" disabled={!active || active.status !== "idle"} onClick={() => void forkActive()}>Fork</button><span className="connection"><i />{status}</span></div></div>
-      {settings ? <SettingsPanel client={api} {...(active ? { sessionId: active.id } : {})} surface={surface} sessions={sessions} onProjectActivated={() => void reloadSessions()} /> : null}
+      {settings ? <SettingsPanel client={api} {...(active ? { sessionId: active.id } : {})} surface={surface} sessions={sessions} projectPickerRequest={projectPickerRequest} onProjectActivated={() => void reloadSessions()} /> : null}
       {approval ? <ApprovalCard challenge={approval} onDecide={(approved) => void decideApproval(approved)} /> : null}
       <section className="messages" ref={scroll.viewportRef} onScroll={scroll.onScroll} aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role} ${message.run?.status ?? ""}`} key={message.id}><span className="speaker">{message.role === "assistant" ? "Alphion" : "你"}</span>{message.run?.status === "waiting" && !message.content ? <WaitingDots /> : <div className={message.run?.status === "streaming" ? "stream-content" : undefined}><Markdown content={message.content || message.run?.statusText || "…"} /></div>}{message.run ? <RunMeta run={message.run} /> : null}</article>)}{scroll.unseenCount ? <button className="new-message" onClick={scroll.returnToLatest}>{scroll.unseenCount} 条新消息 · 返回最新</button> : null}</section>
       <SlashComposer value={draft} context={{ hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) }} disabled={!api.ready} onChange={setDraft} onSubmitMessage={() => void send()} onCommand={(command) => void executeSlash(command).catch(() => setStatus("命令执行失败"))} />
@@ -182,10 +183,11 @@ function EmptyState(): React.JSX.Element { return <div className="empty"><img cl
 function WaitingDots(): React.JSX.Element { return <span className="waiting-dots" role="status" aria-label="等待模型输出"><i /><i /><i /></span>; }
 function RunMeta({ run }: Readonly<{ run: ConversationRunState }>): React.JSX.Element { return <small className="run-meta">{run.statusText}{run.usage.inputTokens || run.usage.outputTokens ? ` · tokens ${run.usage.inputTokens}/${run.usage.outputTokens}` : ""}</small>; }
 function Info({ text }: Readonly<{ text: string }>): React.JSX.Element { return <details className="info"><summary aria-label="说明">!</summary><div>{text}</div></details>; }
-function SettingsPanel({ client, sessionId, surface, sessions, onProjectActivated }: Readonly<{ client: SurfaceClient; sessionId?: string; surface: Pick<UiSurfaceSnapshot, "compaction" | "goals" | "schedules">; sessions: readonly SessionItem[]; onProjectActivated: () => void }>): React.JSX.Element {
+function SettingsPanel({ client, sessionId, surface, sessions, projectPickerRequest, onProjectActivated }: Readonly<{ client: SurfaceClient; sessionId?: string; surface: Pick<UiSurfaceSnapshot, "compaction" | "goals" | "schedules">; sessions: readonly SessionItem[]; projectPickerRequest: number; onProjectActivated: () => void }>): React.JSX.Element {
   const [diagnostic, setDiagnostic] = useState("选择一项查看");
   const [projects, setProjects] = useState<readonly { id: string; name: string }[]>([]);
   const loadProjects = () => void client.execute({ kind: "project.list" }).then((result) => { const items = result.result as readonly { id: string; name: string }[]; setProjects(items); setDiagnostic(items.length ? "选择 Project 进行切换" : "尚未注册 Project"); });
+  useEffect(() => { if (projectPickerRequest > 0) loadProjects(); }, [projectPickerRequest]);
   return <section className="settings-panel"><div className="settings-actions"><button onClick={loadProjects}>Projects</button><button onClick={() => void client.execute({ kind: "provider.list" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>Provider</button><button onClick={() => void client.execute({ kind: "resource.list" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>资源</button><button onClick={() => void client.execute({ kind: "doctor" }).then((result) => setDiagnostic(JSON.stringify(result.result, null, 2)))}>doctor</button></div>{projects.length ? <div className="project-list">{projects.map((project) => <button key={project.id} onClick={() => void client.execute({ kind: "project.activate", projectId: project.id }).then(() => { setProjects([]); setDiagnostic(`已切换至 ${project.name}`); onProjectActivated(); })}>{project.name}</button>)}</div> : null}<pre>{diagnostic}</pre><AutomationPanel client={client} {...(sessionId ? { sessionId } : {})} {...(surface.compaction ? { compaction: surface.compaction } : {})} goals={surface.goals} schedules={surface.schedules} sessions={sessions} reload={onProjectActivated} /><CredentialForm client={client} /><Info text="敏感凭据通过设备密钥保护并经独立的一次性表单提交；无论成功或失败，输入都会立即清空，且不会写入浏览器存储。" /></section>;
 }
 

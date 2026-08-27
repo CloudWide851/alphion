@@ -9,7 +9,7 @@ export function ProjectCard({ projectRoot }: Readonly<{ projectRoot: string }>):
 
 export function HelpCard(): React.JSX.Element {
   return <Box flexDirection="column">
-    <Text>{SLASH_COMMANDS.map((command) => `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`).join(" · ")}</Text>
+    <Text>{SLASH_COMMANDS.map((command) => `/${command.tokens.join(" ")}${command.argumentHint ? ` ${command.argumentHint}` : ""}`).join(" · ")}</Text>
     <Text>输入 / 筛选 · ↑/↓ 或 Tab 选择 · Enter 执行 · Esc 收起并保留草稿</Text>
   </Box>;
 }

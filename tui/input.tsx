@@ -51,7 +51,7 @@ export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: S
       if (match) {
         if (!match.availability.available) return;
         const parsed = parseSlashCommand(valueRef.current, props.slashContext);
-        const argument = parsed.kind === "command" && parsed.descriptor.name === match.descriptor.name ? parsed.argument : "";
+        const argument = parsed.kind === "command" && parsed.descriptor.id === match.descriptor.id ? parsed.argument : "";
         const submitted = formatSlashCommand(match.descriptor, argument);
         if (props.onSubmit(submitted) !== false) replaceValue(""); return;
       }
@@ -61,7 +61,7 @@ export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: S
     if (!key.ctrl && !key.meta && input) replaceValue(valueRef.current + input);
   });
   return <Box flexDirection="column" marginTop={1}>
-    {matches.length ? <Box flexDirection="column" borderStyle="round" paddingX={1} {...border()}>{matches.slice(0, 8).map((match, index) => <Text key={match.descriptor.name} dimColor={!match.availability.available} {...(index === selected ? accent() : {})}>{index === selected ? "◆" : "◇"} /{match.descriptor.name}{match.descriptor.argumentHint ? ` ${match.descriptor.argumentHint}` : ""} · {match.availability.reason ?? match.descriptor.description}</Text>)}</Box> : null}
+    {matches.length ? <Box flexDirection="column" borderStyle="round" paddingX={1} {...border()}>{matches.slice(0, 8).map((match, index) => <Text key={match.descriptor.id} dimColor={!match.availability.available} {...(index === selected ? accent() : {})}>{index === selected ? "◆" : "◇"} {formatSlashCommand(match.descriptor)}{match.descriptor.argumentHint ? ` ${match.descriptor.argumentHint}` : ""} · {match.availability.reason ?? match.descriptor.description}</Text>)}</Box> : null}
     <Box flexDirection="column" borderStyle="round" paddingX={1} {...border()}>
     <Text {...accent()}>› {sanitizeTerminalText(value) || "请输入内容…"}</Text>
     <Text dimColor>{matches.length ? "↑/↓ 或 Tab 选择 · Enter 执行 · Esc 收起" : "Enter 发送 · Alt+Enter / Ctrl+J 换行"}</Text>

@@ -21,12 +21,26 @@ test("Project registry enforces case-insensitive names and realpath uniqueness w
     assert.equal(first.schemaVersion, 1);
     assert.match(first.domainId, /^domain_[a-f0-9]{32}$/u);
     await assert.rejects(manager.create({ name: "alphion", root: secondRoot }), /name already exists/iu);
-    await assert.rejects(manager.register({ name: "Duplicate Root", root: firstRoot }), /root is already registered/iu);
+    assert.equal((await manager.register({ name: "Duplicate Root", root: firstRoot })).id, first.id);
+    assert.equal((await manager.open({ root: firstRoot })).id, first.id);
     assert.equal((await manager.activate(first.id)).id, first.id);
     assert.equal((await manager.current())?.id, first.id);
     assert.equal(await manager.remove(first.id), true);
     assert.equal(existsSync(firstRoot), true);
     assert.equal(await manager.current(), undefined);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("Project quick open creates missing roots, defaults the name and requires explicit conflict resolution", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "alphion-v090-project-open-"));
+  const manager = new LocalProjectManager(join(directory, "config", "projects.json"));
+  try {
+    const first = await manager.open({ root: join(directory, "workspace", "demo"), create: true });
+    assert.equal(first.name, "demo"); assert.equal((await manager.current())?.id, first.id);
+    assert.equal((await manager.open({ root: first.root })).id, first.id);
+    await assert.rejects(manager.open({ root: join(directory, "other", "demo"), create: true }), /name already exists/iu);
+    const second = await manager.open({ root: join(directory, "other", "demo"), name: "Demo Two", create: true });
+    assert.equal(second.name, "Demo Two"); assert.equal((await manager.current())?.id, second.id);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

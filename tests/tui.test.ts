@@ -3,7 +3,7 @@ import test from "node:test";
 import React from "react";
 import { render } from "ink-testing-library";
 import { TuiApprovalPort } from "../tui/approval-port.js";
-import { AppShell, ChatEntry, ChatHome, HarnessPlanView, ProviderForm, ProviderList, SessionWorkbenchView, SettingsCard, TextEntry, selectWorkbenchLayout } from "../tui/index.js";
+import { AppShell, ChatEntry, ChatHome, HarnessPlanView, ProviderForm, ProviderList, SessionWorkbenchView, TextEntry, selectWorkbenchLayout } from "../tui/index.js";
 import type { AgentApplication, AgentSessionContract } from "../src/index.js";
 import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "../tui/run-projection.js";
 
@@ -168,17 +168,6 @@ test("TUI chat input clears after every successful send", async () => {
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(submitted, ["first message"]);
   assert.doesNotMatch(view.lastFrame() ?? "", /first message/u);
-  view.unmount();
-});
-
-test("TUI settings card uses up and down selection with Enter", async () => {
-  let selected = "";
-  const view = render(React.createElement(SettingsCard, { onSelect: (value: string) => { selected = value; } }));
-  view.stdin.write("\u001b[B");
-  view.stdin.write("\r");
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(selected, "profile");
-  assert.match(view.lastFrame() ?? "", /◆ \/profile/u);
   view.unmount();
 });
 

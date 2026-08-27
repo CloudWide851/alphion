@@ -18,7 +18,7 @@ import { TuiApprovalPort } from "./approval-port.js";
 import { sanitizeTerminalText } from "./run-projection.js";
 import { TextEntry } from "./input.js";
 import { RunView, type RunViewCommand } from "./run-view.js";
-import { accent, AppShell, ChatHome, SettingsCard, textColor, selectWorkbenchLayout, type ChatMessage, type WorkbenchSection } from "./shell.js";
+import { accent, AppShell, ChatHome, textColor, selectWorkbenchLayout, type ChatMessage, type WorkbenchSection } from "./shell.js";
 import { EntryShell } from "./entry-shell.js";
 import { PlatformTerminalLauncher, type TerminalLauncher } from "./terminal-launcher.js";
 import { forkTuiSession } from "./session-fork.js";
@@ -36,7 +36,7 @@ export interface RunTuiOptions {
   readonly terminalSurface?: TerminalSurface;
 }
 
-export { AppShell, ChatHome, SettingsCard, selectWorkbenchLayout } from "./shell.js";
+export { AppShell, ChatHome, selectWorkbenchLayout } from "./shell.js";
 export { ChatEntry, TextEntry } from "./input.js";
 export type { WorkbenchLayout, WorkbenchSection } from "./shell.js";
 
@@ -165,6 +165,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
       return;
     }
     if (action.kind === "new") { setChatSession(undefined); setChatMessages([]); setError(""); return; }
+    if (action.kind === "new-project") { setError(`将创建 Project：${action.root}${action.name ? `（${action.name}）` : ""}`); setSection("projects"); return; }
     if (action.kind === "navigate") { setError(""); setSection(action.section); return; }
     if (action.kind === "steer" || action.kind === "follow-up" || action.kind === "cancel") { setRunCommand({ id: Date.now(), kind: action.kind, ...(action.kind === "cancel" ? {} : { content: action.content }) }); setError(""); return; }
     setError(action.kind === "error" ? action.message : "命令需要活动 Run。");
@@ -195,7 +196,6 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
   }
   return <AppShell section={section} layout={layout} colorEnabled={colorEnabled} projectRoot={projectRoot} error={error} help={help}>
     {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} compactionCount={compaction.count} activeBubble={runPrompt ? <RunView application={application} approval={approval} prompt={runPrompt} {...(runSession ? { session: runSession } : {})} {...(runProviderId ? { providerId: runProviderId } : {})} {...(runCommand ? { command: runCommand } : {})} compact={layout === "compact"} onSession={acceptRunSession} onError={setError} onDone={finishRun} /> : null} compact={layout === "compact"} heightRows={Math.max(10, (stdout.rows ?? 24) - 2)} viewportRows={Math.max(4, (stdout.rows ?? 24) - (layout === "compact" ? 8 : 11))} contentWidth={Math.max(20, Math.min(88, (stdout.columns ?? 80) - 8))} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) }} onSubmit={submitChat} /> : null}
-    {section === "settings" ? <SettingsCard onSelect={setSection} /> : null}
     {section === "projects" ? <ProjectCard projectRoot={projectRoot} /> : null}
     {section === "profile" ? <ProjectProfileView {...(snapshot.profile ? { profile: snapshot.profile } : {})} onRefresh={() => void refreshSnapshot(true).catch((cause: unknown) => setError(safeError(cause)))} /> : null}
     {section === "providers" ? <ProviderList

@@ -11,7 +11,7 @@ import { matchSlashCommands } from "../ui/slash-commands.js";
 import { createWebUiServer } from "../webui/server.js";
 
 test("v0.8 shared slash commands and automation envelopes decode centrally", () => {
-  const names = matchSlashCommands("/").map((item) => item.descriptor.name);
+  const names = matchSlashCommands("/").map((item) => item.descriptor.id);
   for (const name of ["context", "goals", "goal", "schedules"] as const) assert.ok(names.includes(name));
   const cases = [
     { kind: "session.compaction.list", sessionId: "session_0001", limit: 20 },

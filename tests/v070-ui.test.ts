@@ -13,10 +13,10 @@ import { projectChatRows, selectChatViewport } from "../ui/chat-viewport.js";
 
 test("shared slash registry matches names aliases and descriptions deterministically", () => {
   assert.equal(SLASH_COMMANDS.length, 18);
-  assert.deepEqual(matchSlashCommands("/prov").map((item) => item.descriptor.name), ["providers"]);
-  assert.equal(matchSlashCommands("/inspect")[0]?.descriptor.name, "profile");
-  assert.equal(matchSlashCommands("/凭据")[0]?.descriptor.name, "providers");
-  assert.equal(formatSlashCommand(SLASH_COMMANDS.find((item) => item.name === "fork")!, "安全分支"), "/fork 安全分支");
+  assert.deepEqual(matchSlashCommands("/prov").map((item) => item.descriptor.id), ["providers"]);
+  assert.equal(matchSlashCommands("/inspect")[0]?.descriptor.id, "profile");
+  assert.equal(matchSlashCommands("/凭据")[0]?.descriptor.id, "providers");
+  assert.equal(formatSlashCommand(SLASH_COMMANDS.find((item) => item.id === "fork")!, "安全分支"), "/fork 安全分支");
 });
 
 test("slash parsing keeps disabled commands visible with stable reasons", () => {
@@ -29,14 +29,18 @@ test("slash parsing keeps disabled commands visible with stable reasons", () => 
   }
   const enabled = parseSlashCommand("/followup continue", { hasSession: true });
   assert.equal(enabled.kind, "command");
-  if (enabled.kind === "command") assert.deepEqual([enabled.descriptor.name, enabled.argument], ["follow-up", "continue"]);
+  if (enabled.kind === "command") assert.deepEqual([enabled.descriptor.id, enabled.argument], ["follow-up", "continue"]);
   const settings = parseSlashCommand("/settings", { activeRunId: "run_0001" });
-  assert.equal(settings.kind === "command" ? settings.availability.reason : "", "运行期间请使用 /steer、/follow-up、/cancel 或只读状态命令");
+  assert.equal(settings.kind, "unknown");
+  const project = parseSlashCommand("/new project \"C:\\work space\\demo\" --name \"Demo Project\"");
+  assert.equal(project.kind, "command");
+  if (project.kind === "command") assert.deepEqual([project.descriptor.id, ...project.argumentTokens], ["new-project", "C:\\work space\\demo", "--name", "Demo Project"]);
 });
 
 test("TUI slash dispatcher separates commands from Session history messages", () => {
   assert.deepEqual(resolveTuiInput("hello"), { kind: "message", content: "hello" });
-  assert.deepEqual(resolveTuiInput("/settings"), { kind: "navigate", section: "settings" });
+  assert.deepEqual(resolveTuiInput("/open sessions"), { kind: "navigate", section: "sessions" });
+  assert.deepEqual(resolveTuiInput("/new project \"C:\\work space\\demo\" --name Demo"), { kind: "new-project", root: "C:\\work space\\demo", name: "Demo" });
   assert.deepEqual(resolveTuiInput("/steer revise", { activeRunId: "run_0001" }), { kind: "steer", content: "revise" });
   assert.deepEqual(resolveTuiInput("/cancel"), { kind: "error", message: "需要活动 Run" });
 });
@@ -46,12 +50,12 @@ test("TUI slash palette opens on slash and executes keyboard selection", async (
   const view = render(React.createElement(ChatEntry, { onSubmit: (value: string) => { submitted.push(value); } }));
   view.stdin.write("/");
   await pause();
-  assert.match(view.lastFrame() ?? "", /\/new.*开始新对话/u);
+  assert.match(view.lastFrame() ?? "", /\/new project.*创建或复用 Project/u);
   view.stdin.write("\u001b[B");
   view.stdin.write("\r");
   await pause();
-  assert.deepEqual(submitted, ["/settings"]);
-  assert.doesNotMatch(view.lastFrame() ?? "", /\/new.*开始新对话/u);
+  assert.deepEqual(submitted, ["/open projects"]);
+  assert.doesNotMatch(view.lastFrame() ?? "", /\/new project.*创建或复用 Project/u);
   view.unmount();
 });
 

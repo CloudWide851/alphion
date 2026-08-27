@@ -352,7 +352,8 @@ export interface ScheduleManager {
 
 export interface ProjectManager {
   register(input: Readonly<{ name: string; root: string }>): Promise<ProjectRecord>;
-  create(input: Readonly<{ name: string; root: string }>): Promise<ProjectRecord>;
+  create(input: Readonly<{ name?: string; root: string }>): Promise<ProjectRecord>;
+  open(input: Readonly<{ name?: string; root: string; create?: boolean }>): Promise<ProjectRecord>;
   list(): Promise<readonly ProjectRecord[]>;
   get(projectId: string): Promise<ProjectRecord | undefined>;
   activate(projectId: string): Promise<ProjectRecord>;
