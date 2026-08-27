@@ -29,16 +29,18 @@ export function TextEntry(props: Readonly<{ label: string; initialValue?: string
   return <Box flexDirection="column" marginTop={1}><Text>{props.label}</Text><Text {...accent()}>› {props.masked ? "•".repeat(value.length) : sanitizeTerminalText(value)}</Text><Text dimColor>Enter 确认 · Esc 返回</Text></Box>;
 }
 
-export function ChatEntry(props: Readonly<{ disabled?: boolean; slashContext?: SlashCommandContext; onPaletteOpenChange?: (open: boolean) => void; onSubmit: (value: string) => boolean | void }>): React.JSX.Element {
-  const [value, setValue] = useState("");
+export function ChatEntry(props: Readonly<{ value?: string; disabled?: boolean; slashContext?: SlashCommandContext; onChange?: (value: string) => void; onPaletteOpenChange?: (open: boolean) => void; onSubmit: (value: string) => boolean | void }>): React.JSX.Element {
+  const [internalValue, setInternalValue] = useState("");
+  const value = props.value ?? internalValue;
   const [selected, setSelected] = useState(0);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
-  const valueRef = useRef("");
+  const valueRef = useRef(props.value ?? "");
   const selectedRef = useRef(0);
-  const replaceValue = (next: string) => { valueRef.current = next; setValue(next); setPaletteDismissed(false); setSelected(0); selectedRef.current = 0; };
+  const replaceValue = (next: string) => { valueRef.current = next; if (props.value === undefined) setInternalValue(next); props.onChange?.(next); setPaletteDismissed(false); setSelected(0); selectedRef.current = 0; };
   const matches = value.startsWith("/") && !paletteDismissed ? matchSlashCommands(value, props.slashContext) : [];
   const move = (next: number) => { const bounded = matches.length ? (next + matches.length) % matches.length : 0; selectedRef.current = bounded; setSelected(bounded); };
   useEffect(() => () => { valueRef.current = ""; }, []);
+  useEffect(() => { if (props.value !== undefined) valueRef.current = props.value; }, [props.value]);
   useEffect(() => { props.onPaletteOpenChange?.(matches.length > 0); return () => props.onPaletteOpenChange?.(false); }, [matches.length, props.onPaletteOpenChange]);
   useInput((input, key) => {
     if (matches.length && (key.upArrow || key.downArrow || key.tab)) { move(selectedRef.current + (key.upArrow ? -1 : 1)); return; }

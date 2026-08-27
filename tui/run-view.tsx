@@ -30,6 +30,7 @@ export function RunView(props: Readonly<{
   const handledCommand = useRef(0);
   const started = useRef(false);
   const callbacks = useRef({ onSession: props.onSession, onDone: props.onDone, onError: props.onError });
+  const request = useRef({ application: props.application, prompt: props.prompt, providerId: props.providerId, session: props.session });
   callbacks.current = { onSession: props.onSession, onDone: props.onDone, onError: props.onError };
 
   useEffect(() => props.approval.subscribe(setPendingApproval), [props.approval]);
@@ -44,12 +45,13 @@ export function RunView(props: Readonly<{
     let active = true; let buffer = ""; let timer: ReturnType<typeof setTimeout> | undefined; let lastFlush = Date.now();
     const flush = () => { if (timer) clearTimeout(timer); timer = undefined; if (!active || !buffer) return; dispatch({ kind: "delta", delta: sanitizeTerminalText(buffer) }); buffer = ""; lastFlush = Date.now(); };
     const schedule = () => { timer ??= setTimeout(flush, Math.max(0, 33 - (Date.now() - lastFlush))); };
-    dispatch({ kind: "submit", submissionId: `tui:${Date.now()}`, ...(props.session ? { sessionId: props.session.id } : {}) });
-    const sessionPromise = props.session ? Promise.resolve(props.session) : props.application.sessions.create({ title: props.prompt.slice(0, 80), ...(props.providerId ? { providerId: props.providerId } : {}) });
+    const start = request.current;
+    dispatch({ kind: "submit", submissionId: `tui:${Date.now()}`, ...(start.session ? { sessionId: start.session.id } : {}) });
+    const sessionPromise = start.session ? Promise.resolve(start.session) : start.application.sessions.create({ title: start.prompt.slice(0, 80), ...(start.providerId ? { providerId: start.providerId } : {}) });
     void sessionPromise.then(async (session) => {
       activeSession.current = session; callbacks.current.onSession?.(session);
       const record = await session.get();
-      return session.send(props.prompt, { expectedRevision: record.revision, idempotencyKey: `tui:send:${Date.now()}` }, props.approval);
+      return session.send(start.prompt, { expectedRevision: record.revision, idempotencyKey: `tui:send:${Date.now()}` }, props.approval);
     }).then(async (run) => {
       handle.current = run; dispatch({ kind: "start", runId: run.runId, sessionId: run.sessionId });
       for await (const event of run.events) {
@@ -60,7 +62,7 @@ export function RunView(props: Readonly<{
       if (active) { dispatch({ kind: "finish", status: result.status, finalText: result.finalText }); callbacks.current.onDone(result.finalText); }
     }).catch((cause: unknown) => { const message = safeError(cause); if (active) { dispatch({ kind: "error", message }); callbacks.current.onError?.(message); } });
     return () => { active = false; if (timer) clearTimeout(timer); handle.current?.cancel("TUI conversation closed."); };
-  }, [props.application, props.approval, props.prompt, props.providerId, props.session]);
+  }, [props.approval]);
   useEffect(() => {
     const command = props.command;
     if (!command || handledCommand.current === command.id) return;

@@ -1,27 +1,29 @@
 import { AlphionError, type AgentApplication, type AgentRunHandle, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type ProjectManager, type SessionActivity } from "../src/index.js";
-import type { UiCommand, UiCommandClient, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiEventPayload, UiSurfaceSnapshot } from "./contracts.js";
+import type { UiBackgroundRunSummary, UiCommand, UiCommandClient, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiEventPayload, UiSurfaceSnapshot } from "./contracts.js";
 import { frameEvents, historyFrames, resyncFrame, UiFrameQueue } from "./event-frames.js";
 
 export interface LocalUiCommandClientOptions {
   readonly application: () => AgentApplication;
   readonly projects?: ProjectManager;
   readonly activateProject?: (projectId: string) => Promise<void>;
+  readonly currentProjectId?: () => string | undefined;
+  readonly backgroundRuns?: () => Promise<readonly UiBackgroundRunSummary[]>;
   readonly approvalTimeoutMs?: number;
 }
 
 export class LocalUiCommandClient implements UiCommandClient {
   readonly #runs = new Map<string, AgentRunHandle>();
+  readonly #runProjects = new Map<string, string>();
   readonly #events: UiEventEnvelope[] = [];
   readonly #subscribers = new Set<UiFrameQueue>();
   readonly #approval: LocalUiApprovalPort;
   readonly #pendingFrame: UiEventEnvelope[] = [];
   #cursor = 0;
   #frameTimer: NodeJS.Timeout | undefined;
-  #activityApplication: AgentApplication | undefined;
-  #activityGeneration = 0;
+  readonly #activityApplications = new Set<AgentApplication>();
   #activityEnabled = false;
   #closed = false;
-  constructor(private readonly options: LocalUiCommandClientOptions) { this.#approval = new LocalUiApprovalPort((payload) => this.#publish(payload), options.approvalTimeoutMs ?? 30_000); }
+  constructor(private readonly options: LocalUiCommandClientOptions) { this.#approval = new LocalUiApprovalPort((payload) => this.#publish(payload, payload.kind === "approval.challenge" ? this.#runProjects.get(payload.runId) : undefined), options.approvalTimeoutMs ?? 30_000); }
 
   async execute(envelope: UiCommandEnvelope): Promise<UiCommandResult> {
     if (this.#closed) throw new AlphionError("conflict", "UI command client is closed.", { stage: "ui" });
@@ -53,7 +55,6 @@ export class LocalUiCommandClient implements UiCommandClient {
 
   async close(): Promise<void> {
     if (this.#closed) return;
-    this.#activityGeneration += 1;
     for (const run of this.#runs.values()) run.cancel("UI command client closed.");
     this.#approval.close();
     if (this.#frameTimer) clearTimeout(this.#frameTimer);
@@ -77,9 +78,6 @@ export class LocalUiCommandClient implements UiCommandClient {
     if (command.kind === "project.inspect") return this.options.application().inspectProject({ ...(command.refresh === undefined ? {} : { refresh: command.refresh }) });
     if (command.kind === "project.activate") {
       if (!this.options.activateProject) throw new AlphionError("forbidden", "Project activation is unavailable.", { stage: "ui" });
-      for (const run of this.#runs.values()) run.cancel("Project is switching.");
-      this.#approval.close();
-      await Promise.allSettled([...this.#runs.values()].map((run) => run.result));
       await this.options.activateProject(command.projectId);
       this.#bindActivity(this.options.application());
       this.#publish({ kind: "stream.resync-required", cursor: this.#cursor });
@@ -100,6 +98,7 @@ export class LocalUiCommandClient implements UiCommandClient {
       case "session.send": {
         const handle = await application.sessions.send(command.sessionId, command.message, writes(command), this.#approval);
         this.#runs.set(handle.runId, handle);
+        this.#runProjects.set(handle.runId, this.#projectIdentity());
         void this.#pump(handle);
         return { runId: handle.runId, sessionId: handle.sessionId };
       }
@@ -142,12 +141,12 @@ export class LocalUiCommandClient implements UiCommandClient {
       this.#publish({ kind: "surface.invalidate", scopes: ["sessions", "session-view", "compaction", "goals", "schedules"], sessionIds: [handle.sessionId] });
     } catch {
       this.#publish({ kind: "run.finished", runId: handle.runId, sessionId: handle.sessionId, status: "failed", finalText: "" });
-    } finally { this.#runs.delete(handle.runId); }
+    } finally { this.#runs.delete(handle.runId); this.#runProjects.delete(handle.runId); }
   }
 
-  #publish(payload: UiEventPayload): void {
+  #publish(payload: UiEventPayload, projectId = this.#projectIdentity()): void {
     if (this.#closed) return;
-    const event = Object.freeze({ schemaVersion: 1 as const, cursor: ++this.#cursor, timestamp: new Date().toISOString(), payload });
+    const event = Object.freeze({ schemaVersion: 2 as const, cursor: ++this.#cursor, timestamp: new Date().toISOString(), ...(projectId ? { projectId } : {}), payload });
     this.#events.push(event);
     if (this.#events.length > 1_000) this.#events.splice(0, this.#events.length - 1_000);
     this.#pendingFrame.push(event);
@@ -155,45 +154,47 @@ export class LocalUiCommandClient implements UiCommandClient {
   }
 
   #bindActivity(application: AgentApplication): void {
-    if (this.#activityApplication === application) return;
-    this.#activityApplication = application;
-    const generation = ++this.#activityGeneration;
+    if (this.#activityApplications.has(application)) return;
+    this.#activityApplications.add(application);
+    const projectId = this.#projectIdentity();
     const subscribe = application.sessions.subscribeActivity?.bind(application.sessions);
     this.#activityEnabled = subscribe !== undefined;
     if (!subscribe) return;
     void (async () => {
       try {
         for await (const activity of subscribe()) {
-          if (this.#closed || generation !== this.#activityGeneration) return;
-          this.#consumeActivity(activity);
+          if (this.#closed) return;
+          this.#consumeActivity(activity, projectId);
         }
       } catch {
-        if (!this.#closed && generation === this.#activityGeneration) this.#publish({ kind: "stream.resync-required", cursor: this.#cursor });
-      }
+        if (!this.#closed) this.#publish({ kind: "stream.resync-required", cursor: this.#cursor }, projectId);
+      } finally { this.#activityApplications.delete(application); }
     })();
   }
 
-  #consumeActivity(activity: SessionActivity): void {
-    if (activity.kind === "stream.resync-required") { this.#publish({ kind: "stream.resync-required", cursor: this.#cursor }); return; }
+  #consumeActivity(activity: SessionActivity, projectId: string | undefined): void {
+    if (activity.kind === "stream.resync-required") { this.#publish({ kind: "stream.resync-required", cursor: this.#cursor }, projectId); return; }
     if (activity.kind === "run.finished") {
-      this.#publish({ kind: "run.finished", runId: activity.runId, sessionId: activity.sessionId, status: activity.status, finalText: activity.finalText });
-      this.#publish({ kind: "surface.invalidate", scopes: ["sessions", "session-view", "compaction", "goals", "schedules"], sessionIds: [activity.sessionId] });
+      this.#publish({ kind: "run.finished", runId: activity.runId, sessionId: activity.sessionId, status: activity.status, finalText: activity.finalText }, projectId);
+      this.#publish({ kind: "surface.invalidate", scopes: ["workspace", "sessions", "session-view", "compaction", "goals", "schedules"], sessionIds: [activity.sessionId] }, projectId);
       return;
     }
     const event = activity.event;
-    if ("delivery" in event) { if (event.kind === "stream.resync-required") this.#publish({ kind: "stream.resync-required", cursor: this.#cursor }); return; }
-    if (event.kind === "model.delta" && typeof event.payload.delta === "string") this.#publish({ kind: "run.delta", runId: activity.runId, sessionId: activity.sessionId, delta: event.payload.delta });
-    else this.#publish({ kind: "agent.event", event });
+    if ("delivery" in event) { if (event.kind === "stream.resync-required") this.#publish({ kind: "stream.resync-required", cursor: this.#cursor }, projectId); return; }
+    if (event.kind === "model.delta" && typeof event.payload.delta === "string") this.#publish({ kind: "run.delta", runId: activity.runId, sessionId: activity.sessionId, delta: event.payload.delta }, projectId);
+    else this.#publish({ kind: "agent.event", event }, projectId);
   }
 
   async #snapshot(selectedSessionId?: string): Promise<UiSurfaceSnapshot> {
     const application = this.options.application();
     const watermark = this.#cursor;
-    const [projects, project, sessions, goals, schedules] = await Promise.all([this.options.projects?.list() ?? Promise.resolve([]), this.options.projects?.current() ?? Promise.resolve(undefined), application.sessions.list(), optionalAutomation(() => application.goals.list()), optionalAutomation(() => application.schedules.list())]);
+    const [projects, project, sessions, goals, schedules, backgroundRuns] = await Promise.all([this.options.projects?.list() ?? Promise.resolve([]), this.options.projects?.current() ?? Promise.resolve(undefined), application.sessions.list(), optionalAutomation(() => application.goals.list()), optionalAutomation(() => application.schedules.list()), this.options.backgroundRuns?.() ?? Promise.resolve([])]);
     const selected = sessions.find((item) => item.id === selectedSessionId) ?? sessions[0];
     const [selectedView, compaction] = selected ? await Promise.all([application.sessions.view(selected.id), application.sessions.getCompactionProjection(selected.id)]) : [undefined, undefined];
-    return Object.freeze({ schemaVersion: 1, cursor: watermark, ...(project ? { project } : {}), projects: Object.freeze(projects), sessions: Object.freeze(sessions), goals: Object.freeze(goals), schedules: Object.freeze(schedules), ...(selected ? { selectedSessionId: selected.id } : {}), ...(selectedView ? { selectedView } : {}), ...(compaction ? { compaction } : {}) });
+    return Object.freeze({ schemaVersion: 2, cursor: watermark, selectedProjectId: project?.id ?? this.#projectIdentity(), ...(project ? { project } : {}), projects: Object.freeze(projects), sessions: Object.freeze(sessions), goals: Object.freeze(goals), schedules: Object.freeze(schedules), backgroundRuns: Object.freeze(backgroundRuns), ...(selected ? { selectedSessionId: selected.id } : {}), ...(selectedView ? { selectedView } : {}), ...(compaction ? { compaction } : {}) });
   }
+
+  #projectIdentity(): string { return this.options.currentProjectId?.() ?? "domain_unowned"; }
 
   #flushFrame(): void {
     if (this.#frameTimer) clearTimeout(this.#frameTimer);
@@ -226,7 +227,7 @@ function writes(command: Extract<UiCommand, { readonly expectedRevision: number 
 function assertNever(value: never): never { throw new AlphionError("internal", `Unhandled UI command: ${JSON.stringify(value)}`, { stage: "ui" }); }
 
 function invalidationFor(command: UiCommand, result: unknown): UiEventPayload | undefined {
-  if (command.kind === "project.activate" || command.kind === "project.create") return { kind: "surface.invalidate", scopes: ["projects", "sessions", "session-view"], sessionIds: [] };
+  if (command.kind === "project.activate" || command.kind === "project.create") return { kind: "surface.invalidate", scopes: ["workspace", "projects", "sessions", "session-view"], sessionIds: [] };
   if (command.kind === "session.create") return { kind: "surface.invalidate", scopes: ["sessions"], sessionIds: [] };
   if (command.kind === "session.fork") { const sessionId = (result as { session?: { id?: unknown } }).session?.id; return { kind: "surface.invalidate", scopes: ["sessions", "session-view"], sessionIds: typeof sessionId === "string" ? [sessionId] : [] }; }
   switch (command.kind) {

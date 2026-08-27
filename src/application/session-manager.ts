@@ -32,6 +32,11 @@ export class DefaultSessionManager implements SessionManager {
   }
 
   list(): Promise<readonly AgentSessionRecord[]> { this.options.assertOpen(); return this.#own(this.options.store.listSessions()); }
+  async hasActiveWork(): Promise<boolean> {
+    this.options.assertOpen();
+    if (this.#ownedTasks.size > 0) return true;
+    return this.options.store.hasActiveSessionWork();
+  }
   fork(request: SessionForkRequest): Promise<SessionForkReceipt> { this.options.assertOpen(); return this.#own(this.#get(request.sourceSessionId).then((session) => session.fork(request))); }
 
   get(sessionId: string): Promise<AgentSessionContract> {

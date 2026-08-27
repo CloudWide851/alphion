@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
-import { openLocalAlphionApplication } from "../adapters/local/local-application.js";
+import { WorkspaceController, type ActiveProjectSnapshot } from "../adapters/project/active-project-controller.js";
 import type {
   AgentApplication,
   AgentSessionContract,
@@ -8,9 +8,8 @@ import type {
   HarnessPlan,
   DiagnosticReport,
   ProjectProfile,
-  ProviderPreset,
+  ProjectRecord,
   ProviderProfile,
-  ProviderProfileInput,
   ApprovalPort,
   CompactionProjection,
 } from "../src/index.js";
@@ -23,7 +22,7 @@ import { EntryShell } from "./entry-shell.js";
 import { PlatformTerminalLauncher, type TerminalLauncher } from "./terminal-launcher.js";
 import { forkTuiSession } from "./session-fork.js";
 import { AlternateScreenSurface, type TerminalSurface } from "./terminal-surface.js";
-import { ProviderModelPicker } from "./provider-model-picker.js";
+import { ProviderForm, ProviderList, presetDraft, profileDraft, providerTestLabel, toProfileInput, type ProviderDraft } from "./provider-views.js";
 import { resolveTuiInput } from "./slash-dispatch.js";
 import { HelpCard, ProjectCard } from "./workbench-cards.js";
 import { ContextCard, GoalCard, SchedulesCard } from "./automation-cards.js";
@@ -38,21 +37,10 @@ export interface RunTuiOptions {
 
 export { AppShell, ChatHome, selectWorkbenchLayout } from "./shell.js";
 export { ChatEntry, TextEntry } from "./input.js";
+export { ProviderForm, ProviderList } from "./provider-views.js";
 export type { WorkbenchLayout, WorkbenchSection } from "./shell.js";
 
 type Screen = "workbench" | "provider-form" | "credential";
-
-interface ProviderDraft {
-  readonly existing?: ProviderProfile;
-  readonly presetId: string;
-  readonly name: string;
-  readonly kind: ProviderProfile["kind"];
-  readonly protocol: ProviderProfile["protocol"];
-  readonly model: string;
-  readonly baseUrl?: string;
-  readonly catalogModels?: readonly string[];
-  readonly unlistedModel?: boolean;
-}
 
 interface WorkbenchSnapshot {
   readonly profile?: ProjectProfile;
@@ -64,27 +52,34 @@ export async function runTui(options: RunTuiOptions): Promise<number> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return 1;
   const terminalSurface = options.terminalSurface ?? new AlternateScreenSurface();
   terminalSurface.enter();
-  let application: AgentApplication | undefined;
+  const workspace = new WorkspaceController();
   try {
-    application = await openLocalAlphionApplication(options);
-    const initialSession = options.sessionId ? await application.sessions.get(options.sessionId) : undefined;
-    const instance = render(<AlphionTui application={application} projectRoot={options.projectRoot} terminalLauncher={options.terminalLauncher ?? new PlatformTerminalLauncher()} {...(initialSession ? { initialSession } : {})} />, { exitOnCtrlC: false });
+    const initialWorkspace = await workspace.openProject({ root: options.projectRoot, ...(options.statePath ? { statePath: options.statePath } : {}) });
+    const initialSession = options.sessionId ? await initialWorkspace.application.sessions.get(options.sessionId) : undefined;
+    const initialMessages = initialSession ? chatMessagesFromView(await initialSession.view()) : [];
+    const initialCompaction = initialSession ? await initialSession.compactionProjection() : { count: 0 };
+    const instance = render(<AlphionTui workspace={workspace} initialWorkspace={initialWorkspace} initialMessages={initialMessages} initialCompaction={initialCompaction} terminalLauncher={options.terminalLauncher ?? new PlatformTerminalLauncher()} {...(initialSession ? { initialSession } : {})} />, { exitOnCtrlC: false });
     await instance.waitUntilExit();
     return 0;
   } finally {
     try {
-      await application?.close();
+      await workspace.close();
     } finally {
       terminalSurface.restore();
     }
   }
 }
 
-function AlphionTui({ application, projectRoot, initialSession, terminalLauncher }: Readonly<{ application: AgentApplication; projectRoot: string; initialSession?: AgentSessionContract; terminalLauncher: TerminalLauncher }>): React.JSX.Element {
+function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessages, initialCompaction, terminalLauncher }: Readonly<{ workspace: WorkspaceController; initialWorkspace: ActiveProjectSnapshot; initialSession?: AgentSessionContract; initialMessages: readonly ChatMessage[]; initialCompaction: CompactionProjection; terminalLauncher: TerminalLauncher }>): React.JSX.Element {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const layout = selectWorkbenchLayout(stdout.columns ?? 80, stdout.rows ?? 24);
   const colorEnabled = process.env.NO_COLOR === undefined;
+  const [workspaceSnapshot, setWorkspaceSnapshot] = useState(initialWorkspace);
+  const [registeredProjects, setRegisteredProjects] = useState<readonly ProjectRecord[]>([]);
+  const [backgroundRuns, setBackgroundRuns] = useState<Awaited<ReturnType<WorkspaceController["backgroundRuns"]>>>([]);
+  const application = workspaceSnapshot.application;
+  const projectRoot = workspaceSnapshot.project?.root ?? "无归属域";
   const [screen, setScreen] = useState<Screen>("workbench");
   const [section, setSection] = useState<WorkbenchSection>("home");
   const [profiles, setProfiles] = useState<readonly ProviderProfile[]>([]);
@@ -99,9 +94,18 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
   const [runSession, setRunSession] = useState<AgentSessionContract | undefined>(initialSession);
   const [runCommand, setRunCommand] = useState<RunViewCommand>();
   const [chatSession, setChatSession] = useState<AgentSessionContract | undefined>(initialSession);
-  const [chatMessages, setChatMessages] = useState<readonly ChatMessage[]>([]);
-  const [compaction, setCompaction] = useState<CompactionProjection>({ count: 0 });
+  const [chatMessages, setChatMessages] = useState<readonly ChatMessage[]>(initialMessages);
+  const [compaction, setCompaction] = useState<CompactionProjection>(initialCompaction);
+  const [chatDraft, setChatDraft] = useState("");
+  const drafts = useRef(new Map<string, string>());
   const approval = useMemo(() => new TuiApprovalPort(), []);
+
+  const refreshProjects = useCallback(async () => { const [values, running] = await Promise.all([workspace.projects.list(), workspace.backgroundRuns()]); setRegisteredProjects(values); setBackgroundRuns(running); return values; }, [workspace]);
+  const selectWorkspace = useCallback(async (next: ActiveProjectSnapshot) => {
+    drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), chatDraft);
+    setWorkspaceSnapshot(next); setChatSession(undefined); setChatMessages([]); setChatDraft(drafts.current.get(tuiDraftKey(next.project?.id)) ?? ""); setCompaction({ count: 0 }); setSection("sessions"); setError(""); await refreshProjects();
+  }, [chatDraft, chatSession?.id, refreshProjects, workspaceSnapshot.project?.id]);
+  const activateProject = useCallback((projectId: string) => { void workspace.activate(projectId).then(selectWorkspace).catch((cause: unknown) => setError(safeError(cause))); }, [selectWorkspace, workspace]);
 
   const refreshProfiles = useCallback(async () => {
     const next = await application.configuration.listProfiles();
@@ -116,7 +120,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     ]);
     setSnapshot({ profile, diagnostics });
   }, [application]);
-  const acceptRunSession = useCallback((session: AgentSessionContract) => { setChatSession(session); void session.compactionProjection().then(setCompaction); }, []);
+  const acceptRunSession = useCallback((session: AgentSessionContract) => { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), chatDraft); setChatSession(session); setChatDraft(drafts.current.get(tuiDraftKey(workspaceSnapshot.project?.id, session.id)) ?? ""); void session.compactionProjection().then(setCompaction); }, [chatDraft, chatSession?.id, workspaceSnapshot.project?.id]);
   const finishRun = useCallback((answer: string) => {
     if (answer.trim()) setChatMessages((messages) => [...messages, { id: `assistant:${Date.now()}`, role: "assistant", content: answer }]);
     const completedSession = runSession ?? chatSession;
@@ -127,12 +131,13 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
   useEffect(() => {
     void (async () => {
       try {
-        await Promise.all([refreshProfiles(), refreshSnapshot()]);
+        await Promise.all([refreshProfiles(), refreshSnapshot(), refreshProjects()]);
       } catch (cause) {
         setError(safeError(cause));
       }
     })();
-  }, [application, refreshProfiles, refreshSnapshot]);
+  }, [application, refreshProfiles, refreshProjects, refreshSnapshot]);
+  useEffect(() => { const timer = setInterval(() => { void workspace.backgroundRuns().then(setBackgroundRuns).catch(() => undefined); }, 1_000); timer.unref(); return () => clearInterval(timer); }, [workspace]);
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") { if (runPrompt) setRunCommand({ id: Date.now(), kind: "cancel" }); else exit(); return; }
@@ -164,8 +169,8 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
       void forkTuiSession(chatSession, action.title, terminalLauncher).then((outcome) => setError(outcome.message)).catch((cause: unknown) => setError(safeError(cause)));
       return;
     }
-    if (action.kind === "new") { setChatSession(undefined); setChatMessages([]); setError(""); return; }
-    if (action.kind === "new-project") { setError(`将创建 Project：${action.root}${action.name ? `（${action.name}）` : ""}`); setSection("projects"); return; }
+    if (action.kind === "new") { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), chatDraft); setChatSession(undefined); setChatMessages([]); setChatDraft(drafts.current.get(tuiDraftKey(workspaceSnapshot.project?.id)) ?? ""); setError(""); return; }
+    if (action.kind === "new-project") { setError("正在创建或打开 Project…"); void workspace.openProject({ root: action.root, create: true, ...(action.name ? { name: action.name } : {}) }).then(selectWorkspace).catch((cause: unknown) => setError(safeError(cause))); return; }
     if (action.kind === "navigate") { setError(""); setSection(action.section); return; }
     if (action.kind === "steer" || action.kind === "follow-up" || action.kind === "cancel") { setRunCommand({ id: Date.now(), kind: action.kind, ...(action.kind === "cancel" ? {} : { content: action.content }) }); setError(""); return; }
     setError(action.kind === "error" ? action.message : "命令需要活动 Run。");
@@ -195,8 +200,8 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
     </EntryShell>;
   }
   return <AppShell section={section} layout={layout} colorEnabled={colorEnabled} projectRoot={projectRoot} error={error} help={help}>
-    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} compactionCount={compaction.count} activeBubble={runPrompt ? <RunView application={application} approval={approval} prompt={runPrompt} {...(runSession ? { session: runSession } : {})} {...(runProviderId ? { providerId: runProviderId } : {})} {...(runCommand ? { command: runCommand } : {})} compact={layout === "compact"} onSession={acceptRunSession} onError={setError} onDone={finishRun} /> : null} compact={layout === "compact"} heightRows={Math.max(10, (stdout.rows ?? 24) - 2)} viewportRows={Math.max(4, (stdout.rows ?? 24) - (layout === "compact" ? 8 : 11))} contentWidth={Math.max(20, Math.min(88, (stdout.columns ?? 80) - 8))} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) }} onSubmit={submitChat} /> : null}
-    {section === "projects" ? <ProjectCard projectRoot={projectRoot} /> : null}
+    {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} draft={chatDraft} onDraftChange={(value) => { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), value); setChatDraft(value); }} compactionCount={compaction.count} activeBubble={runPrompt ? <RunView application={application} approval={approval} prompt={runPrompt} {...(runSession ? { session: runSession } : {})} {...(runProviderId ? { providerId: runProviderId } : {})} {...(runCommand ? { command: runCommand } : {})} compact={layout === "compact"} onSession={acceptRunSession} onError={setError} onDone={finishRun} /> : null} compact={layout === "compact"} heightRows={Math.max(10, (stdout.rows ?? 24) - 2)} viewportRows={Math.max(4, (stdout.rows ?? 24) - (layout === "compact" ? 8 : 11))} contentWidth={Math.max(20, Math.min(88, (stdout.columns ?? 80) - 8))} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) }} onSubmit={submitChat} /> : null}
+    {section === "projects" ? <ProjectCard projectRoot={projectRoot} projects={registeredProjects} backgroundRuns={backgroundRuns} {...(workspaceSnapshot.project ? { currentProjectId: workspaceSnapshot.project.id } : {})} onActivate={activateProject} /> : null}
     {section === "profile" ? <ProjectProfileView {...(snapshot.profile ? { profile: snapshot.profile } : {})} onRefresh={() => void refreshSnapshot(true).catch((cause: unknown) => setError(safeError(cause)))} /> : null}
     {section === "providers" ? <ProviderList
       profiles={profiles}
@@ -212,7 +217,7 @@ function AlphionTui({ application, projectRoot, initialSession, terminalLauncher
       onRun={() => current && setSection("home")}
       onExit={() => exit()}
     /> : null}
-    {section === "sessions" ? <SessionWorkbenchView application={application} approval={approval} onSend={(session, prompt) => beginRun(prompt, session)} onError={(cause) => setError(safeError(cause))} /> : null}
+    {section === "sessions" ? <SessionWorkbenchView application={application} approval={approval} onSelect={(session, messages) => { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), chatDraft); setChatSession(session); setChatMessages(messages); setChatDraft(drafts.current.get(tuiDraftKey(workspaceSnapshot.project?.id, session.id)) ?? ""); void session.compactionProjection().then(setCompaction); setSection("home"); }} onSend={(session, prompt) => beginRun(prompt, session)} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "resources" ? <ResourceResolutionView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "harness" ? <HarnessPlanView application={application} onError={(cause) => setError(safeError(cause))} /> : null}
     {section === "context" ? <ContextCard {...(chatSession ? { session: chatSession } : {})} onError={(cause) => setError(safeError(cause))} /> : null}
@@ -250,7 +255,7 @@ function RefreshKey({ onRefresh }: Readonly<{ onRefresh: () => void }>): null {
   return null;
 }
 
-export function SessionWorkbenchView(props: Readonly<{ application: AgentApplication; approval: ApprovalPort; onSend: (session: AgentSessionContract, prompt: string) => void; onError: (cause: unknown) => void }>): React.JSX.Element {
+export function SessionWorkbenchView(props: Readonly<{ application: AgentApplication; approval: ApprovalPort; onSelect?: (session: AgentSessionContract, messages: readonly ChatMessage[]) => void; onSend: (session: AgentSessionContract, prompt: string) => void; onError: (cause: unknown) => void }>): React.JSX.Element {
   const [sessions, setSessions] = useState<readonly AgentSessionRecord[]>([]);
   const [selected, setSelected] = useState(0);
   const [session, setSession] = useState<AgentSessionContract | undefined>();
@@ -284,6 +289,7 @@ export function SessionWorkbenchView(props: Readonly<{ application: AgentApplica
     if (entry) return;
     if (key.upArrow) setSelected((value) => Math.max(0, value - 1));
     else if (key.downArrow) setSelected((value) => Math.min(sessions.length - 1, value + 1));
+    else if (key.return && current) void props.application.sessions.get(current.id).then(async (value) => { props.onSelect?.(value, chatMessagesFromView(await value.view())); }).catch(props.onError);
     else if (input === "n") setEntry("create");
     else if (input === "s" && current) setEntry("send");
     else if (input === "o" && current) void props.application.sessions.get(current.id).then(async (value) => { setSession(value); const view = await value.view(); setDetail(view.entries.map((item) => `${item.id.slice(0, 12)} · ${item.message.kind}${"content" in item.message ? ` · ${sanitizeTerminalText(item.message.content).slice(0, 80)}` : ""}`)); }).catch(props.onError);
@@ -303,7 +309,7 @@ export function SessionWorkbenchView(props: Readonly<{ application: AgentApplica
   return <Box flexDirection="column">
     {sessions.length === 0 ? <Text dimColor>暂无会话。按 n 创建。</Text> : sessions.map((value, index) => <Text key={value.id} {...(index === selected ? accent(process.env.NO_COLOR === undefined) : {})}>{index === selected ? "◆" : "◇"} {value.status === "running" ? "◌ 运行中" : value.auditOnly ? "! 只读审计" : "✓ 空闲"} · {sanitizeTerminalText(value.title)} · {value.shapeStatus} · rev {value.revision}</Text>)}
     {session && detail.length > 0 ? <Box flexDirection="column" marginTop={1}><Text bold>当前分支</Text>{detail.slice(-10).map((line) => <Text key={line}>{line}</Text>)}</Box> : null}
-    <Text dimColor>↑↓ 选择 · n 创建 · o 查看 · i Shape · p reshape(空闲) · c checkout · s 发送 · t 转向 · f 后续 · r 刷新</Text>
+    <Text dimColor>↑↓ 选择 · Enter 打开 · n 创建 · o 查看 · i Shape · p reshape(空闲) · c checkout · s 发送 · t 转向 · f 后续 · r 刷新</Text>
   </Box>;
 }
 
@@ -332,120 +338,6 @@ export function HarnessPlanView(props: Readonly<{ application: AgentApplication;
   </Box>;
 }
 
-export function ProviderList(props: Readonly<{
-  profiles: readonly ProviderProfile[];
-  selected: number;
-  onSelected: (index: number) => void;
-  onNew: () => void;
-  onEdit: () => void;
-  onActivate: () => void;
-  onCredential: () => void;
-  onRemoveCredential: () => void;
-  onTest: () => void;
-  onTestAll: () => void;
-  onRun: () => void;
-  onExit: () => void;
-}>): React.JSX.Element {
-  useInput((input, key) => {
-    if (key.upArrow) props.onSelected(Math.max(0, props.selected - 1));
-    else if (key.downArrow) props.onSelected(Math.min(props.profiles.length - 1, props.selected + 1));
-    else if (input === "n") props.onNew();
-    else if (input === "e" && props.profiles.length > 0) props.onEdit();
-    else if (input === "a" && props.profiles.length > 0) props.onActivate();
-    else if (input === "k" && props.profiles.length > 0) props.onCredential();
-    else if (input === "x" && props.profiles.length > 0) props.onRemoveCredential();
-    else if (input === "t" && props.profiles.length > 0) props.onTest();
-    else if (input === "y" && props.profiles.length > 0) props.onTestAll();
-    else if ((input === "r" || key.return) && props.profiles.length > 0) props.onRun();
-    else if (input === "q") props.onExit();
-  });
-  return <Box flexDirection="column">
-    {props.profiles.length === 0 ? <Text dimColor>暂无 Provider。按 n 新建 DeepSeek 或 OpenAI 兼容配置。</Text> : null}
-    {props.profiles.map((profile, index) => <Text key={profile.id} {...(index === props.selected ? accent(process.env.NO_COLOR === undefined) : {})}>
-      {index === props.selected ? "◆" : "◇"} {profile.active ? "✓ 活动" : "  待用"} · {profile.name} · {profile.kind} · {profile.model} · {authLabel(profile)}
-    </Text>)}
-    <Text dimColor>↑↓ 选择 · n 新建 · e 编辑 · a 激活 · k 导入 Key · x 删除 Key · t 实测当前 · y 实测全部 · r 运行</Text>
-  </Box>;
-}
-
-export function ProviderForm(props: Readonly<{ draft: ProviderDraft; presets: readonly ProviderPreset[]; onSave: (draft: ProviderDraft) => void; onCancel: () => void }>): React.JSX.Element {
-  const [step, setStep] = useState(0);
-  const [value, setValue] = useState(props.draft);
-  if (step === 0 && !value.existing && props.presets.length > 1) {
-    return <PresetPicker presets={props.presets} selectedId={value.presetId} onSelect={(preset) => { setValue(presetDraft(preset)); setStep(1); }} onCancel={props.onCancel} />;
-  }
-  if (step <= 1) return <TextEntry label="配置名称" initialValue={value.name} onSubmit={(name) => { setValue({ ...value, name }); setStep(2); }} onCancel={props.onCancel} />;
-  if (step === 2 && value.kind !== "custom-openai-compatible" && value.catalogModels && !value.unlistedModel) {
-    return <ProviderModelPicker models={value.catalogModels} selectedModel={value.model} onSelect={(model) => props.onSave({ ...value, model })} onAdvanced={() => { setValue({ ...value, unlistedModel: true }); }} onCancel={() => setStep(1)} />;
-  }
-  if (step === 2) return <TextEntry label={value.unlistedModel ? "高级自定义模型（不受 catalog 保证）" : "模型"} initialValue={value.model} onSubmit={(model) => {
-    const next = { ...value, model };
-    if (next.kind === "custom-openai-compatible") { setValue(next); setStep(3); }
-    else props.onSave(next);
-  }} onCancel={() => setStep(1)} />;
-  return <TextEntry label="Base URL（仅自定义 Provider）" {...(value.baseUrl === undefined ? {} : { initialValue: value.baseUrl })} onSubmit={(baseUrl) => props.onSave({ ...value, baseUrl })} onCancel={() => setStep(2)} />;
-}
-
-function PresetPicker(props: Readonly<{ presets: readonly ProviderPreset[]; selectedId: string; onSelect: (preset: ProviderPreset) => void; onCancel: () => void }>): React.JSX.Element {
-  const initial = Math.max(0, props.presets.findIndex((preset) => preset.id === props.selectedId));
-  const [selected, setSelected] = useState(initial);
-  useInput((_input, key) => {
-    if (key.upArrow) setSelected((value) => Math.max(0, value - 1));
-    else if (key.downArrow) setSelected((value) => Math.min(props.presets.length - 1, value + 1));
-    else if (key.return) { const preset = props.presets[selected]; if (preset) props.onSelect(preset); }
-    else if (key.escape) props.onCancel();
-  });
-  return <Box flexDirection="column"><Text>选择 Provider 预设</Text>{props.presets.map((preset, index) => <Text key={preset.id} {...(index === selected ? accent(process.env.NO_COLOR === undefined) : {})}>{index === selected ? "◆" : "◇"} {preset.label}</Text>)}</Box>;
-}
-
-function presetDraft(preset: ProviderPreset | undefined): ProviderDraft {
-  const fallback: ProviderPreset = { id: "deepseek", label: "DeepSeek（中国大陆）", kind: "deepseek", region: "mainland", requiresBaseUrl: false, models: ["deepseek-chat"], protocol: "chat-completions" };
-  const value = preset ?? fallback;
-  return { presetId: value.id, name: value.label, kind: value.kind, protocol: value.protocol, model: value.models[0] ?? "", catalogModels: value.models, ...(value.requiresBaseUrl ? { baseUrl: "" } : {}) };
-}
-
-function profileDraft(profile: ProviderProfile, presets: readonly ProviderPreset[]): ProviderDraft {
-  const catalogModels = profile.kind === "custom-openai-compatible" ? undefined : presets.find((preset) => preset.id === profile.presetId)?.models;
-  return { existing: profile, presetId: profile.kind === "custom-openai-compatible" ? profile.kind : profile.presetId, name: profile.name, kind: profile.kind, protocol: profile.protocol, model: profile.model, ...(catalogModels ? { catalogModels } : {}), ...(profile.capabilities.unlistedModel ? { unlistedModel: true } : {}), ...(profile.kind === "custom-openai-compatible" ? { baseUrl: profile.baseUrl } : {}) };
-}
-
-function toProfileInput(draft: ProviderDraft, firstProfile: boolean): ProviderProfileInput {
-  const id = draft.existing?.id ?? toProfileId(draft.name);
-  const common = {
-    schemaVersion: 2 as const,
-    id,
-    name: draft.name.trim(),
-    model: draft.model.trim(),
-    protocol: draft.kind === "deepseek" ? "chat-completions" : draft.protocol,
-    auth: draft.existing?.auth ?? { mode: "none" },
-    capabilities: {
-      streaming: draft.existing?.capabilities.streaming ?? true,
-      tools: draft.existing?.capabilities.tools ?? true,
-      promptCaching: draft.existing?.capabilities.promptCaching ?? false,
-      reasoning: draft.kind === "deepseek" && draft.model.trim() === "deepseek-reasoner",
-      ...(draft.unlistedModel ? { unlistedModel: true } : {}),
-    },
-    active: draft.existing?.active ?? firstProfile,
-  };
-  return draft.kind === "custom-openai-compatible"
-    ? { ...common, kind: draft.kind, baseUrl: draft.baseUrl?.trim() ?? "" }
-    : { ...common, kind: draft.kind, presetId: draft.presetId };
-}
-
-function toProfileId(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/gu, "-").replace(/^-+|-+$/gu, "") || "provider";
-}
-
-function authLabel(profile: ProviderProfile): string {
-  if (profile.auth.mode === "encrypted-project") return "✓ Project 独立加密";
-  if (profile.auth.mode === "bearer-env") return `✓ 环境引用 ${profile.auth.environmentVariable}`;
-  return "! 未配置凭据";
-}
-
-function providerTestLabel(result: Awaited<ReturnType<AgentApplication["providerTests"]["test"]>>): string {
-  return result.status === "success" ? `实测成功 · ${result.model} · ${result.latencyMs}ms · ${result.response ?? "无文本"}` : `实测失败 · ${result.errorReason ?? result.errorCode ?? "未知错误"}`;
-}
-
 function shortRevision(value: string): string {
   return value.length > 12 ? value.slice(0, 12) : value;
 }
@@ -453,3 +345,6 @@ function shortRevision(value: string): string {
 function safeError(value: unknown): string {
   return sanitizeTerminalText(value instanceof Error ? value.message : "TUI 发生未预期错误。");
 }
+
+function chatMessagesFromView(view: Awaited<ReturnType<AgentSessionContract["view"]>>): readonly ChatMessage[] { return view.entries.flatMap((item) => (item.message.kind === "user" || item.message.kind === "assistant") ? [{ id: item.id, role: item.message.kind, content: item.message.content }] : []); }
+function tuiDraftKey(projectId?: string, sessionId?: string): string { return `${projectId ?? "unowned"}:${sessionId ?? "new"}`; }

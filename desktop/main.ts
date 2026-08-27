@@ -1,7 +1,7 @@
 import { join, normalize } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
-import { ActiveProjectController } from "../adapters/project/active-project-controller.js";
+import { WorkspaceController } from "../adapters/project/active-project-controller.js";
 import { LocalProjectManager } from "../adapters/project/project-manager.js";
 import { AlphionError } from "../src/application/errors.js";
 import type { AgentApplication } from "../src/ports/index.js";
@@ -20,14 +20,14 @@ export async function runElectronDesktop(): Promise<void> {
   if (!app.requestSingleInstanceLock()) { app.quit(); return; }
   await app.whenReady();
   const dataRoot = app.getPath("userData");
-  const projects = new ActiveProjectController(new LocalProjectManager(join(dataRoot, "projects.json")), dataRoot);
+  const projects = new WorkspaceController(new LocalProjectManager(join(dataRoot, "projects.json")), dataRoot);
   await projects.openCurrentOrDefault();
   const application = (): AgentApplication => {
     const current = projects.current();
     if (!current) throw new AlphionError("conflict", "Desktop Project is not open.", { stage: "desktop" });
     return current.application;
   };
-  const client = new LocalUiCommandClient({ application, projects: projects.projects, activateProject: async (projectId) => { await projects.activate(projectId); } });
+  const client = new LocalUiCommandClient({ application, projects: projects.projects, activateProject: async (projectId) => { await projects.activate(projectId); }, currentProjectId: () => projects.current()?.project?.id, backgroundRuns: () => projects.backgroundRuns() });
   registerDesktopIpc(client, rendererUrl);
   const window = createWindow();
   const eventAbort = new AbortController();

@@ -150,6 +150,8 @@ export interface SessionStore {
   createSession(input: Readonly<{ title: string; providerId?: string; idempotencyKey: string }>): Promise<AgentSessionRecord>;
   forkSession(request: SessionForkRequest): Promise<SessionForkReceipt>;
   listSessions(): Promise<readonly AgentSessionRecord[]>;
+  /** Reports durable Run leases or queued follow-ups that require this Project application to stay open. */
+  hasActiveSessionWork(): Promise<boolean>;
   getSession(sessionId: string): Promise<AgentSessionRecord | undefined>;
   getSessionView(sessionId: string): Promise<SessionView | undefined>;
   listSessionEvents(sessionId: string, afterSessionSequence?: number): Promise<readonly AgentEvent[]>;
@@ -306,6 +308,8 @@ export interface SessionManager {
   create(input?: Readonly<{ title?: string; providerId?: string; idempotencyKey?: string }>): Promise<AgentSessionContract>;
   fork(request: SessionForkRequest): Promise<SessionForkReceipt>;
   list(): Promise<readonly AgentSessionRecord[]>;
+  /** Includes in-memory Session operations plus durable Run/follow-up work. */
+  hasActiveWork(): Promise<boolean>;
   get(sessionId: string): Promise<AgentSessionContract>;
   view(sessionId: string): Promise<SessionView>;
   getShape(sessionId: string): Promise<AgentShape | undefined>;
@@ -345,6 +349,8 @@ export interface ScheduleManager {
   resume(scheduleId: string, options: ScheduleWriteOptions): Promise<ScheduleRecord>;
   runNow(scheduleId: string, options: ScheduleWriteOptions): Promise<ScheduleExecution>;
   executions(scheduleId: string, limit?: number): Promise<readonly ScheduleExecution[]>;
+  /** Pauses automatic scans without cancelling already-dispatched work. */
+  suspend(): void;
   start(): void;
   close(): Promise<void>;
 }

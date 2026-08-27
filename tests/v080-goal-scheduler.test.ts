@@ -110,6 +110,30 @@ test("run-now is idempotent, busy Sessions queue durable follow-up, and overlap 
   });
 });
 
+test("scheduler suspension blocks background scans and start resumes from the latest due occurrence", async () => {
+  await temporary(async (directory) => {
+    const store = new SqliteRuntimeStore({ path: join(directory, "suspend.sqlite3"), projectId: "project_suspend", domainId: "domain_suspend" });
+    const session = await store.createSession({ title: "Suspended", idempotencyKey: "suspend_session" });
+    const fake = fakeSessions(store, session.id, false, false);
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const schedules = new DefaultScheduleManager({ store, sessions: fake.manager, goals: new DefaultGoalManager(store, () => undefined), assertOpen: () => undefined, scanIntervalMs: 1_000, now: () => now });
+    try {
+      await schedules.create({ title: "Paused in background", expression: { kind: "interval", everyMinutes: 5 }, timezone: "UTC", payload: { kind: "session.prompt", sessionId: session.id, prompt: "Review" }, idempotencyKey: "suspend_schedule" });
+      now = new Date("2026-01-01T00:05:00.000Z");
+      await new Promise((resolveValue) => setTimeout(resolveValue, 50));
+      assert.equal(fake.sent(), 0);
+      schedules.start();
+      await eventually(async () => fake.sent() === 1);
+      schedules.suspend();
+      now = new Date("2026-01-01T00:10:00.000Z");
+      await new Promise((resolveValue) => setTimeout(resolveValue, 1_100));
+      assert.equal(fake.sent(), 1);
+      schedules.start();
+      await eventually(async () => fake.sent() === 2);
+    } finally { await schedules.close(); store.close(); }
+  });
+});
+
 test("scheduler close cancels its active Run before store shutdown", async () => {
   await temporary(async (directory) => {
     const store = new SqliteRuntimeStore({ path: join(directory, "close.sqlite3"), projectId: "project_close", domainId: "domain_close" });

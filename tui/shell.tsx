@@ -31,7 +31,7 @@ export function AppShell(props: Readonly<{ section: WorkbenchSection; layout: Wo
     {props.section === "home" ? null : <Text dimColor>Esc 返回对话 · ↑/↓ 选择 · Enter 确认 · ? 帮助 · q 退出</Text>}
   </Box>;
 }
-export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; messages?: readonly ChatMessage[]; activeBubble?: React.ReactNode; compactionCount?: number; compact: boolean; heightRows?: number; viewportRows?: number; contentWidth?: number; slashContext?: SlashCommandContext; onSubmit: (value: string) => boolean | void }>): React.JSX.Element {
+export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; messages?: readonly ChatMessage[]; activeBubble?: React.ReactNode; compactionCount?: number; compact: boolean; heightRows?: number; viewportRows?: number; contentWidth?: number; draft?: string; slashContext?: SlashCommandContext; onDraftChange?: (value: string) => void; onSubmit: (value: string) => boolean | void }>): React.JSX.Element {
   const messages = props.messages ?? [];
   const viewportRows = props.viewportRows ?? (props.compact ? 5 : 12);
   const rendered = useMemo(() => messages.map((message) => ({ id: message.id, role: message.role, displayText: renderMarkdownText(parseMarkdown(message.content), props.contentWidth ?? 88) })), [messages, props.contentWidth]);
@@ -44,7 +44,7 @@ export function ChatHome(props: Readonly<{ activeProfile?: ProviderProfile; mess
   return <Box flexDirection="column" height={props.heightRows ?? (props.compact ? 12 : 22)} justifyContent="space-between" overflowY="hidden">
     {messages.length === 0 && !props.activeBubble ? <Box flexDirection="column" alignItems="center" marginTop={props.compact ? 0 : 2}>{props.compact ? null : LOGO.map((line) => <Text key={line} bold {...accent()}>{line}</Text>)}<Text bold {...accent()}>ALPHION</Text><Text dimColor>{props.activeProfile ? `${props.activeProfile.name} · ${props.activeProfile.model}` : "请先使用 /providers 配置 Provider"}</Text></Box> : <Box flexDirection="column" height={viewportRows} overflowY="hidden">{selection.segments.map((message) => <Box key={`${message.id}:${message.continued ? "continued" : "start"}`} width={props.compact ? "94%" : "78%"} alignSelf={message.role === "user" ? "flex-end" : "flex-start"} flexDirection="column" marginBottom={1} borderStyle="round" paddingX={1} {...(message.role === "assistant" ? borderColor(BRAND_PURPLE) : {})}><Text bold {...(message.role === "assistant" ? accent() : {})}>{message.role === "assistant" ? "Alphion" : "你"}{message.continued ? " · 续" : ""}</Text><Text>{message.text}</Text></Box>)}{offset === 0 ? props.activeBubble : null}</Box>}
     {offset > 0 ? <Text dimColor>↑ 正在查看历史 · {unseen ? `${unseen} 行新内容 · ` : ""}End 返回最新</Text> : null}
-    {props.compactionCount ? <Text dimColor>✓ 已优化上下文 · {props.compactionCount} 次</Text> : null}<ChatEntry {...(props.slashContext ? { slashContext: props.slashContext } : {})} onPaletteOpenChange={setPaletteOpen} onSubmit={props.onSubmit} />
+    {props.compactionCount ? <Text dimColor>✓ 已优化上下文 · {props.compactionCount} 次</Text> : null}<ChatEntry {...(props.draft === undefined ? {} : { value: props.draft })} {...(props.slashContext ? { slashContext: props.slashContext } : {})} onChange={props.onDraftChange} onPaletteOpenChange={setPaletteOpen} onSubmit={props.onSubmit} />
   </Box>;
 }
 export function accent(enabled = process.env.NO_COLOR === undefined): Readonly<{ color?: string }> { return enabled ? { color: BRAND_PURPLE } : {}; }

@@ -69,8 +69,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 }
 
 async function providerTestCommand(projectRoot: string, statePath: string, parsed: ParsedArguments): Promise<number> {
-  const { openLocalAlphionApplication } = await import("../adapters/local/local-application.js");
-  const application = await openLocalAlphionApplication({ projectRoot, statePath });
+  const application = await openApplication(projectRoot, statePath);
   try {
     if (hasFlag(parsed, "all")) {
       const results = await application.providerTests.testAll();
@@ -262,7 +261,9 @@ function createCliKey(action: string | undefined): string { return `cli:${action
 
 async function openApplication(projectRoot: string, statePath: string): Promise<LocalAlphionApplication> {
   const { openLocalAlphionApplication } = await import("../adapters/local/local-application.js");
-  return openLocalAlphionApplication({ projectRoot, statePath });
+  const { LocalProjectManager } = await import("../adapters/project/project-manager.js");
+  const project = await new LocalProjectManager().open({ root: projectRoot });
+  return openLocalAlphionApplication({ projectRoot: project.root, statePath, projectId: project.id, domainId: project.domainId });
 }
 
 async function projectInspectCommand(projectRoot: string, statePath: string, parsed: ParsedArguments): Promise<number> {

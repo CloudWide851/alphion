@@ -24,6 +24,7 @@ export class DefaultScheduleManager implements ScheduleManager {
   readonly #handles = new Set<AgentRunHandle>();
   readonly #now: () => Date;
   #timer: NodeJS.Timeout | undefined;
+  #suspended = true;
   #closed = false;
   constructor(private readonly options: DefaultScheduleManagerOptions) { this.#now = options.now ?? (() => new Date()); }
 
@@ -47,7 +48,9 @@ export class DefaultScheduleManager implements ScheduleManager {
   }
 
   start(): void {
-    if (this.#closed || this.#timer || this.options.enabled === false) return;
+    if (this.#closed || this.options.enabled === false) return;
+    this.#suspended = false;
+    if (this.#timer) return;
     const scanMs = this.options.scanIntervalMs ?? DEFAULT_SCAN_MS;
     if (!Number.isSafeInteger(scanMs) || scanMs < 1_000) throw new AlphionError("validation", "Scheduler scan interval is invalid.", { stage: "scheduler" });
     this.#own(this.#scan());
@@ -55,22 +58,27 @@ export class DefaultScheduleManager implements ScheduleManager {
     this.#timer.unref();
   }
 
+  suspend(): void {
+    this.#suspended = true;
+    if (this.#timer) clearInterval(this.#timer);
+    this.#timer = undefined;
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    if (this.#timer) clearInterval(this.#timer);
-    this.#timer = undefined;
+    this.suspend();
     for (const handle of this.#handles) handle.cancel("Scheduler is closing.");
     while (this.#tasks.size > 0) await Promise.allSettled([...this.#tasks]);
   }
 
   async #scan(): Promise<void> {
-    if (this.#closed) return;
+    if (this.#closed || this.#suspended) return;
     const now = this.#now();
     const schedules = (await this.options.store.listSchedules()).filter((item) => item.status === "active" && item.nextRunAt && Date.parse(item.nextRunAt) <= now.getTime()).slice(0, 16);
-    if (this.#closed) return;
+    if (this.#closed || this.#suspended) return;
     for (const schedule of schedules) {
-      if (this.#closed) return;
+      if (this.#closed || this.#suspended) return;
       const due = latestDueOccurrence(schedule, now);
       if (!due) continue;
       const claim = await this.options.store.claimSchedule(schedule.id, due.dueAt, due.nextRunAt, due.missedCount, this.#owner, new Date(now.getTime() + LEASE_MS).toISOString(), schedule.revision).catch((error) => {

@@ -8,11 +8,11 @@ export function frameEvents(events: readonly UiEventEnvelope[]): UiEventFrame | 
   const first = events[0];
   const last = events.at(-1);
   if (!first || !last) return undefined;
-  return Object.freeze({ schemaVersion: 1, cursorStart: first.cursor, cursorEnd: last.cursor, timestamp: last.timestamp, events: Object.freeze(coalesceEvents(events)) });
+  return Object.freeze({ schemaVersion: 2, cursorStart: first.cursor, cursorEnd: last.cursor, timestamp: last.timestamp, events: Object.freeze(coalesceEvents(events)) });
 }
 
 export function resyncFrame(cursor: number): UiEventFrame {
-  const event: UiEventEnvelope = Object.freeze({ schemaVersion: 1, cursor, timestamp: new Date().toISOString(), payload: Object.freeze({ kind: "stream.resync-required", cursor }) });
+  const event: UiEventEnvelope = Object.freeze({ schemaVersion: 2, cursor, timestamp: new Date().toISOString(), payload: Object.freeze({ kind: "stream.resync-required", cursor }) });
   return frameEvents([event])!;
 }
 
@@ -38,15 +38,15 @@ function coalesceEvents(events: readonly UiEventEnvelope[]): UiEventEnvelope[] {
   const output: UiEventEnvelope[] = [];
   for (const event of events) {
     const previous = output.at(-1);
-    if (previous?.payload.kind === "run.delta" && event.payload.kind === "run.delta" && previous.payload.runId === event.payload.runId) {
+    if (previous?.payload.kind === "run.delta" && event.payload.kind === "run.delta" && previous.projectId === event.projectId && previous.payload.runId === event.payload.runId) {
       output[output.length - 1] = Object.freeze({ ...event, payload: Object.freeze({ ...event.payload, delta: previous.payload.delta + event.payload.delta }) });
       continue;
     }
     if (event.payload.kind === "surface.invalidate") {
-      const index = output.findIndex((item) => item.payload.kind === "surface.invalidate");
+      const index = output.findIndex((item) => item.payload.kind === "surface.invalidate" && item.projectId === event.projectId);
       if (index >= 0) {
-        const existing = output[index]!;
-        if (existing.payload.kind === "surface.invalidate") output[index] = Object.freeze({ ...event, payload: Object.freeze({ kind: "surface.invalidate", scopes: Object.freeze([...new Set([...existing.payload.scopes, ...event.payload.scopes])]), sessionIds: Object.freeze([...new Set([...existing.payload.sessionIds, ...event.payload.sessionIds])]) }) });
+        const [existing] = output.splice(index, 1);
+        if (existing?.payload.kind === "surface.invalidate") output.push(Object.freeze({ ...event, payload: Object.freeze({ kind: "surface.invalidate", scopes: Object.freeze([...new Set([...existing.payload.scopes, ...event.payload.scopes])]), sessionIds: Object.freeze([...new Set([...existing.payload.sessionIds, ...event.payload.sessionIds])]) }) }));
         continue;
       }
     }

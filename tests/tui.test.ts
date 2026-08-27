@@ -173,6 +173,18 @@ test("TUI chat input clears after every successful send", async () => {
   view.unmount();
 });
 
+test("TUI controlled chat input restores a Project and Session scoped draft", async () => {
+  const submitted: string[] = [];
+  function Controlled(): React.JSX.Element { const [value, setValue] = React.useState("已保存草稿"); return React.createElement(ChatEntry, { value, onChange: setValue, onSubmit: (next: string) => { submitted.push(next); } }); }
+  const view = render(React.createElement(Controlled));
+  assert.match(view.lastFrame() ?? "", /已保存草稿/u);
+  view.stdin.write("继续"); view.stdin.write("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(submitted, ["已保存草稿继续"]);
+  assert.doesNotMatch(view.lastFrame() ?? "", /已保存草稿|继续/u);
+  view.unmount();
+});
+
 test("TUI exposes session create/show/send/checkout and HarnessPlan workflows", async () => {
   const calls: string[] = [];
   const record = { schemaVersion: 3 as const, id: "session-1", domainId: "domain-test", title: "共享工作", revision: 3, status: "idle" as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), auditOnly: false, shapeStatus: "unshaped" as const };

@@ -4,7 +4,7 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "../../../ui/markdown.js";
 import type { CodeProjection } from "../../../ui/code-projection.js";
-import type { UiCommand, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiSurfaceSnapshot } from "../../../ui/contracts.js";
+import { decodeUiEventFrame, decodeUiSurfaceSnapshot, type UiCommand, type UiCommandEnvelope, type UiCommandResult, type UiEventEnvelope, type UiSurfaceSnapshot } from "../../../ui/contracts.js";
 import type { DesktopRendererBridge } from "../../../desktop/contracts.js";
 import { forkAndSelectSession } from "../../../ui/session-actions.js";
 import { parseNewProjectArguments, parseSlashCommand } from "../../../ui/slash-commands.js";
@@ -16,7 +16,7 @@ import { useChatScroll } from "./chat-scroll.js";
 import "./style.css";
 import "./enhancements.css";
 
-interface SessionItem { readonly id: string; readonly title: string; readonly revision: number; readonly status: string; }
+interface SessionItem { readonly id: string; readonly title: string; readonly revision: number; readonly status: string; readonly activeRunId?: string; }
 interface ChatItem { readonly id: string; readonly role: "user" | "assistant"; readonly content: string; readonly run?: ConversationRunState; }
 interface ApprovalChallenge { readonly requestId: string; readonly runId: string; readonly toolName: string; readonly actionDigest: string; readonly shapeDigest?: string; readonly summary: string; }
 function App(): React.JSX.Element {
@@ -30,8 +30,12 @@ function App(): React.JSX.Element {
   const [projectPickerRequest, setProjectPickerRequest] = useState(0);
   const [approval, setApproval] = useState<ApprovalChallenge>();
   const [activeRunId, setActiveRunId] = useState<string>();
-  const [surface, setSurface] = useState<Pick<UiSurfaceSnapshot, "compaction" | "goals" | "schedules">>({ goals: [], schedules: [] });
+  const [surface, setSurface] = useState<Pick<UiSurfaceSnapshot, "project" | "compaction" | "goals" | "schedules" | "backgroundRuns">>({ goals: [], schedules: [], backgroundRuns: [] });
   const cursor = useRef(0);
+  const selectedProjectId = useRef<string>();
+  const activeRef = useRef<SessionItem>();
+  const draftRef = useRef("");
+  const drafts = useRef(new Map<string, string>());
   const scroll = useChatScroll(messages.length, messages.at(-1)?.content.length ?? 0, active?.id ?? "new");
 
   const desktop = window.alphionDesktop;
@@ -46,9 +50,9 @@ function App(): React.JSX.Element {
       return value;
     },
     subscribe: (listener) => {
-      if (desktop) return desktop.subscribe(listener);
+      if (desktop) return desktop.subscribe((frame) => listener(decodeUiEventFrame(frame)));
       const source = new EventSource(`/api/events?cursor=${cursor.current}`, { withCredentials: true });
-      source.addEventListener("surface.frame", (event) => listener(JSON.parse((event as MessageEvent<string>).data) as UiEventFrame));
+      source.addEventListener("surface.frame", (event) => listener(decodeUiEventFrame(JSON.parse((event as MessageEvent<string>).data))));
       return () => source.close();
     },
     importProviderCredential: async (profileId, secret) => {
@@ -64,24 +68,32 @@ function App(): React.JSX.Element {
   }), [csrf, desktop]);
 
   const showSession = useCallback(async (session: SessionItem): Promise<void> => {
+    drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), draftRef.current);
     const result = await api.execute({ kind: "session.show", sessionId: session.id });
     const view = result.result as { session?: SessionItem };
     const current = view.session ?? session;
     setActive(current);
+    activeRef.current = current;
+    setActiveRunId(current.status === "running" ? current.activeRunId : undefined);
+    const restored = drafts.current.get(draftKey(selectedProjectId.current, current.id)) ?? "";
+    draftRef.current = restored; setDraft(restored);
     setSessions((items) => items.map((item) => item.id === current.id ? current : item));
     setMessages(sessionMessages(result.result));
   }, [api]);
 
   const reloadSessions = useCallback(async (preferredId?: string): Promise<void> => {
     const result = await api.execute({ kind: "surface.snapshot", ...(preferredId ? { selectedSessionId: preferredId } : {}) });
-    const snapshot = result.result as UiSurfaceSnapshot;
+    const snapshot = decodeUiSurfaceSnapshot(result.result);
     cursor.current = Math.max(cursor.current, snapshot.cursor);
     const values: readonly SessionItem[] = snapshot.sessions;
-    setSurface({ ...(snapshot.compaction ? { compaction: snapshot.compaction } : {}), goals: snapshot.goals, schedules: snapshot.schedules });
+    const previousProjectId = selectedProjectId.current; const previousSessionId = activeRef.current?.id;
+    drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), draftRef.current);
+    selectedProjectId.current = snapshot.selectedProjectId;
+    setSurface({ ...(snapshot.project ? { project: snapshot.project } : {}), ...(snapshot.compaction ? { compaction: snapshot.compaction } : {}), goals: snapshot.goals, schedules: snapshot.schedules, backgroundRuns: snapshot.backgroundRuns });
     setSessions(values);
     const selected = values.find((item) => item.id === snapshot.selectedSessionId) ?? values[0];
-    if (selected && snapshot.selectedView) { setActive(snapshot.selectedView.session as SessionItem); setMessages(sessionMessages(snapshot.selectedView)); }
-    else if (selected) await showSession(selected); else { setActive(undefined); setMessages([]); }
+    if (selected && snapshot.selectedView) { const next = snapshot.selectedView.session as SessionItem; setActive(next); activeRef.current = next; setActiveRunId(next.status === "running" ? next.activeRunId : undefined); const restored = drafts.current.get(draftKey(selectedProjectId.current, next.id)) ?? ""; draftRef.current = restored; setDraft(restored); const history = sessionMessages(snapshot.selectedView); setMessages((items) => previousProjectId === snapshot.selectedProjectId && previousSessionId === next.id ? preserveLiveAssistant(history, items) : history); }
+    else if (selected) await showSession(selected); else { setActive(undefined); activeRef.current = undefined; setActiveRunId(undefined); const restored = drafts.current.get(draftKey(selectedProjectId.current)) ?? ""; draftRef.current = restored; setDraft(restored); setMessages([]); }
   }, [api, showSession]);
 
   useEffect(() => { if (desktop) { setStatus("已连接"); return; } void fetch("/api/bootstrap", { method: "POST" }).then((response) => response.json()).then((value: { csrf: string }) => { setCsrf(value.csrf); setStatus("已连接"); }); }, [desktop]);
@@ -94,6 +106,10 @@ function App(): React.JSX.Element {
       if (event.cursor <= watermark) return;
       cursor.current = globalThis.Math.max(cursor.current, event.cursor);
       const payload = event.payload;
+      if (event.projectId && event.projectId !== selectedProjectId.current) {
+        if (payload.kind === "run.finished" || payload.kind === "surface.invalidate") void reloadSessions(activeRef.current?.id);
+        return;
+      }
       if (payload.kind === "run.delta") setMessages((items) => appendAssistantDelta(items, payload.runId, payload.delta));
       else if (payload.kind === "run.finished") { setStatus(payload.status); setActiveRunId((value) => value === payload.runId ? undefined : value); setMessages((items) => finalizeAssistant(items, payload.runId, payload.status, payload.finalText)); void reloadSessions(payload.sessionId); }
       else if (payload.kind === "agent.event") setMessages((items) => applyAssistantEvent(items, payload.event));
@@ -109,10 +125,10 @@ function App(): React.JSX.Element {
   const send = async () => {
     const content = draft.trim(); if (!content || !api.ready) return;
     const submissionId = requestId(); const userId = requestId();
-    setDraft(""); setStatus("准备上下文"); setMessages((items) => beginSubmittedMessages(items, userId, content, submissionId, active?.id));
+    draftRef.current = ""; drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), ""); setDraft(""); setStatus("准备上下文"); setMessages((items) => beginSubmittedMessages(items, userId, content, submissionId, active?.id));
     let session = active;
     try {
-      if (!session) { const created = await api.execute({ kind: "session.create", title: content.slice(0, 80), idempotencyKey: requestId() }); session = created.result as SessionItem; setActive(session); setSessions((items) => [session!, ...items]); }
+      if (!session) { const created = await api.execute({ kind: "session.create", title: content.slice(0, 80), idempotencyKey: requestId() }); session = created.result as SessionItem; setActive(session); activeRef.current = session; setSessions((items) => [session!, ...items]); }
       const result = await api.execute({ kind: "session.send", sessionId: session.id, message: content, expectedRevision: session.revision, idempotencyKey: requestId() });
       const runId = (result.result as { runId: string }).runId;
       setStatus("等待模型"); setActiveRunId(runId);
@@ -137,23 +153,24 @@ function App(): React.JSX.Element {
       setStatus("已切换到 Fork");
     } catch (error) { setStatus(error instanceof UiApiError && error.status === 409 ? "Session 已变化，请重试" : "Fork 失败"); }
   };
+  const clearDraft = () => { draftRef.current = ""; drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), ""); setDraft(""); };
   const executeSlash = async (input: string): Promise<void> => {
     const parsed = parseSlashCommand(input, { hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) });
     if (parsed.kind !== "command") { setStatus("未知快捷命令"); return; }
     if (!parsed.availability.available) { setStatus(parsed.availability.reason ?? "命令当前不可用"); return; }
     const id = parsed.descriptor.id;
-    if (id === "new") { setActive(undefined); setMessages([]); setDraft(""); setStatus("新对话"); return; }
-    if (id === "new-project") { const project = parseNewProjectArguments(parsed.argumentTokens); setDraft(""); setStatus("正在创建 Project"); const result = await api.execute({ kind: "project.create", root: project.root, ...(project.name ? { name: project.name } : {}) }); setProjectPickerRequest((value) => value + 1); setSettings(true); await reloadSessions(); setStatus(`已打开 ${(result.result as { name?: string }).name ?? "Project"}`); return; }
-    if (id === "open-projects") { setSettings(true); setProjectPickerRequest((value) => value + 1); setDraft(""); setStatus("Project 选择器"); return; }
-    if (id === "open-sessions") { setSettings(false); setDraft(""); setStatus("Session 选择器"); return; }
-    if (["context", "goals", "goal", "schedules"].includes(id)) { setSettings(true); setStatus(`/${id}`); setDraft(""); return; }
-    if (id === "fork") { setDraft(""); await forkActive(); return; }
-    if (id === "cancel" && activeRunId) { await api.execute({ kind: "run.cancel", runId: activeRunId, reason: "Cancelled from slash command." }); setDraft(""); return; }
+    if (id === "new") { clearDraft(); drafts.current.set(draftKey(selectedProjectId.current), ""); setActive(undefined); activeRef.current = undefined; setMessages([]); setStatus("新对话"); return; }
+    if (id === "new-project") { const project = parseNewProjectArguments(parsed.argumentTokens); clearDraft(); setStatus("正在创建 Project"); const result = await api.execute({ kind: "project.create", root: project.root, ...(project.name ? { name: project.name } : {}) }); setSettings(false); await reloadSessions(); setStatus(`已打开 ${(result.result as { name?: string }).name ?? "Project"} · 请选择 Session`); return; }
+    if (id === "open-projects") { setSettings(true); setProjectPickerRequest((value) => value + 1); clearDraft(); setStatus("Project 选择器"); return; }
+    if (id === "open-sessions") { setSettings(false); clearDraft(); setStatus("Session 选择器"); return; }
+    if (["context", "goals", "goal", "schedules"].includes(id)) { setSettings(true); setStatus(`/${id}`); clearDraft(); return; }
+    if (id === "fork") { clearDraft(); await forkActive(); return; }
+    if (id === "cancel" && activeRunId) { await api.execute({ kind: "run.cancel", runId: activeRunId, reason: "Cancelled from slash command." }); clearDraft(); return; }
     if ((id === "steer" || id === "follow-up") && active) {
       if (!parsed.argument) { setStatus(`/${id} 需要消息参数`); return; }
       const shown = await api.execute({ kind: "session.show", sessionId: active.id }); const current = (shown.result as { session: SessionItem }).session;
       await api.execute({ kind: id === "steer" ? "session.steer" : "session.follow-up", sessionId: active.id, message: parsed.argument, expectedRevision: current.revision, idempotencyKey: requestId() });
-      setDraft(""); setStatus(id === "steer" ? "已注入下一模型边界" : "后续消息已排队"); return;
+      clearDraft(); setStatus(id === "steer" ? "已注入下一模型边界" : "后续消息已排队"); return;
     }
     const command: UiCommand | undefined = id === "profile" ? { kind: "project.inspect" }
       : id === "doctor" ? { kind: "doctor" }
@@ -161,20 +178,20 @@ function App(): React.JSX.Element {
       : id === "providers" ? { kind: "provider.list" }
       : id === "harness" ? { kind: "harness.plan", prompt: parsed.argument || "检查当前任务" }
       : undefined;
-    if (id === "help") { setSettings(true); setStatus("命令面板可直接通过 / 打开"); setDraft(""); return; }
+    if (id === "help") { setSettings(true); setStatus("命令面板可直接通过 / 打开"); clearDraft(); return; }
     if (!command) { setStatus(`/${id} 暂无可执行动作`); return; }
-    setSettings(true); setStatus("正在执行命令"); await api.execute(command); setDraft(""); setStatus(`/${id} 已完成`);
+    setSettings(true); setStatus("正在执行命令"); await api.execute(command); clearDraft(); setStatus(`/${id} 已完成`);
   };
 
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><img className="brand-mark" src="./alphion-icon.svg" alt="" /><span>Alphion</span></div><nav><button className="quiet" onClick={() => setSettings((value) => !value)}>管理</button><Info text="Alphion 只在本机 127.0.0.1 提供服务；修改依赖 revision 与幂等键。" /></nav></header>
-    <aside className="rail"><span className="rail-label">Sessions</span>{sessions.map((session) => <button className={session.id === active?.id ? "session active" : "session"} key={session.id} onClick={() => void showSession(session)}>{session.title}<small>{session.status}</small></button>)}<button className="new-session" onClick={() => { setActive(undefined); setMessages([]); }}>＋ 新对话</button></aside>
+    <aside className="rail"><span className="rail-label">Sessions</span>{sessions.map((session) => <button className={session.id === active?.id ? "session active" : "session"} key={session.id} onClick={() => void showSession(session)}>{session.title}<small>{session.status}</small></button>)}<button className="new-session" onClick={() => { drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), draftRef.current); setActive(undefined); activeRef.current = undefined; setMessages([]); const restored = drafts.current.get(draftKey(selectedProjectId.current)) ?? ""; draftRef.current = restored; setDraft(restored); }}>＋ 新对话</button>{surface.backgroundRuns.length ? <><span className="rail-label">后台运行</span>{surface.backgroundRuns.map((run) => <span className="background-run" key={`${run.projectId}:${run.runId}`}>{run.projectName}<small>{run.title}</small></span>)}</> : null}</aside>
     <main className="conversation">
       <div className="conversation-head"><h1>{active?.title ?? "新对话"}</h1><div><button className="quiet" disabled={!active || active.status !== "idle"} onClick={() => void forkActive()}>Fork</button><span className="connection"><i />{status}</span></div></div>
-      {settings ? <SettingsPanel client={api} {...(active ? { sessionId: active.id } : {})} surface={surface} sessions={sessions} projectPickerRequest={projectPickerRequest} onProjectActivated={() => void reloadSessions()} /> : null}
+      {settings ? <SettingsPanel client={api} {...(active ? { sessionId: active.id } : {})} surface={surface} sessions={sessions} projectPickerRequest={projectPickerRequest} onProjectActivated={() => { setSettings(false); void reloadSessions(); }} /> : null}
       {approval ? <ApprovalCard challenge={approval} onDecide={(approved) => void decideApproval(approved)} /> : null}
       <section className="messages" ref={scroll.viewportRef} onScroll={scroll.onScroll} aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role} ${message.run?.status ?? ""}`} key={message.id}><span className="speaker">{message.role === "assistant" ? "Alphion" : "你"}</span>{message.run?.status === "waiting" && !message.content ? <WaitingDots /> : <div className={message.run?.status === "streaming" ? "stream-content" : undefined}><Markdown content={message.content || message.run?.statusText || "…"} /></div>}{message.run ? <RunMeta run={message.run} /> : null}</article>)}{scroll.unseenCount ? <button className="new-message" onClick={scroll.returnToLatest}>{scroll.unseenCount} 条新消息 · 返回最新</button> : null}</section>
-      <SlashComposer value={draft} context={{ hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) }} disabled={!api.ready} onChange={setDraft} onSubmitMessage={() => void send()} onCommand={(command) => void executeSlash(command).catch(() => setStatus("命令执行失败"))} />
+      <SlashComposer value={draft} context={{ hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) }} disabled={!api.ready} onChange={(value) => { draftRef.current = value; drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), value); setDraft(value); }} onSubmitMessage={() => void send()} onCommand={(command) => void executeSlash(command).catch(() => setStatus("命令执行失败"))} />
     </main>
   </div>;
 }
@@ -222,7 +239,9 @@ function applyAssistantEvent(items: readonly ChatItem[], event: Extract<UiEventE
 function finalizeAssistant(items: readonly ChatItem[], runId: string, status: string, finalText: string): readonly ChatItem[] { return items.map((item) => item.id === runId ? updateRunItem(item, { kind: "finish", status, finalText }) : item); }
 function updateRunItem(item: ChatItem, action: Parameters<typeof reduceConversationRun>[1]): ChatItem { const run = reduceConversationRun(item.run ?? createConversationRunState(item.id, "unknown"), action); return { ...item, content: run.text, run }; }
 function sessionMessages(value: unknown): readonly ChatItem[] { const entries = (value as { entries?: Array<{ id: string; message: { kind: string; content?: string } }> }).entries ?? []; return entries.filter((entry) => (entry.message.kind === "user" || entry.message.kind === "assistant") && typeof entry.message.content === "string").map((entry) => ({ id: entry.id, role: entry.message.kind as "user" | "assistant", content: entry.message.content ?? "" })); }
+function preserveLiveAssistant(history: readonly ChatItem[], current: readonly ChatItem[]): readonly ChatItem[] { const live = current.filter((item) => item.role === "assistant" && item.run && ["waiting", "streaming", "tool"].includes(item.run.status)); return [...history, ...live.filter((item) => !history.some((entry) => entry.id === item.id))]; }
 function requestId(): string { return `web_${crypto.randomUUID().replaceAll("-", "")}`; }
+function draftKey(projectId?: string, sessionId?: string): string { return `${projectId ?? "unowned"}:${sessionId ?? "new"}`; }
 function openExternal(event: React.MouseEvent<HTMLAnchorElement>, href: string, domain: string): void { event.preventDefault(); if (!confirm(`打开外部链接 ${domain}？`)) return; const desktop = (window as Window & { alphionDesktop?: { openExternal(href: string): Promise<boolean> } }).alphionDesktop; if (desktop) void desktop.openExternal(href); else window.open(href, "_blank", "noopener,noreferrer"); }
 class UiApiError extends Error { constructor(readonly status: number, message: string) { super(message); this.name = "UiApiError"; } }
 

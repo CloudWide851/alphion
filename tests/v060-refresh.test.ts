@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { frameEvents, historyFrames, resyncFrame, UiFrameQueue } from "../ui/event-frames.js";
-import type { UiEventEnvelope } from "../ui/contracts.js";
+import { decodeUiEventFrame, decodeUiSurfaceSnapshot, type UiEventEnvelope } from "../ui/contracts.js";
 import { LocalUiCommandClient } from "../ui/local-command-client.js";
+import { BoundedEventChannel } from "../src/application/event-channel.js";
+import type { AgentApplication, SessionActivity } from "../src/index.js";
 
 test("UI frames coalesce run deltas and Session invalidations with cursor ranges", () => {
   const frame = frameEvents([
@@ -12,10 +14,25 @@ test("UI frames coalesce run deltas and Session invalidations with cursor ranges
     event(4, { kind: "surface.invalidate", scopes: ["session-view"], sessionIds: ["session-2"] }),
   ]);
   assert.equal(frame?.cursorStart, 1);
+  assert.equal(frame?.schemaVersion, 2);
   assert.equal(frame?.cursorEnd, 4);
   assert.equal(frame?.events.length, 2);
   assert.deepEqual(frame?.events[0]?.payload, { kind: "run.delta", runId: "run-1", sessionId: "session-1", delta: "ab" });
   assert.deepEqual(frame?.events[1]?.payload, { kind: "surface.invalidate", scopes: ["sessions", "session-view"], sessionIds: ["session-1", "session-2"] });
+  assert.deepEqual(decodeUiEventFrame(frame), frame);
+  assert.throws(() => decodeUiEventFrame({ ...frame, schemaVersion: 1 }), /unsupported/iu);
+});
+
+test("UI frame coalescing preserves cursor order and Project isolation", () => {
+  const first = event(1, { kind: "surface.invalidate", scopes: ["sessions"], sessionIds: ["session-1"] });
+  const middle = event(2, { kind: "run.delta", runId: "run-1", sessionId: "session-1", delta: "x" });
+  const latest = event(3, { kind: "surface.invalidate", scopes: ["session-view"], sessionIds: ["session-1"] });
+  const otherProject = Object.freeze({ ...event(4, { kind: "surface.invalidate", scopes: ["projects"], sessionIds: [] }), projectId: "project-other" });
+  const frame = frameEvents([first, middle, latest, otherProject]);
+  assert.deepEqual(frame?.events.map((item) => item.cursor), [2, 3, 4]);
+  assert.equal(frame?.events.filter((item) => item.payload.kind === "surface.invalidate").length, 2);
+  assert.deepEqual(decodeUiEventFrame(frame), frame);
+  assert.throws(() => decodeUiEventFrame({ ...frame, events: [...frame!.events].reverse() }), /cursor order/iu);
 });
 
 test("frame history is bounded and slow consumers can be replaced with resync", async () => {
@@ -43,13 +60,39 @@ test("Local UI snapshot returns one watermark and selected Session view", async 
   const client = new LocalUiCommandClient({ application: () => application as never });
   try {
     const result = await client.execute({ schemaVersion: 1, requestId: "request-snapshot-0001", command: { kind: "surface.snapshot", selectedSessionId: session.id } });
-    const snapshot = result.result as { cursor: number; selectedSessionId?: string; selectedView?: { session: { id: string } } };
+    const snapshot = decodeUiSurfaceSnapshot(result.result);
+    assert.equal(snapshot.schemaVersion, 2);
     assert.equal(snapshot.cursor, 0);
+    assert.equal(snapshot.selectedProjectId, "domain_unowned");
+    assert.deepEqual(snapshot.backgroundRuns, []);
     assert.equal(snapshot.selectedSessionId, session.id);
     assert.equal(snapshot.selectedView?.session.id, session.id);
+    assert.throws(() => decodeUiSurfaceSnapshot({ ...snapshot, unknown: true }), /unknown/iu);
   } finally { await client.close(); }
 });
 
+test("Local UI keeps background Project activity tagged after activation", async () => {
+  const first = activityApplication(); const second = activityApplication();
+  let selected = "project-first"; let application = first.application;
+  const client = new LocalUiCommandClient({ application: () => application, currentProjectId: () => selected, activateProject: async () => { selected = "project-second"; application = second.application; } });
+  const iterator = client.subscribe()[Symbol.asyncIterator]();
+  try {
+    await client.execute({ schemaVersion: 1, requestId: "request-project-switch", command: { kind: "project.activate", projectId: "project-second" } });
+    first.channel.offer(Object.freeze({ kind: "run.finished", sessionId: "session-first", runId: "run-first", status: "completed", finalText: "done" }), true);
+    const seen: UiEventEnvelope[] = [];
+    await waitForEvents(async () => { const next = await iterator.next(); if (next.value) seen.push(...next.value.events); return seen.some((item) => item.projectId === "project-first" && item.payload.kind === "run.finished"); });
+    assert.equal(seen.some((item) => item.projectId === "project-second" && item.payload.kind === "surface.invalidate"), true);
+  } finally { first.channel.close(); second.channel.close(); await iterator.return?.(); await client.close(); }
+});
+
 function event(cursor: number, payload: UiEventEnvelope["payload"]): UiEventEnvelope {
-  return Object.freeze({ schemaVersion: 1, cursor, timestamp: new Date(cursor).toISOString(), payload });
+  return Object.freeze({ schemaVersion: 2, cursor, timestamp: new Date(cursor).toISOString(), projectId: "project-refresh", payload });
 }
+
+function activityApplication(): Readonly<{ application: AgentApplication; channel: BoundedEventChannel<SessionActivity> }> {
+  const channel = new BoundedEventChannel<SessionActivity>(16);
+  const sessions = { subscribeActivity: () => channel };
+  return { application: { sessions } as unknown as AgentApplication, channel };
+}
+
+async function waitForEvents(predicate: () => Promise<boolean>): Promise<void> { const deadline = Date.now() + 2_000; while (!await predicate()) if (Date.now() > deadline) throw new Error("Timed out waiting for UI activity."); }

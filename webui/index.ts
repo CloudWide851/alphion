@@ -1,8 +1,8 @@
 export { createWebUiServer } from "./server.js";
 export { runWebUi } from "./main.js";
 export type { WebUiServer } from "./server.js";
-export type { UiCommand, UiCommandClient, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiEventPayload, UiSurfaceSnapshot } from "../ui/contracts.js";
-export { decodeUiCommandEnvelope } from "../ui/contracts.js";
+export type { UiBackgroundRunSummary, UiCommand, UiCommandClient, UiCommandEnvelope, UiCommandResult, UiEventEnvelope, UiEventFrame, UiEventPayload, UiInvalidationScope, UiSurfaceSnapshot } from "../ui/contracts.js";
+export { decodeUiCommandEnvelope, decodeUiEventFrame, decodeUiSurfaceSnapshot } from "../ui/contracts.js";
 export { LocalUiCommandClient } from "../ui/local-command-client.js";
 export { SLASH_COMMANDS, formatSlashCommand, matchSlashCommands, parseNewProjectArguments, parseSlashCommand } from "../ui/slash-commands.js";
 export type { SlashCommandAvailability, SlashCommandContext, SlashCommandDescriptor, SlashCommandId, SlashCommandMatch, SlashCommandName, SlashCommandParseResult } from "../ui/slash-commands.js";

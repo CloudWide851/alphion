@@ -48,6 +48,13 @@ export class SqliteStore extends SqliteEventStore implements SessionStore {
     return this.database.prepare("SELECT * FROM sessions ORDER BY updated_at DESC, id").all().map((row) => decodeSession(requiredRow(row)));
   }
 
+  async hasActiveSessionWork(): Promise<boolean> {
+    const row = requiredRow(this.database.prepare(
+      "SELECT EXISTS(SELECT 1 FROM sessions WHERE status = 'running' UNION ALL SELECT 1 FROM pending_messages WHERE kind = 'follow-up' LIMIT 1) AS active",
+    ).get());
+    return readNumber(row, "active") === 1;
+  }
+
   async getSession(sessionId: string): Promise<AgentSessionRecord | undefined> {
     const row = optionalRow(this.database.prepare("SELECT * FROM sessions WHERE id = ?").get(sessionId));
     return row ? decodeSession(row) : undefined;
