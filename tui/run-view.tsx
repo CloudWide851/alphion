@@ -35,7 +35,7 @@ export function RunView(props: Readonly<{
 
   useEffect(() => props.approval.subscribe(setPendingApproval), [props.approval]);
   useEffect(() => {
-    if (projection?.status !== "waiting" || process.env.NO_COLOR !== undefined) return;
+    if (!projection || !["waiting", "streaming", "tool"].includes(projection.status) || process.env.NO_COLOR !== undefined) return;
     const timer = setInterval(() => setTick((value) => (value + 1) % 4), 100); timer.unref();
     return () => clearInterval(timer);
   }, [projection?.status]);
@@ -77,11 +77,12 @@ export function RunView(props: Readonly<{
   }, [props.approval, props.command]);
   useInput((input) => { if (pendingApproval && (input === "y" || input === "n")) pendingApproval.decide(input === "y"); });
 
-  const waiting = projection?.status === "waiting" ? (process.env.NO_COLOR === undefined ? `思考中${"·".repeat(tick + 1)}` : "等待模型输出…") : undefined;
-  return <Box flexDirection="column" borderStyle="round" paddingX={1} marginBottom={1} {...borderColor("#A377F6")}>
-    <Text bold {...accent()}>Alphion</Text>
-    <Text>{projection?.text ? renderMarkdownText(parseMarkdown(projection.text), props.compact ? 68 : 88) : waiting ?? "准备上下文…"}{projection?.status === "streaming" && process.env.NO_COLOR === undefined ? " ▍" : ""}</Text>
-    {projection ? <Text dimColor>{projection.statusText} · tokens {projection.usage.inputTokens}/{projection.usage.outputTokens}{projection.usage.cachedInputTokens ? ` · cache ${projection.usage.cachedInputTokens}` : ""}</Text> : null}
+  const active = projection ? ["waiting", "streaming", "tool"].includes(projection.status) : true;
+  const spinner = process.env.NO_COLOR === undefined ? ["|", "/", "-", "\\"][tick] : "|";
+  return <Box flexDirection="column" marginBottom={1}>
+    <Text bold {...accent()}>{active ? `${spinner} ` : ""}Alphion</Text>
+    <Text>{projection?.text ? renderMarkdownText(parseMarkdown(projection.text), props.compact ? 68 : 88) : projection?.statusText ?? "准备上下文…"}</Text>
+    {projection ? <Text dimColor>{projection.statusText}{projection.usage.inputTokens || projection.usage.outputTokens ? ` · tokens ${projection.usage.inputTokens}↓ / ${projection.usage.outputTokens}↑${projection.usage.cachedInputTokens ? ` · cache ${projection.usage.cachedInputTokens}` : ""}` : ""}</Text> : null}
     {projection?.status === "failed" ? <Text {...textColor("red")}>✗ {projection.statusText}</Text> : null}
     {pendingApproval ? <Box flexDirection="column" borderStyle="round" paddingX={1} {...borderColor("yellow")}><Text bold>! {sanitizeTerminalText(pendingApproval.request.toolName)} 需要逐次审批</Text><Text>{sanitizeTerminalText(pendingApproval.request.summary)}</Text><Text>y 允许一次 · n 拒绝</Text></Box> : null}
   </Box>;

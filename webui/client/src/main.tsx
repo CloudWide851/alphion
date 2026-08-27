@@ -13,6 +13,7 @@ import { createConversationRunState, createSubmittedConversationRunState, reduce
 import { AutomationPanel } from "./automation-panel.js";
 import type { SurfaceClient } from "./surface-client.js";
 import { useChatScroll } from "./chat-scroll.js";
+import { ConversationStatus, ConversationUsage, SpeakerLabel } from "./conversation-chrome.js";
 import "./style.css";
 import "./enhancements.css";
 
@@ -184,22 +185,22 @@ function App(): React.JSX.Element {
     setSettings(true); setStatus("正在执行命令"); await api.execute(command); clearDraft(); setStatus(`/${id} 已完成`);
   };
 
+  const latestRun = [...messages].reverse().find((message) => message.run)?.run;
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><img className="brand-mark" src="./alphion-icon.svg" alt="" /><span>Alphion</span></div><nav><button className="quiet" onClick={() => setSettings((value) => !value)}>管理</button><Info text="Alphion 只在本机 127.0.0.1 提供服务；修改依赖 revision 与幂等键。" /></nav></header>
     <aside className="rail"><span className="rail-label">Sessions</span>{sessions.map((session) => <button className={session.id === active?.id ? "session active" : "session"} key={session.id} onClick={() => void showSession(session)}>{session.title}<small>{session.status}</small></button>)}<button className="new-session" onClick={() => { drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), draftRef.current); setActive(undefined); activeRef.current = undefined; setMessages([]); const restored = drafts.current.get(draftKey(selectedProjectId.current)) ?? ""; draftRef.current = restored; setDraft(restored); }}>＋ 新对话</button>{surface.backgroundRuns.length ? <><span className="rail-label">后台运行</span>{surface.backgroundRuns.map((run) => <span className="background-run" key={`${run.projectId}:${run.runId}`}>{run.projectName}<small>{run.title}</small></span>)}</> : null}</aside>
     <main className="conversation">
-      <div className="conversation-head"><h1>{active?.title ?? "新对话"}</h1><div><button className="quiet" disabled={!active || active.status !== "idle"} onClick={() => void forkActive()}>Fork</button><span className="connection"><i />{status}</span></div></div>
-      {settings ? <SettingsPanel client={api} {...(active ? { sessionId: active.id } : {})} surface={surface} sessions={sessions} projectPickerRequest={projectPickerRequest} onProjectActivated={() => { setSettings(false); void reloadSessions(); }} /> : null}
+      <div className="conversation-head"><h1>{active?.title ?? "新对话"}</h1><div><button className="quiet" disabled={!active || active.status !== "idle"} onClick={() => void forkActive()}>Fork</button><span className="connection"><i />本机</span></div></div>
+      <div className="conversation-viewport">{settings ? <SettingsPanel client={api} {...(active ? { sessionId: active.id } : {})} surface={surface} sessions={sessions} projectPickerRequest={projectPickerRequest} onProjectActivated={() => { setSettings(false); void reloadSessions(); }} /> : <section className="messages" ref={scroll.viewportRef} onScroll={scroll.onScroll} aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role} ${message.run?.status ?? ""}`} key={message.id}><SpeakerLabel role={message.role} {...(message.run ? { run: message.run } : {})} /><div><Markdown content={message.content || message.run?.statusText || "…"} /></div></article>)}{scroll.unseenCount ? <button className="new-message" onClick={scroll.returnToLatest}>{scroll.unseenCount} 条新消息 · 返回最新</button> : null}</section>}</div>
       {approval ? <ApprovalCard challenge={approval} onDecide={(approved) => void decideApproval(approved)} /> : null}
-      <section className="messages" ref={scroll.viewportRef} onScroll={scroll.onScroll} aria-live="polite">{messages.length === 0 ? <EmptyState /> : messages.map((message) => <article className={`message ${message.role} ${message.run?.status ?? ""}`} key={message.id}><span className="speaker">{message.role === "assistant" ? "Alphion" : "你"}</span>{message.run?.status === "waiting" && !message.content ? <WaitingDots /> : <div className={message.run?.status === "streaming" ? "stream-content" : undefined}><Markdown content={message.content || message.run?.statusText || "…"} /></div>}{message.run ? <RunMeta run={message.run} /> : null}</article>)}{scroll.unseenCount ? <button className="new-message" onClick={scroll.returnToLatest}>{scroll.unseenCount} 条新消息 · 返回最新</button> : null}</section>
+      <ConversationStatus status={status} {...(latestRun ? { run: latestRun } : {})} />
+      <ConversationUsage {...(latestRun ? { run: latestRun } : {})} />
       <SlashComposer value={draft} context={{ hasSession: active !== undefined, sessionIdle: !activeRunId && active?.status === "idle", ...(activeRunId ? { activeRunId } : {}) }} disabled={!api.ready} onChange={(value) => { draftRef.current = value; drafts.current.set(draftKey(selectedProjectId.current, activeRef.current?.id), value); setDraft(value); }} onSubmitMessage={() => void send()} onCommand={(command) => void executeSlash(command).catch(() => setStatus("命令执行失败"))} />
     </main>
   </div>;
 }
 
 function EmptyState(): React.JSX.Element { return <div className="empty"><img className="glyph" src="./alphion-icon.svg" alt="Alphion" /><h1>Alphion</h1><Info text="直接描述任务。项目、Session、Provider 与资源可在设置中管理。" /></div>; }
-function WaitingDots(): React.JSX.Element { return <span className="waiting-dots" role="status" aria-label="等待模型输出"><i /><i /><i /></span>; }
-function RunMeta({ run }: Readonly<{ run: ConversationRunState }>): React.JSX.Element { return <small className="run-meta">{run.statusText}{run.usage.inputTokens || run.usage.outputTokens ? ` · tokens ${run.usage.inputTokens}/${run.usage.outputTokens}` : ""}</small>; }
 function Info({ text }: Readonly<{ text: string }>): React.JSX.Element { return <details className="info"><summary aria-label="说明">!</summary><div>{text}</div></details>; }
 function SettingsPanel({ client, sessionId, surface, sessions, projectPickerRequest, onProjectActivated }: Readonly<{ client: SurfaceClient; sessionId?: string; surface: Pick<UiSurfaceSnapshot, "compaction" | "goals" | "schedules">; sessions: readonly SessionItem[]; projectPickerRequest: number; onProjectActivated: () => void }>): React.JSX.Element {
   const [diagnostic, setDiagnostic] = useState("选择一项查看");
