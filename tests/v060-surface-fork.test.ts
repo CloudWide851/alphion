@@ -63,6 +63,30 @@ test("RunView reports a newly created Session to the chat shell", async () => {
   view.unmount();
 });
 
+test("RunView survives parent refresh after reporting a newly created Session", async () => {
+  let releaseResult!: () => void;
+  let cancelCount = 0;
+  let completed = "";
+  const resultReady = new Promise<void>((resolve) => { releaseResult = resolve; });
+  const session = fakeSession("idle", forkReceipt("session_unused_0002"));
+  const result = { runId: "run_parent_refresh_0001", sessionId: "session_parent_refresh_0001", status: "completed" as const, finalText: "refresh survived", turns: 1, toolCalls: 0, usage: { inputTokens: 1, outputTokens: 2, cachedInputTokens: 0 }, grounding: { availableEvidenceIds: [], referencedEvidenceIds: [], missingEvidenceIds: [], unreferencedEvidenceIds: [] } };
+  const run = { runId: result.runId, sessionId: result.sessionId, events: { async *[Symbol.asyncIterator]() { await resultReady; } }, result: resultReady.then(() => result), cancel: () => { cancelCount += 1; } } as AgentRunHandle;
+  const usable = { ...session, id: result.sessionId, send: () => Promise.resolve(run) } as AgentSessionContract;
+  const application = { sessions: { create: () => Promise.resolve(usable) } } as unknown as AgentApplication;
+  function Parent(): React.JSX.Element {
+    const [selected, setSelected] = React.useState("");
+    return React.createElement(RunView, { application, approval: new TuiApprovalPort(), prompt: "hello", onSession: (value: AgentSessionContract) => setSelected(`${value.id}:${Date.now()}`), onDone: (answer: string) => { completed = `${selected}:${answer}`; } });
+  }
+  const view = render(React.createElement(Parent));
+  await waitUntil(() => view.lastFrame()?.includes("等待模型输出") === true);
+  assert.equal(cancelCount, 0);
+  releaseResult();
+  await waitUntil(() => completed.endsWith(":refresh survived"));
+  assert.equal(cancelCount, 0);
+  assert.match(view.lastFrame() ?? "", /已完成/u);
+  view.unmount();
+});
+
 test("shared Web/Desktop fork action selects the new Session in the current surface", async () => {
   const source: SurfaceSession = { id: "session_source_0001", title: "source", revision: 4, status: "idle" };
   const target: SurfaceSession = { id: "session_target_0002", title: "source（分支）", revision: 1, status: "idle" };

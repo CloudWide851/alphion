@@ -14,6 +14,7 @@ export interface ConversationRunState {
 }
 
 export type ConversationRunAction =
+  | Readonly<{ readonly kind: "submit"; readonly submissionId: string; readonly sessionId?: string }>
   | Readonly<{ readonly kind: "start"; readonly runId: string; readonly sessionId: string }>
   | Readonly<{ readonly kind: "delta"; readonly delta: string }>
   | Readonly<{ readonly kind: "agent-event"; readonly event: AgentEvent }>
@@ -26,7 +27,12 @@ export function createConversationRunState(runId: string, sessionId: string): Co
   return Object.freeze({ schemaVersion: 1, runId, sessionId, status: "waiting", text: "", usage: EMPTY_USAGE, statusText: "等待模型输出", firstTokenReceived: false });
 }
 
+export function createSubmittedConversationRunState(submissionId: string, sessionId = "pending"): ConversationRunState {
+  return Object.freeze({ schemaVersion: 1, runId: `pending:${submissionId}`, sessionId, status: "waiting", text: "", usage: EMPTY_USAGE, statusText: "准备上下文", firstTokenReceived: false });
+}
+
 export function reduceConversationRun(state: ConversationRunState | undefined, action: ConversationRunAction): ConversationRunState {
+  if (action.kind === "submit") return createSubmittedConversationRunState(action.submissionId, action.sessionId);
   if (action.kind === "start") return createConversationRunState(action.runId, action.sessionId);
   if (!state) throw new Error("Conversation Run must start before updates are reduced.");
   if (action.kind === "delta") return Object.freeze({ ...state, status: "streaming", text: state.text + action.delta, statusText: "正在输出", firstTokenReceived: true });

@@ -6,5 +6,5 @@ export { decodeUiCommandEnvelope } from "../ui/contracts.js";
 export { LocalUiCommandClient } from "../ui/local-command-client.js";
 export { SLASH_COMMANDS, formatSlashCommand, matchSlashCommands, parseSlashCommand } from "../ui/slash-commands.js";
 export type { SlashCommandAvailability, SlashCommandContext, SlashCommandDescriptor, SlashCommandMatch, SlashCommandName, SlashCommandParseResult } from "../ui/slash-commands.js";
-export { createConversationRunState, reduceConversationRun } from "../ui/conversation-run.js";
+export { createConversationRunState, createSubmittedConversationRunState, reduceConversationRun } from "../ui/conversation-run.js";
 export type { ConversationRunAction, ConversationRunState, ConversationRunStatus } from "../ui/conversation-run.js";

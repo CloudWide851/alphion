@@ -29,6 +29,8 @@ export function RunView(props: Readonly<{
   const activeSession = useRef<AgentSessionContract | undefined>(props.session);
   const handledCommand = useRef(0);
   const started = useRef(false);
+  const callbacks = useRef({ onSession: props.onSession, onDone: props.onDone, onError: props.onError });
+  callbacks.current = { onSession: props.onSession, onDone: props.onDone, onError: props.onError };
 
   useEffect(() => props.approval.subscribe(setPendingApproval), [props.approval]);
   useEffect(() => {
@@ -42,9 +44,10 @@ export function RunView(props: Readonly<{
     let active = true; let buffer = ""; let timer: ReturnType<typeof setTimeout> | undefined; let lastFlush = Date.now();
     const flush = () => { if (timer) clearTimeout(timer); timer = undefined; if (!active || !buffer) return; dispatch({ kind: "delta", delta: sanitizeTerminalText(buffer) }); buffer = ""; lastFlush = Date.now(); };
     const schedule = () => { timer ??= setTimeout(flush, Math.max(0, 33 - (Date.now() - lastFlush))); };
+    dispatch({ kind: "submit", submissionId: `tui:${Date.now()}`, ...(props.session ? { sessionId: props.session.id } : {}) });
     const sessionPromise = props.session ? Promise.resolve(props.session) : props.application.sessions.create({ title: props.prompt.slice(0, 80), ...(props.providerId ? { providerId: props.providerId } : {}) });
     void sessionPromise.then(async (session) => {
-      activeSession.current = session; props.onSession?.(session);
+      activeSession.current = session; callbacks.current.onSession?.(session);
       const record = await session.get();
       return session.send(props.prompt, { expectedRevision: record.revision, idempotencyKey: `tui:send:${Date.now()}` }, props.approval);
     }).then(async (run) => {
@@ -54,28 +57,28 @@ export function RunView(props: Readonly<{
         else if (!("delivery" in event)) { flush(); dispatch({ kind: "agent-event", event }); }
       }
       flush(); const result = await run.result;
-      if (active) { dispatch({ kind: "finish", status: result.status, finalText: result.finalText }); props.onDone(result.finalText); }
-    }).catch((cause: unknown) => { const message = safeError(cause); if (active) { dispatch({ kind: "error", message }); props.onError?.(message); } });
+      if (active) { dispatch({ kind: "finish", status: result.status, finalText: result.finalText }); callbacks.current.onDone(result.finalText); }
+    }).catch((cause: unknown) => { const message = safeError(cause); if (active) { dispatch({ kind: "error", message }); callbacks.current.onError?.(message); } });
     return () => { active = false; if (timer) clearTimeout(timer); handle.current?.cancel("TUI conversation closed."); };
-  }, [props.application, props.approval, props.onDone, props.onError, props.onSession, props.prompt, props.providerId, props.session]);
+  }, [props.application, props.approval, props.prompt, props.providerId, props.session]);
   useEffect(() => {
     const command = props.command;
     if (!command || handledCommand.current === command.id) return;
     handledCommand.current = command.id;
     if (command.kind === "cancel") { handle.current?.cancel("Cancelled from TUI."); return; }
     const session = activeSession.current;
-    if (!session || !command.content) { props.onError?.("会话尚未准备好。"); return; }
+    if (!session || !command.content) { callbacks.current.onError?.("会话尚未准备好。"); return; }
     void session.get().then((record) => command.kind === "steer"
       ? session.steer(command.content!, { expectedRevision: record.revision, idempotencyKey: `tui:steer:${command.id}` })
       : session.followUp(command.content!, { expectedRevision: record.revision, idempotencyKey: `tui:follow-up:${command.id}` }, props.approval))
-      .catch((cause: unknown) => props.onError?.(safeError(cause)));
-  }, [props.approval, props.command, props.onError]);
+      .catch((cause: unknown) => callbacks.current.onError?.(safeError(cause)));
+  }, [props.approval, props.command]);
   useInput((input) => { if (pendingApproval && (input === "y" || input === "n")) pendingApproval.decide(input === "y"); });
 
   const waiting = projection?.status === "waiting" ? (process.env.NO_COLOR === undefined ? `思考中${"·".repeat(tick + 1)}` : "等待模型输出…") : undefined;
   return <Box flexDirection="column" borderStyle="round" paddingX={1} marginBottom={1} {...borderColor("#A377F6")}>
     <Text bold {...accent()}>Alphion</Text>
-    <Text>{projection?.text ? renderMarkdownText(parseMarkdown(projection.text), props.compact ? 68 : 88) : waiting ?? "正在准备…"}{projection?.status === "streaming" && process.env.NO_COLOR === undefined ? " ▍" : ""}</Text>
+    <Text>{projection?.text ? renderMarkdownText(parseMarkdown(projection.text), props.compact ? 68 : 88) : waiting ?? "准备上下文…"}{projection?.status === "streaming" && process.env.NO_COLOR === undefined ? " ▍" : ""}</Text>
     {projection ? <Text dimColor>{projection.statusText} · tokens {projection.usage.inputTokens}/{projection.usage.outputTokens}{projection.usage.cachedInputTokens ? ` · cache ${projection.usage.cachedInputTokens}` : ""}</Text> : null}
     {projection?.status === "failed" ? <Text {...textColor("red")}>✗ {projection.statusText}</Text> : null}
     {pendingApproval ? <Box flexDirection="column" borderStyle="round" paddingX={1} {...borderColor("yellow")}><Text bold>! {sanitizeTerminalText(pendingApproval.request.toolName)} 需要逐次审批</Text><Text>{sanitizeTerminalText(pendingApproval.request.summary)}</Text><Text>y 允许一次 · n 拒绝</Text></Box> : null}

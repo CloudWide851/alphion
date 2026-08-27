@@ -7,7 +7,7 @@ import { resolveTuiInput } from "../tui/slash-dispatch.js";
 import { decodeUiCommandEnvelope } from "../ui/contracts.js";
 import { LocalUiCommandClient } from "../ui/local-command-client.js";
 import { SLASH_COMMANDS, formatSlashCommand, matchSlashCommands, parseSlashCommand } from "../ui/slash-commands.js";
-import { createConversationRunState, reduceConversationRun } from "../ui/conversation-run.js";
+import { createConversationRunState, createSubmittedConversationRunState, reduceConversationRun } from "../ui/conversation-run.js";
 import type { AgentEvent, AgentEventKind } from "../src/index.js";
 
 test("shared slash registry matches names aliases and descriptions deterministically", () => {
@@ -74,6 +74,9 @@ test("project.inspect uses exact schema v1 and delegates to read-only applicatio
 function pause(): Promise<void> { return new Promise((resolve) => setTimeout(resolve, 15)); }
 
 test("ConversationRunState projects waiting streaming tool usage and terminal states", () => {
+  const submitted = createSubmittedConversationRunState("request_0001");
+  assert.equal(submitted.statusText, "准备上下文");
+  assert.equal(submitted.runId, "pending:request_0001");
   const waiting = createConversationRunState("run_0001", "session_0001");
   assert.deepEqual([waiting.status, waiting.firstTokenReceived, waiting.text], ["waiting", false, ""]);
   const streaming = reduceConversationRun(waiting, { kind: "delta", delta: "hello" });
