@@ -1,5 +1,5 @@
 export type SlashCommandId =
-  | "new" | "new-project" | "open-projects" | "open-sessions" | "providers" | "resources" | "doctor" | "help" | "profile"
+  | "new" | "new-project" | "open-projects" | "open-sessions" | "settings" | "providers" | "resources" | "doctor" | "help" | "profile"
   | "harness" | "context" | "goals" | "goal" | "schedules" | "fork" | "steer" | "follow-up" | "cancel";
 export type SlashCommandName = SlashCommandId;
 
@@ -25,6 +25,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDescriptor[] = Object.freeze([
   command("open-projects", ["open", "projects"], "打开 Project 选择器", [["projects"], ["project"]]),
   command("open-sessions", ["open", "sessions"], "打开当前 Project 的 Session 选择器", [["sessions"], ["session"]]),
   command("new", ["new"], "开始新对话", [["clear"]]),
+  command("settings", ["settings"], "打开统一设置与管理", [["setting"]]),
   command("providers", ["providers"], "配置 Provider 与 Project 加密凭据", [["provider"]]),
   command("resources", ["resources"], "查看 Agent 资源", [["resource"]]),
   command("doctor", ["doctor"], "运行只读 doctor", [["diagnose"]]),
@@ -91,7 +92,7 @@ export function parseNewProjectArguments(tokens: readonly string[]): Readonly<{ 
 }
 
 function availabilityFor(id: SlashCommandId, context: SlashCommandContext): SlashCommandAvailability {
-  if (context.activeRunId && !["steer", "follow-up", "cancel", "context", "goals", "goal", "schedules", "help"].includes(id)) return unavailable("运行期间请使用 /steer、/follow-up、/cancel 或只读状态命令");
+  if (context.activeRunId && !["steer", "follow-up", "cancel", "settings", "context", "goals", "goal", "schedules", "help"].includes(id)) return unavailable("运行期间请使用 /steer、/follow-up、/cancel 或只读状态命令");
   if (id === "fork") { if (!context.hasSession) return unavailable("需要当前 Session"); if (!context.sessionIdle) return unavailable("仅空闲 Session 可 Fork"); }
   if ((id === "steer" || id === "cancel") && !context.activeRunId) return unavailable("需要活动 Run");
   if (id === "follow-up" && !context.hasSession) return unavailable("需要当前 Session");

@@ -160,6 +160,7 @@ function App(): React.JSX.Element {
     if (!parsed.availability.available) { setStatus(parsed.availability.reason ?? "命令当前不可用"); return; }
     const id = parsed.descriptor.id;
     if (id === "new") { clearDraft(); drafts.current.set(draftKey(selectedProjectId.current), ""); setActive(undefined); activeRef.current = undefined; setMessages([]); setStatus("新对话"); return; }
+    if (id === "settings") { setSettings(true); clearDraft(); setStatus("设置"); return; }
     if (id === "new-project") { const project = parseNewProjectArguments(parsed.argumentTokens); clearDraft(); setStatus("正在创建 Project"); const result = await api.execute({ kind: "project.create", root: project.root, ...(project.name ? { name: project.name } : {}) }); setSettings(false); await reloadSessions(); setStatus(`已打开 ${(result.result as { name?: string }).name ?? "Project"} · 请选择 Session`); return; }
     if (id === "open-projects") { setSettings(true); setProjectPickerRequest((value) => value + 1); clearDraft(); setStatus("Project 选择器"); return; }
     if (id === "open-sessions") { setSettings(false); clearDraft(); setStatus("Session 选择器"); return; }

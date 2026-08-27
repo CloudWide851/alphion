@@ -24,7 +24,7 @@ import { forkTuiSession } from "./session-fork.js";
 import { AlternateScreenSurface, type TerminalSurface } from "./terminal-surface.js";
 import { ProviderForm, ProviderList, presetDraft, profileDraft, providerTestLabel, toProfileInput, type ProviderDraft } from "./provider-views.js";
 import { resolveTuiInput } from "./slash-dispatch.js";
-import { HelpCard, ProjectCard } from "./workbench-cards.js";
+import { HelpCard, ProjectCard, SettingsCard } from "./workbench-cards.js";
 import { ContextCard, GoalCard, SchedulesCard } from "./automation-cards.js";
 
 export interface RunTuiOptions {
@@ -201,6 +201,7 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
   }
   return <AppShell section={section} layout={layout} colorEnabled={colorEnabled} projectRoot={projectRoot} error={error} help={help}>
     {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} draft={chatDraft} onDraftChange={(value) => { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), value); setChatDraft(value); }} compactionCount={compaction.count} activeBubble={runPrompt ? <RunView application={application} approval={approval} prompt={runPrompt} {...(runSession ? { session: runSession } : {})} {...(runProviderId ? { providerId: runProviderId } : {})} {...(runCommand ? { command: runCommand } : {})} compact={layout === "compact"} onSession={acceptRunSession} onError={setError} onDone={finishRun} /> : null} compact={layout === "compact"} heightRows={Math.max(10, (stdout.rows ?? 24) - 2)} viewportRows={Math.max(4, (stdout.rows ?? 24) - (layout === "compact" ? 8 : 11))} contentWidth={Math.max(20, Math.min(88, (stdout.columns ?? 80) - 8))} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) }} onSubmit={submitChat} /> : null}
+    {section === "settings" ? <SettingsCard onSelect={setSection} /> : null}
     {section === "projects" ? <ProjectCard projectRoot={projectRoot} projects={registeredProjects} backgroundRuns={backgroundRuns} {...(workspaceSnapshot.project ? { currentProjectId: workspaceSnapshot.project.id } : {})} onActivate={activateProject} /> : null}
     {section === "profile" ? <ProjectProfileView {...(snapshot.profile ? { profile: snapshot.profile } : {})} onRefresh={() => void refreshSnapshot(true).catch((cause: unknown) => setError(safeError(cause)))} /> : null}
     {section === "providers" ? <ProviderList

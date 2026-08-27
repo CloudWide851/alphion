@@ -12,7 +12,7 @@ import type { AgentEvent, AgentEventKind } from "../src/index.js";
 import { projectChatRows, selectChatViewport } from "../ui/chat-viewport.js";
 
 test("shared slash registry matches names aliases and descriptions deterministically", () => {
-  assert.equal(SLASH_COMMANDS.length, 18);
+  assert.equal(SLASH_COMMANDS.length, 19);
   assert.deepEqual(matchSlashCommands("/prov").map((item) => item.descriptor.id), ["providers"]);
   assert.equal(matchSlashCommands("/inspect")[0]?.descriptor.id, "profile");
   assert.equal(matchSlashCommands("/凭据")[0]?.descriptor.id, "providers");
@@ -31,7 +31,8 @@ test("slash parsing keeps disabled commands visible with stable reasons", () => 
   assert.equal(enabled.kind, "command");
   if (enabled.kind === "command") assert.deepEqual([enabled.descriptor.id, enabled.argument], ["follow-up", "continue"]);
   const settings = parseSlashCommand("/settings", { activeRunId: "run_0001" });
-  assert.equal(settings.kind, "unknown");
+  assert.equal(settings.kind, "command");
+  if (settings.kind === "command") assert.equal(settings.availability.available, true);
   const project = parseSlashCommand("/new project \"C:\\work space\\demo\" --name \"Demo Project\"");
   assert.equal(project.kind, "command");
   if (project.kind === "command") assert.deepEqual([project.descriptor.id, ...project.argumentTokens], ["new-project", "C:\\work space\\demo", "--name", "Demo Project"]);
@@ -40,6 +41,7 @@ test("slash parsing keeps disabled commands visible with stable reasons", () => 
 test("TUI slash dispatcher separates commands from Session history messages", () => {
   assert.deepEqual(resolveTuiInput("hello"), { kind: "message", content: "hello" });
   assert.deepEqual(resolveTuiInput("/open sessions"), { kind: "navigate", section: "sessions" });
+  assert.deepEqual(resolveTuiInput("/settings"), { kind: "navigate", section: "settings" });
   assert.deepEqual(resolveTuiInput("/new project \"C:\\work space\\demo\" --name Demo"), { kind: "new-project", root: "C:\\work space\\demo", name: "Demo" });
   assert.deepEqual(resolveTuiInput("/steer revise", { activeRunId: "run_0001" }), { kind: "steer", content: "revise" });
   assert.deepEqual(resolveTuiInput("/cancel"), { kind: "error", message: "需要活动 Run" });

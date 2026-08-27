@@ -12,7 +12,7 @@ export type TuiSlashAction =
   | Readonly<{ readonly kind: "error"; readonly message: string }>;
 
 const SECTIONS: Readonly<Partial<Record<string, WorkbenchSection>>> = Object.freeze({
-  "open-projects": "projects", "open-sessions": "sessions", providers: "providers", resources: "resources",
+  settings: "settings", "open-projects": "projects", "open-sessions": "sessions", providers: "providers", resources: "resources",
   doctor: "doctor", help: "help", profile: "profile", harness: "harness", context: "context", goals: "goals", goal: "goal", schedules: "schedules",
 });
 
