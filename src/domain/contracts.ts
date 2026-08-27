@@ -1,3 +1,5 @@
+import type { ImageAttachmentRef, ProviderUserContentPart, SessionMessageInput } from "./attachment-contracts.js";
+
 export type OpenAICompatibleProtocol = "chat-completions" | "responses";
 export type BuiltInProviderKind = "deepseek" | "kimi" | "qwen" | "glm";
 export type ProviderKind = BuiltInProviderKind | "custom-openai-compatible";
@@ -48,7 +50,8 @@ export interface AgentToolCall {
 
 /** Provider-wire conversation shape. Domain session messages never cross this boundary directly. */
 export type ProviderMessage =
-  | Readonly<{ readonly role: "system" | "user"; readonly content: string }>
+  | Readonly<{ readonly role: "system"; readonly content: string }>
+  | Readonly<{ readonly role: "user"; readonly content: string | readonly ProviderUserContentPart[] }>
   | Readonly<{
       readonly role: "assistant";
       readonly content: string;
@@ -333,6 +336,7 @@ export interface AgentMessageBase {
 /** Versioned, provider-independent messages persisted in session branches. */
 export type AgentMessage =
   | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "user"; readonly content: string }>
+  | Readonly<AgentMessageBase & { readonly schemaVersion: 3; readonly kind: "user"; readonly content: string; readonly attachments: readonly ImageAttachmentRef[] }>
   | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "assistant"; readonly content: string; readonly evidenceIds?: readonly string[] }>
   | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "tool-call"; readonly call: AgentToolCall }>
   | Readonly<AgentMessageBase & { readonly schemaVersion: 1; readonly kind: "observation"; readonly toolCallId: string; readonly toolName: string; readonly content: string; readonly evidence?: EvidenceRef; readonly isError: boolean }>
@@ -698,6 +702,7 @@ export interface ModelResolutionSummary {
 
 export interface AgentExecutionRequest extends Omit<AgentRunRequest, "systemPromptPlan" | "modelContextMessages"> {
   readonly providerId?: string;
+  readonly currentInput?: SessionMessageInput;
   readonly history: readonly AgentMessage[];
   readonly environment: AgentEnvironment;
   readonly harnessPlan: HarnessPlan;

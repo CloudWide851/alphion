@@ -8,6 +8,7 @@ import type { AgentEvent } from "../../src/protocol/events.js";
 import { canonicalJson, sha256 } from "../../src/application/canonical.js";
 import { AlphionError } from "../../src/application/errors.js";
 import { containsPotentialSecret } from "../../src/application/sensitive-data.js";
+import { assertImageAttachmentRef, normalizeSessionMessageInput } from "../../src/application/attachments.js";
 import { resolveProviderEndpoint, validateProviderPreset } from "../model/provider-catalog.js";
 import type { SqliteDatabase } from "./database.js";
 import { SCRYPT_OPTIONS, VAULT_SCHEMA_VERSION } from "./sqlite-constants.js";
@@ -265,10 +266,15 @@ export function validateAgentMessage(message: unknown): asserts message is Agent
   if (!message || typeof message !== "object" || Array.isArray(message)) throw new AlphionError("validation", "Agent message must be an object.", { stage: "session" });
   const value = message as Readonly<Record<string, unknown>>;
   const kinds = ["user", "assistant", "tool-call", "observation", "memory", "system-event", "human-approval", "agent", "workflow"];
-  if ((value.schemaVersion !== 1 && value.schemaVersion !== 2) || typeof value.id !== "string" || value.id.length === 0 || typeof value.createdAt !== "string" || !kinds.includes(String(value.kind))) {
+  if ((value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3) || typeof value.id !== "string" || value.id.length === 0 || typeof value.createdAt !== "string" || !kinds.includes(String(value.kind))) {
     throw new AlphionError("validation", "Agent message envelope is invalid.", { stage: "session" });
   }
-  if (value.schemaVersion === 2) {
+  if (value.schemaVersion === 3) {
+    const exact = ["schemaVersion", "kind", "id", "createdAt", "content", "attachments"];
+    if (value.kind !== "user" || Object.keys(value).some((key) => !exact.includes(key)) || typeof value.content !== "string" || !Array.isArray(value.attachments)) throw new AlphionError("validation", "Schema-v3 user message contains an invalid field.", { stage: "session" });
+    for (const attachment of value.attachments) assertImageAttachmentRef(attachment);
+    normalizeSessionMessageInput({ schemaVersion: 1, ...(value.content ? { text: value.content } : {}), attachments: value.attachments });
+  } else if (value.schemaVersion === 2) {
     const exact = ["schemaVersion", "kind", "id", "createdAt", "sourceSessionId", "targetSessionId", "domainId", "idempotencyKey", "correlationId", "causationId", "hop", "delivery", "content"];
     if (value.kind !== "agent" || Object.keys(value).some((key) => !exact.includes(key))) throw new AlphionError("validation", "Schema-v2 Agent message contains an invalid field.", { stage: "session" });
     for (const key of ["sourceSessionId", "targetSessionId", "domainId", "correlationId", "content"] as const) {

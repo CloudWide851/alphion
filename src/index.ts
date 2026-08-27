@@ -114,6 +114,8 @@ export type {
 export type { CompactionPolicy, CompactionProjection, CompactionRecord, CompactionResult, CompactionSummary } from "./domain/compaction-contracts.js";
 export type { ProviderTestResult } from "./domain/provider-test-contracts.js";
 export type { SessionActivity } from "./domain/session-activity.js";
+export type { AttachmentImportInput, ImageAttachmentRef, ImageMediaType, ProviderUserContentPart, SessionMessageInput, StoredImageAttachment } from "./domain/attachment-contracts.js";
+export { IMAGE_ATTACHMENT_LIMITS } from "./domain/attachment-contracts.js";
 export type {
   GoalCreateRequest, GoalProgressRequest, GoalRecord, GoalRevision, GoalRevisionActor, GoalRootUpdateRequest, GoalStatus, GoalWriteReceipt,
   ScheduleClaim, ScheduleCreateRequest, ScheduleExecution, ScheduleExecutionStatus, ScheduleExpression, SchedulePayload, ScheduleRecord, ScheduleStatus, ScheduleWriteOptions,
@@ -126,6 +128,9 @@ export type {
   SessionManager,
   AgentProvider,
   AgentRunHandle,
+  AttachmentReader,
+  AttachmentService,
+  AttachmentStore,
   ApprovalDecision,
   ApprovalPort,
   ApprovalRequest,

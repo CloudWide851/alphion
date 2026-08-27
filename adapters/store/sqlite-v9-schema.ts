@@ -14,6 +14,7 @@ export function createMultimodalSchemaV9(database: SqliteDatabase): void {
       byte_size INTEGER NOT NULL CHECK (byte_size BETWEEN 1 AND 20971520),
       width INTEGER NOT NULL CHECK (width BETWEEN 1 AND 32768),
       height INTEGER NOT NULL CHECK (height BETWEEN 1 AND 32768),
+      file_name TEXT NOT NULL,
       storage_key TEXT NOT NULL,
       created_at TEXT NOT NULL,
       referenced_at TEXT,

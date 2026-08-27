@@ -4,6 +4,8 @@ import type {
   SessionWriteOptions, SessionWriteReceipt,
 } from "../../src/domain/contracts.js";
 import type { SessionStore } from "../../src/ports/index.js";
+import type { AttachmentStore } from "../../src/ports/index.js";
+import type { ImageAttachmentRef, StoredImageAttachment } from "../../src/domain/attachment-contracts.js";
 import type { CompactionProjection, CompactionRecord } from "../../src/domain/compaction-contracts.js";
 import { canonicalJson, createId, sha256 } from "../../src/application/canonical.js";
 import { AlphionError } from "../../src/application/errors.js";
@@ -15,10 +17,15 @@ import {
   validateAgentMessage, validateAgentShape, validateIdempotencyKey,
 } from "./sqlite-codecs.js";
 import { appendStoredCompaction, getStoredCompaction, listStoredCompactions, projectStoredCompactions } from "./sqlite-compaction-store.js";
+import { findStoredAttachment, getStoredAttachment, linkStoredMessageAttachments, putStoredAttachment, removeStoredDraftAttachments } from "./sqlite-attachment-store.js";
 
 export type { SqliteStoreOptions } from "./sqlite-store-base.js";
 
-export class SqliteStore extends SqliteEventStore implements SessionStore {
+export class SqliteStore extends SqliteEventStore implements SessionStore, AttachmentStore {
+  async putAttachment(attachment: StoredImageAttachment): Promise<ImageAttachmentRef> { return this.transaction(() => putStoredAttachment(this.database, attachment)); }
+  async getAttachment(attachmentId: string): Promise<StoredImageAttachment | undefined> { return getStoredAttachment(this.database, attachmentId); }
+  async findAttachment(domainId: string, digest: string): Promise<StoredImageAttachment | undefined> { return findStoredAttachment(this.database, domainId, digest); }
+  async removeUnreferencedAttachments(before: string, limit?: number): Promise<readonly StoredImageAttachment[]> { return this.transaction(() => removeStoredDraftAttachments(this.database, before, limit)); }
   async appendCompaction(record: CompactionRecord): Promise<void> { this.transaction(() => appendStoredCompaction(this.database, record)); }
   async listCompactions(sessionId: string, limit?: number): Promise<readonly CompactionRecord[]> { return listStoredCompactions(this.database, sessionId, limit); }
   async getCompaction(compactionId: string): Promise<CompactionRecord | undefined> { return getStoredCompaction(this.database, compactionId); }
@@ -131,6 +138,7 @@ export class SqliteStore extends SqliteEventStore implements SessionStore {
       this.database.prepare(
         "INSERT INTO session_entries (id, parent_id, session_id, run_id, timestamp, message_json) VALUES (?, ?, ?, ?, ?, ?)",
       ).run(id, session.currentLeafId ?? null, sessionId, runId ?? null, timestamp, canonicalJson(message));
+      linkStoredMessageAttachments(this.database, session, message, timestamp);
       const revision = session.revision + 1;
       this.database.prepare("UPDATE sessions SET current_leaf_id = ?, revision = ?, updated_at = ? WHERE id = ?").run(id, revision, timestamp, sessionId);
       const receipt: SessionWriteReceipt = { sessionId, revision, entryId: id, replayed: false };
@@ -171,6 +179,7 @@ export class SqliteStore extends SqliteEventStore implements SessionStore {
       const expiresAt = new Date(Date.now() + this.runLeaseMs).toISOString();
       this.database.prepare("INSERT INTO session_entries (id, parent_id, session_id, run_id, timestamp, message_json) VALUES (?, ?, ?, ?, ?, ?)")
         .run(entryId, session.currentLeafId ?? null, sessionId, runId, now, canonicalJson(message));
+      linkStoredMessageAttachments(this.database, session, message, now);
       const revision = session.revision + 1;
       this.database.prepare("UPDATE sessions SET current_leaf_id = ?, status = 'running', active_run_id = ?, lease_owner = ?, lease_expires_at = ?, shape_status = 'shaped', shape_revision = ?, shape_digest = ?, revision = ?, updated_at = ? WHERE id = ?")
         .run(entryId, runId, this.ownerId, expiresAt, shape.revision, shape.digest, revision, now, sessionId);
@@ -214,6 +223,7 @@ export class SqliteStore extends SqliteEventStore implements SessionStore {
       const now = new Date().toISOString();
       this.database.prepare("INSERT INTO pending_messages (id, session_id, kind, message_json, idempotency_key, created_at, claimed_run_id, claimed_at, claim_owner) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)")
         .run(id, sessionId, kind, canonicalJson(message), options.idempotencyKey, now);
+      linkStoredMessageAttachments(this.database, session, message, now);
       const revision = session.revision + 1;
       this.database.prepare("UPDATE sessions SET revision = ?, updated_at = ? WHERE id = ?").run(revision, now, sessionId);
       const receipt: SessionWriteReceipt = { sessionId, revision, pendingMessageId: id, replayed: false };

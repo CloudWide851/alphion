@@ -32,6 +32,7 @@ import type { SessionActivity } from "../../src/domain/session-activity.js";
 import type {
   AgentApplication,
   AgentContract,
+  AttachmentService,
   CacheStats,
   ProjectKeyProvider,
   GoalManager,
@@ -53,6 +54,7 @@ import { ProjectCodeRecall } from "../recall/project-code-recall.js";
 import { SqliteRuntimeStore } from "../store/sqlite-runtime-store.js";
 import { SQLITE_SCHEMA_VERSION } from "../store/sqlite-constants.js";
 import { EditTool, GoalProgressTool, GrepTool, ReadTool, SessionSendTool, ShellTool, WriteTool } from "../tools/index.js";
+import { defaultUnownedAttachmentRoot, LocalAttachmentService } from "../attachments/local-attachment-service.js";
 
 export interface LocalApplicationOptions {
   readonly projectRoot: string;
@@ -72,6 +74,7 @@ export class LocalAlphionApplication implements AgentApplication {
   readonly sessions: SessionManager;
   readonly goals: GoalManager;
   readonly schedules: ScheduleManager;
+  readonly attachments: AttachmentService;
   readonly #projectRoot: string;
   readonly #store: SqliteRuntimeStore;
   readonly #secrets: CompositeSecretResolver;
@@ -96,13 +99,14 @@ export class LocalAlphionApplication implements AgentApplication {
   #closed = false;
   #closePromise: Promise<void> | undefined;
 
-  private constructor(projectRoot: string, statePath: string, store: SqliteRuntimeStore, unowned: boolean, projectKeyProvider: ProjectKeyProvider, credentialProjectId: string) {
+  private constructor(projectRoot: string, statePath: string, store: SqliteRuntimeStore, unowned: boolean, projectKeyProvider: ProjectKeyProvider, credentialProjectId: string, attachments: AttachmentService) {
     this.#projectRoot = projectRoot;
     this.#unowned = unowned;
     this.#statePath = statePath;
     this.#store = store;
     this.#projectKeyProvider = projectKeyProvider;
     this.#credentialProjectId = credentialProjectId;
+    this.attachments = attachments;
     this.#secrets = new CompositeSecretResolver([new EnvironmentSecretResolver(), store]);
     this.#cache = new TieredCache(new MemoryLruCache(), store);
     this.goals = new DefaultGoalManager(store, () => this.#assertOpen());
@@ -111,8 +115,8 @@ export class LocalAlphionApplication implements AgentApplication {
       : [new ReadTool(), new GrepTool(), new EditTool(), new WriteTool(), new ShellTool(store), new SessionSendTool(), new GoalProgressTool(this.goals)]);
     this.#profiler = new NodeProjectProfiler({ cache: this.#cache });
     this.configuration = new ProviderConfigurationManager(store, store);
-    this.providerTests = new DefaultProviderTestService(store, new LocalProviderFactory(this.#secrets));
-    this.#models = new LocalModelResolver(store, this.#secrets);
+    this.providerTests = new DefaultProviderTestService(store, new LocalProviderFactory(this.#secrets, attachments));
+    this.#models = new LocalModelResolver(store, this.#secrets, attachments);
     this.#shaper = new AgentShaper({ capabilities: this.#capabilities.list().map((item) => item.id).filter((id) => !unowned || id === "session.collaborate"), policies: ["default-deny", "approval-for-side-effects", "same-domain-session-collaboration", ...(unowned ? ["no-project-filesystem"] : [])], tools: this.#tools.names(), toolCapabilities: { read: "project.read", grep: "project.read", edit: "project.write", write: "project.write", shell: "quality.verify", "session.send": "session.collaborate", "goal.progress": "goal.progress" } });
     this.agent = new Agent({ models: this.#models, tools: this.#tools, eventStore: store, cache: this.#cache });
     this.sessions = new DefaultSessionManager({ store, session: (sessionId, publishActivity) => this.#session(sessionId, publishActivity), assertOpen: () => this.#assertOpen() });
@@ -129,7 +133,9 @@ export class LocalAlphionApplication implements AgentApplication {
     const store = new SqliteRuntimeStore({ path: statePath, projectKeyProvider, legacyDeviceKeyPath: options.legacyDeviceKeyPath ?? defaultLegacyDeviceKeyPath(), ...(projectId ? { projectId } : {}), ...(options.domainId ? { domainId: options.domainId } : {}) });
     try { await store.migrateLegacyCredentials(); }
     catch (error) { store.close(); throw error; }
-    return new LocalAlphionApplication(projectRoot, statePath, store, options.unowned === true, projectKeyProvider, credentialProjectId);
+    const domainId = options.domainId ?? `domain_${sha256((process.platform === "win32" ? statePath.toLowerCase() : statePath)).slice(0, 32)}`;
+    const attachments = new LocalAttachmentService({ root: options.unowned === true ? defaultUnownedAttachmentRoot() : join(projectRoot, ".alphion", "attachments"), domainId, ...(projectId ? { projectId } : {}), store });
+    return new LocalAlphionApplication(projectRoot, statePath, store, options.unowned === true, projectKeyProvider, credentialProjectId, attachments);
   }
 
   planHarness(prompt: string, overlay?: HarnessTaskOverlay): Promise<HarnessPlan> { this.#assertOpen(); return Promise.resolve(planHarness(prompt, this.#capabilities, overlay)); }

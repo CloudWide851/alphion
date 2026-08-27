@@ -5,6 +5,7 @@ import { canonicalJson, sha256 } from "./canonical.js";
 import { estimateTokens } from "./context-pack.js";
 import { AlphionError } from "./errors.js";
 import { validateJsonSchema } from "./json-schema.js";
+import { messageAttachments } from "./attachments.js";
 
 const UNKNOWN_MODEL_CONTEXT_TOKENS = 32_768;
 const MAX_TRIGGER_RATIO = 0.85;
@@ -66,6 +67,7 @@ export async function compactSessionEntriesForModel(entries: readonly SessionEnt
   const memory = messages[0];
   if (!memory || memory.kind !== "memory") throw new AlphionError("internal", "Compaction did not produce memory.", { stage: "compaction" });
   const policyDigest = sha256(canonicalJson(policy));
+  const omittedOlderImages = plan.earlier.some((item) => messageAttachments(item.message).length > 0);
   const modelId = request.model?.id ?? `${provider?.profile.kind ?? "custom"}:${provider?.profile.model ?? "unknown-32k"}`;
   const digest = sha256(canonicalJson({ sessionId: request.sessionId, sourceEntryIds: plan.sourceEntryIds, sourceDigest: sha256(canonicalJson(records)), retainedMessageIds: plan.retained.map((item) => item.id), policyDigest, modelId, memoryDigest: memory.digest }));
   const recordId = sha256(canonicalJson({ sessionId: request.sessionId, runId: request.runId, digest }));
@@ -86,8 +88,8 @@ export async function compactSessionEntriesForModel(entries: readonly SessionEnt
     sourceEntryIds: plan.sourceEntryIds,
     sourceDigest: sha256(canonicalJson(plan.earlier)),
     retainedKinds: Object.freeze([...new Set(plan.earlier.map((item) => item.message.kind))].sort()),
-    omissions: Object.freeze(usedFallback ? [provider ? "provider-summary-fallback" : "provider-summary-unavailable"] : []),
-    knownLosses: Object.freeze(["earlier-message-wording", "non-mandatory-earlier-detail"]),
+    omissions: Object.freeze([...(usedFallback ? [provider ? "provider-summary-fallback" : "provider-summary-unavailable"] : []), ...(omittedOlderImages ? ["older-image-content-metadata-only"] : [])]),
+    knownLosses: Object.freeze(["earlier-message-wording", "non-mandatory-earlier-detail", ...(omittedOlderImages ? ["older-image-pixels"] : [])]),
     memory,
   });
   return Object.freeze({ messages, record });
@@ -184,6 +186,10 @@ function formatStructuredSummary(categories: Readonly<Record<SummaryCategory, re
   return sections.flatMap(([key, label]) => categories[key].length > 0 ? [`${label}:`, ...categories[key].slice(-8).map((item) => `- ${item.slice(0, 300)}`)] : []).join("\n");
 }
 
-function messageText(message: AgentMessage): string { return "content" in message ? message.content : canonicalJson(message.call); }
+function messageText(message: AgentMessage): string {
+  if (!("content" in message)) return canonicalJson(message.call);
+  const attachments = messageAttachments(message);
+  return `${message.content}${attachments.length ? `\n${attachments.map((item) => `[image ${item.fileName} ${item.mediaType} ${item.width}x${item.height} digest=${item.digest}]`).join("\n")}` : ""}`;
+}
 function messageTokens(message: AgentMessage): number { return estimateTokens(canonicalJson(message)); }
 function reserve(value: number | undefined, fallback: number, context: number, label: string): number { const selected = value ?? fallback; if (!Number.isSafeInteger(selected) || selected < 0 || selected > Math.floor(context / 2)) throw new AlphionError("validation", `${label} reserve is invalid.`, { stage: "compaction" }); return selected; }

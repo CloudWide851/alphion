@@ -143,7 +143,7 @@ export class AgentLoop {
     let finalText = "";
     try {
       await this.#emit(context, "run.started", {
-        promptDigest: sha256(context.request.prompt),
+        promptDigest: sha256(canonicalJson({ prompt: context.request.prompt, conversationDigest: providerConversationDigest(context.request) })),
         projectRevision: context.request.projectRevision,
         providerProfileId: this.#provider.profile.id,
         ...(context.request.shape ? { shapeRevision: context.request.shape.revision, shapeDigest: context.request.shape.digest } : {}),
@@ -513,7 +513,7 @@ export class AgentLoop {
       }
       const approvalRequired = executor.contract.approval === "always" || (executor.contract.approval !== "never" && policy.outcome === "approval");
       if (approvalRequired) {
-      const actionDigest = sha256(canonicalJson({ tool: call.name, input: finalArguments, shapeDigest: context.request.shape?.digest }));
+      const actionDigest = sha256(canonicalJson({ tool: call.name, input: finalArguments, shapeDigest: context.request.shape?.digest, conversationDigest: providerConversationDigest(context.request) }));
       const requestId = createId("approval");
       await this.#emit(context, "approval.requested", {
         requestId,
@@ -671,3 +671,5 @@ export class AgentLoop {
   }
 
 }
+
+function providerConversationDigest(request: AgentRunRequest): string { return sha256(canonicalJson(request.modelContextMessages ?? [{ role: "user", content: request.prompt }])); }

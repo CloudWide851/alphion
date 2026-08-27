@@ -23,15 +23,17 @@ import type {
   ProviderRequest,
   ProviderUsage,
 } from "../../src/domain/contracts.js";
-import type { AgentProvider, SecretResolver } from "../../src/ports/index.js";
+import type { AgentProvider, AttachmentReader, SecretResolver } from "../../src/ports/index.js";
 import { AlphionError } from "../../src/application/errors.js";
 import { resolveProviderEndpoint, validateProviderPreset } from "./provider-catalog.js";
+import { toChatUserContent, toResponsesUserContent } from "./provider-image-content.js";
 
 export class OpenAICompatibleProvider implements AgentProvider {
   readonly profile: ProviderProfile;
   readonly #secrets: SecretResolver;
+  readonly #attachments: AttachmentReader | undefined;
 
-  constructor(profile: ProviderProfile, secrets: SecretResolver) {
+  constructor(profile: ProviderProfile, secrets: SecretResolver, attachments?: AttachmentReader) {
     validateProviderProfile(profile);
     this.profile = Object.freeze({
       ...profile,
@@ -39,6 +41,7 @@ export class OpenAICompatibleProvider implements AgentProvider {
       capabilities: Object.freeze({ ...profile.capabilities }),
     });
     this.#secrets = secrets;
+    this.#attachments = attachments;
   }
 
   async *generate(request: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
@@ -95,7 +98,7 @@ export class OpenAICompatibleProvider implements AgentProvider {
       const tools = toChatTools(request);
       const body: ChatCompletionCreateParamsStreaming = {
         model: this.profile.model,
-        messages: toChatMessages(request.messages),
+        messages: await toChatMessages(request.messages, this.#attachments, signal),
         ...(tools.length > 0 ? { tools } : {}),
         max_completion_tokens: request.maxOutputTokens,
         temperature: request.temperature,
@@ -131,7 +134,7 @@ export class OpenAICompatibleProvider implements AgentProvider {
     const tools = toChatTools(request);
     const body: ChatCompletionCreateParamsNonStreaming = {
       model: this.profile.model,
-      messages: toChatMessages(request.messages),
+      messages: await toChatMessages(request.messages, this.#attachments, signal),
       ...(tools.length > 0 ? { tools } : {}),
       max_completion_tokens: request.maxOutputTokens,
       temperature: request.temperature,
@@ -149,7 +152,7 @@ export class OpenAICompatibleProvider implements AgentProvider {
     }
     let observedEvent = false;
     try {
-      const input = toResponsesInput(request.messages);
+      const input = await toResponsesInput(request.messages, this.#attachments, signal);
       const tools = toResponsesTools(request);
       const body: ResponseCreateParamsStreaming = {
         model: this.profile.model,
@@ -178,7 +181,7 @@ export class OpenAICompatibleProvider implements AgentProvider {
     request: ProviderRequest,
     signal: AbortSignal,
   ): AsyncIterable<ProviderEvent> {
-    const input = toResponsesInput(request.messages);
+    const input = await toResponsesInput(request.messages, this.#attachments, signal);
     const tools = toResponsesTools(request);
     const body: ResponseCreateParamsNonStreaming = {
       model: this.profile.model,
@@ -196,8 +199,8 @@ export class OpenAICompatibleProvider implements AgentProvider {
 }
 
 function validateProviderProfile(profile: ProviderProfile): void {
-  if (profile.schemaVersion !== 2 || !["custom-openai-compatible", "kimi", "qwen", "glm"].includes(profile.kind)) {
-    throw new AlphionError("validation", "OpenAI-compatible provider requires a schema-v2 compatible profile.", {
+  if (profile.schemaVersion !== 3 || !["custom-openai-compatible", "kimi", "qwen", "glm"].includes(profile.kind)) {
+    throw new AlphionError("validation", "OpenAI-compatible provider requires a schema-v3 compatible profile.", {
       stage: "provider",
     });
   }
@@ -226,15 +229,16 @@ function validateProviderProfile(profile: ProviderProfile): void {
   }
 }
 
-function toChatMessages(messages: readonly ProviderMessage[]): ChatCompletionMessageParam[] {
-  return messages.map((message): ChatCompletionMessageParam => {
+async function toChatMessages(messages: readonly ProviderMessage[], attachments: AttachmentReader | undefined, signal: AbortSignal): Promise<ChatCompletionMessageParam[]> {
+  const result: ChatCompletionMessageParam[] = [];
+  for (const message of messages) {
     switch (message.role) {
       case "system":
-        return { role: "system", content: message.content };
+        result.push({ role: "system", content: message.content }); break;
       case "user":
-        return { role: "user", content: message.content };
+        result.push({ role: "user", content: await toChatUserContent(message.content, attachments, signal) }); break;
       case "assistant":
-        return {
+        result.push({
           role: "assistant",
           content: message.content,
           ...(message.toolCalls
@@ -246,11 +250,12 @@ function toChatMessages(messages: readonly ProviderMessage[]): ChatCompletionMes
                 })),
               }
             : {}),
-        };
+        }); break;
       case "tool":
-        return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
+        result.push({ role: "tool", tool_call_id: message.toolCallId, content: message.content }); break;
     }
-  });
+  }
+  return result;
 }
 
 function toChatTools(request: ProviderRequest): ChatCompletionTool[] {
@@ -260,7 +265,7 @@ function toChatTools(request: ProviderRequest): ChatCompletionTool[] {
   }));
 }
 
-function toResponsesInput(messages: readonly ProviderMessage[]): { readonly instructions: string; readonly items: ResponseInput } {
+async function toResponsesInput(messages: readonly ProviderMessage[], attachments: AttachmentReader | undefined, signal: AbortSignal): Promise<{ readonly instructions: string; readonly items: ResponseInput }> {
   const instructions = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
   const items: ResponseInput = [];
   for (const message of messages) {
@@ -268,7 +273,7 @@ function toResponsesInput(messages: readonly ProviderMessage[]): { readonly inst
       case "system":
         break;
       case "user":
-        items.push({ role: "user", content: message.content });
+        items.push({ role: "user", content: await toResponsesUserContent(message.content, attachments, signal) });
         break;
       case "assistant":
         if (message.content) items.push({ role: "assistant", content: message.content });

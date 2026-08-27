@@ -40,6 +40,7 @@ import type { AgentEvent, AgentEventDraft, AgentStreamEvent } from "../protocol/
 import type { CompactionProjection, CompactionRecord } from "../domain/compaction-contracts.js";
 import type { ProviderTestResult } from "../domain/provider-test-contracts.js";
 import type { SessionActivity } from "../domain/session-activity.js";
+import type { AttachmentImportInput, ImageAttachmentRef, SessionMessageInput, StoredImageAttachment } from "../domain/attachment-contracts.js";
 import type {
   GoalCreateRequest, GoalProgressRequest, GoalRecord, GoalRootUpdateRequest, GoalWriteReceipt,
   ScheduleClaim, ScheduleCreateRequest, ScheduleExecution, ScheduleRecord, ScheduleWriteOptions,
@@ -81,6 +82,24 @@ export interface ProviderResolver extends ModelResolver {
 
 export interface ResourceLoader {
   resolve(request: ResourceLoadRequest, signal?: AbortSignal): Promise<ResourceResolution>;
+}
+
+export interface AttachmentStore {
+  putAttachment(attachment: StoredImageAttachment): Promise<ImageAttachmentRef>;
+  getAttachment(attachmentId: string): Promise<StoredImageAttachment | undefined>;
+  findAttachment(domainId: string, digest: string): Promise<StoredImageAttachment | undefined>;
+  removeUnreferencedAttachments(before: string, limit?: number): Promise<readonly StoredImageAttachment[]>;
+}
+
+export interface AttachmentReader {
+  readAttachment(attachment: ImageAttachmentRef, signal?: AbortSignal): Promise<Uint8Array>;
+}
+
+export interface AttachmentService extends AttachmentReader {
+  importFile(path: string, signal?: AbortSignal): Promise<ImageAttachmentRef>;
+  importBytes(input: AttachmentImportInput, signal?: AbortSignal): Promise<ImageAttachmentRef>;
+  get(attachmentId: string): Promise<ImageAttachmentRef | undefined>;
+  cleanupDrafts(before?: Date, limit?: number): Promise<number>;
 }
 
 export interface CodeRecall {
@@ -292,9 +311,9 @@ export interface AgentSessionContract {
   reshape(request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt>;
   fork(request: Omit<SessionForkRequest, "sourceSessionId">): Promise<SessionForkReceipt>;
   checkout(entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
-  send(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle>;
-  steer(content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
-  followUp(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt>;
+  send(content: string | SessionMessageInput, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle>;
+  steer(content: string | SessionMessageInput, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
+  followUp(content: string | SessionMessageInput, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt>;
   resumePending(approval: ApprovalPort): void;
   subscribe(afterSessionSequence?: number): AsyncIterable<AgentStreamEvent>;
   listCompactions(limit?: number): Promise<readonly CompactionRecord[]>;
@@ -316,9 +335,9 @@ export interface SessionManager {
   getShape(sessionId: string): Promise<AgentShape | undefined>;
   reshape(sessionId: string, request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt>;
   checkout(sessionId: string, entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
-  send(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle>;
-  steer(sessionId: string, content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
-  followUp(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt>;
+  send(sessionId: string, content: string | SessionMessageInput, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle>;
+  steer(sessionId: string, content: string | SessionMessageInput, options: SessionWriteOptions): Promise<SessionWriteReceipt>;
+  followUp(sessionId: string, content: string | SessionMessageInput, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt>;
   deliver(request: SessionMessageRequest): Promise<SessionMessageReceipt>;
   subscribe(sessionId: string, afterSessionSequence?: number): AsyncIterable<AgentStreamEvent>;
   listCompactions(sessionId: string, limit?: number): Promise<readonly CompactionRecord[]>;
@@ -374,6 +393,7 @@ export interface AgentApplication {
   readonly sessions: SessionManager;
   readonly goals: GoalManager;
   readonly schedules: ScheduleManager;
+  readonly attachments: AttachmentService;
   planHarness(prompt: string, overlay?: HarnessTaskOverlay): Promise<HarnessPlan>;
   loadResources(request?: Omit<ResourceLoadRequest, "projectRoot">): Promise<ResourceResolution>;
   inspectProject(options?: Readonly<{ refresh?: boolean }>): Promise<ProjectProfile>;

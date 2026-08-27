@@ -16,9 +16,10 @@ import type {
   ProviderRequest,
   ProviderUsage,
 } from "../../src/domain/contracts.js";
-import type { AgentProvider, SecretResolver } from "../../src/ports/index.js";
+import type { AgentProvider, AttachmentReader, SecretResolver } from "../../src/ports/index.js";
 import { resolveProviderEndpoint } from "./provider-catalog.js";
 import { validateProviderPreset } from "./provider-catalog.js";
+import { toChatUserContent } from "./provider-image-content.js";
 
 export const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com";
 export const DEEPSEEK_MODELS = Object.freeze(["deepseek-chat", "deepseek-reasoner"] as const);
@@ -27,8 +28,9 @@ export class DeepSeekProvider implements AgentProvider {
   readonly profile: ProviderProfile;
   readonly #secrets: SecretResolver;
   readonly #endpoint: (profile: ProviderProfile) => string;
+  readonly #attachments: AttachmentReader | undefined;
 
-  constructor(profile: ProviderProfile, secrets: SecretResolver, options: Readonly<{ endpoint?: (profile: ProviderProfile) => string }> = {}) {
+  constructor(profile: ProviderProfile, secrets: SecretResolver, options: Readonly<{ endpoint?: (profile: ProviderProfile) => string; attachments?: AttachmentReader }> = {}) {
     const endpoint = options.endpoint ?? resolveProviderEndpoint;
     validateProfile(profile, endpoint);
     this.profile = Object.freeze({
@@ -38,6 +40,7 @@ export class DeepSeekProvider implements AgentProvider {
     });
     this.#secrets = secrets;
     this.#endpoint = endpoint;
+    this.#attachments = options.attachments;
   }
 
   async *generate(request: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
@@ -91,7 +94,7 @@ export class DeepSeekProvider implements AgentProvider {
       const tools = toTools(request);
       const body = {
         model: this.profile.model,
-        messages: toMessages(request.messages),
+        messages: await toMessages(request.messages, this.#attachments, signal),
         ...(tools.length > 0 ? { tools } : {}),
         max_tokens: request.maxOutputTokens,
         ...(!this.profile.capabilities.reasoning ? { temperature: request.temperature } : {}),
@@ -126,7 +129,7 @@ export class DeepSeekProvider implements AgentProvider {
     const tools = toTools(request);
     const body = {
       model: this.profile.model,
-      messages: toMessages(request.messages),
+      messages: await toMessages(request.messages, this.#attachments, signal),
       ...(tools.length > 0 ? { tools } : {}),
       max_tokens: request.maxOutputTokens,
       ...(!this.profile.capabilities.reasoning ? { temperature: request.temperature } : {}),
@@ -144,8 +147,8 @@ interface PendingToolCall {
 }
 
 function validateProfile(profile: ProviderProfile, endpoint: (profile: ProviderProfile) => string): void {
-  if (profile.schemaVersion !== 2 || profile.kind !== "deepseek" || profile.protocol !== "chat-completions") {
-    throw new AlphionError("validation", "DeepSeek requires a schema-v2 DeepSeek Chat Completions profile.", {
+  if (profile.schemaVersion !== 3 || profile.kind !== "deepseek" || profile.protocol !== "chat-completions") {
+    throw new AlphionError("validation", "DeepSeek requires a schema-v3 DeepSeek Chat Completions profile.", {
       stage: "provider",
     });
   }
@@ -171,15 +174,16 @@ function validateProfile(profile: ProviderProfile, endpoint: (profile: ProviderP
   }
 }
 
-function toMessages(messages: readonly ProviderMessage[]): ChatCompletionMessageParam[] {
-  return messages.map((message): ChatCompletionMessageParam => {
+async function toMessages(messages: readonly ProviderMessage[], attachments: AttachmentReader | undefined, signal: AbortSignal): Promise<ChatCompletionMessageParam[]> {
+  const result: ChatCompletionMessageParam[] = [];
+  for (const message of messages) {
     switch (message.role) {
       case "system":
-        return { role: "system", content: message.content };
+        result.push({ role: "system", content: message.content }); break;
       case "user":
-        return { role: "user", content: message.content };
+        result.push({ role: "user", content: await toChatUserContent(message.content, attachments, signal) }); break;
       case "assistant":
-        return {
+        result.push({
           role: "assistant",
           content: message.content,
           ...(message.reasoningContent ? { reasoning_content: message.reasoningContent } : {}),
@@ -192,12 +196,14 @@ function toMessages(messages: readonly ProviderMessage[]): ChatCompletionMessage
                 })),
               }
             : {}),
-        } as ChatCompletionMessageParam;
+        } as ChatCompletionMessageParam); break;
       case "tool":
-        return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
+        result.push({ role: "tool", tool_call_id: message.toolCallId, content: message.content }); break;
     }
-  });
+  }
+  return result;
 }
+
 
 function toTools(request: ProviderRequest): ChatCompletionTool[] {
   return request.tools.map((tool) => ({

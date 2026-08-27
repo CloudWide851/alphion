@@ -1,6 +1,8 @@
 import type { AgentMessage, ProviderMessage } from "../domain/contracts.js";
 import { canonicalJson, sha256 } from "./canonical.js";
 import { AlphionError } from "./errors.js";
+import type { SessionMessageInput } from "../domain/attachment-contracts.js";
+import { normalizeSessionMessageInput, providerUserMessage, userMessageInput } from "./attachments.js";
 
 export interface ProviderConversationPlan {
   readonly schemaVersion: 1;
@@ -12,14 +14,14 @@ export interface ProviderConversationPlan {
 
 export interface ProviderConversationPlanInput {
   readonly history: readonly AgentMessage[];
-  readonly currentPrompt: string;
+  readonly currentPrompt?: string;
+  readonly currentInput?: SessionMessageInput;
   readonly contextualMessages?: readonly ProviderMessage[];
 }
 
 /** Builds the only Provider-visible conversation line from durable domain messages. */
 export function planProviderConversation(input: ProviderConversationPlanInput): ProviderConversationPlan {
-  const prompt = input.currentPrompt.trim();
-  if (!prompt) throw new AlphionError("validation", "Provider conversation prompt cannot be empty.", { stage: "context" });
+  const current = normalizeSessionMessageInput(input.currentInput ?? input.currentPrompt ?? "");
   const contextual: ProviderMessage[] = [...(input.contextualMessages ?? [])];
   const conversation: ProviderMessage[] = [];
   const omissions: string[] = [];
@@ -59,7 +61,7 @@ export function planProviderConversation(input: ProviderConversationPlanInput): 
         break;
       case "user":
         assertBatchComplete();
-        conversation.push({ role: "user", content: message.content });
+        conversation.push(providerUserMessage(userMessageInput(message)));
         break;
       case "assistant":
         assertBatchComplete();
@@ -88,7 +90,7 @@ export function planProviderConversation(input: ProviderConversationPlanInput): 
     }
   }
   assertBatchComplete();
-  const messages = Object.freeze([...contextual, ...conversation, { role: "user" as const, content: prompt }]);
+  const messages = Object.freeze([...contextual, ...conversation, providerUserMessage(current)]);
   const digest = sha256(canonicalJson({ schemaVersion: 1, messages, omissions }));
   return Object.freeze({ schemaVersion: 1, messages, digest, omissions: Object.freeze(omissions), diagnostics: Object.freeze(diagnostics) });
 }

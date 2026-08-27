@@ -6,6 +6,7 @@ import { createId } from "./canonical.js";
 import { AlphionError } from "./errors.js";
 import { BoundedEventChannel } from "./event-channel.js";
 import type { SessionActivity } from "../domain/session-activity.js";
+import type { SessionMessageInput } from "../domain/attachment-contracts.js";
 
 export interface DefaultSessionManagerOptions {
   readonly store: SessionStore;
@@ -56,9 +57,9 @@ export class DefaultSessionManager implements SessionManager {
   getShape(sessionId: string): Promise<AgentShape | undefined> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.getShape())); }
   reshape(sessionId: string, request: AgentShapeRequest, options: SessionWriteOptions): Promise<AgentShapeReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.reshape(request, options))); }
   checkout(sessionId: string, entryId: string | undefined, options: SessionWriteOptions): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.checkout(entryId, options))); }
-  send(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.send(content, options, approval))); }
-  steer(sessionId: string, content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.steer(content, options))); }
-  followUp(sessionId: string, content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.followUp(content, options, approval))); }
+  send(sessionId: string, content: string | SessionMessageInput, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.send(content, options, approval))); }
+  steer(sessionId: string, content: string | SessionMessageInput, options: SessionWriteOptions): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.steer(content, options))); }
+  followUp(sessionId: string, content: string | SessionMessageInput, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt> { this.options.assertOpen(); return this.#own(this.#get(sessionId).then((session) => session.followUp(content, options, approval))); }
   deliver(request: SessionMessageRequest): Promise<SessionMessageReceipt> { this.options.assertOpen(); return this.#own(this.#deliver(request)); }
 
   async #deliver(request: SessionMessageRequest): Promise<SessionMessageReceipt> {

@@ -4,6 +4,7 @@ import { AlphionError } from "../../src/application/errors.js";
 import { reidentifySystemPromptPlan } from "../../src/application/system-prompt.js";
 import type { SqliteDatabase } from "./database.js";
 import { decodeSession, decodeSessionEntry, optionalRow, parseAgentShape, readString, requiredRow, validateIdempotencyKey } from "./sqlite-codecs.js";
+import { linkStoredMessageAttachments } from "./sqlite-attachment-store.js";
 
 export function forkStoredSession(database: SqliteDatabase, request: SessionForkRequest): SessionForkReceipt {
   validateRequest(request);
@@ -26,7 +27,7 @@ export function forkStoredSession(database: SqliteDatabase, request: SessionFork
     .run(targetSessionId, cleanTitle(request.title, source.title), source.providerId ?? null, now, now, targetShape.digest, source.domainId, source.projectId ?? null, source.id, selectedSourceEntryId ?? null, source.revision, branchDigest, now);
   database.prepare("INSERT INTO session_shapes (session_id, shape_revision, shape_digest, shape_json, created_at, command_key) VALUES (?, 1, ?, ?, ?, ?)")
     .run(targetSessionId, targetShape.digest, canonicalJson(targetShape), now, request.idempotencyKey);
-  const entryMapping = copyEntries(database, sourceEntries, targetSessionId);
+  const entryMapping = copyEntries(database, sourceEntries, requireSession(database, targetSessionId));
   const targetLeafId = entryMapping.at(-1)?.targetEntryId;
   const auditEntryId = createId("entry");
   const auditMessage: AgentMessage = Object.freeze({ schemaVersion: 1, kind: "system-event", id: createId("message"), createdAt: now, eventKind: "session.forked", content: `Forked from ${source.id} at revision ${source.revision}; provenance ${branchDigest}.` });
@@ -64,7 +65,7 @@ function branchTo(database: SqliteDatabase, source: AgentSessionRecord, selected
   return reversed.reverse();
 }
 
-function copyEntries(database: SqliteDatabase, entries: readonly SessionEntry[], targetSessionId: string): SessionForkEntryMapping[] {
+function copyEntries(database: SqliteDatabase, entries: readonly SessionEntry[], target: AgentSessionRecord): SessionForkEntryMapping[] {
   const mapping = new Map(entries.map((entry) => [entry.id, createId("entry")]));
   const messageIds = new Map(entries.map((entry) => [entry.message.id, createId("message")]));
   const insert = database.prepare("INSERT INTO session_entries (id, parent_id, session_id, run_id, timestamp, message_json) VALUES (?, ?, ?, NULL, ?, ?)");
@@ -74,7 +75,8 @@ function copyEntries(database: SqliteDatabase, entries: readonly SessionEntry[],
     const parentId = entry.parentId ? mapping.get(entry.parentId) : undefined;
     if (entry.parentId && !parentId) throw new AlphionError("integrity-failed", "Fork branch parent mapping is incomplete.", { stage: "database" });
     const message = remapMessage(entry.message, messageIds.get(entry.message.id)!, mapping);
-    insert.run(targetEntryId, parentId ?? null, targetSessionId, entry.timestamp, canonicalJson(message));
+    insert.run(targetEntryId, parentId ?? null, target.id, entry.timestamp, canonicalJson(message));
+    linkStoredMessageAttachments(database, target, message, entry.timestamp);
     result.push(Object.freeze({ sourceEntryId: entry.id, targetEntryId }));
   }
   return result;

@@ -11,6 +11,8 @@ import type { ProjectProfile } from "../domain/contracts.js";
 import type { AgentEnvironment } from "../domain/contracts.js";
 import type { CompactionProjection, CompactionRecord } from "../domain/compaction-contracts.js";
 import type { SessionActivity } from "../domain/session-activity.js";
+import type { SessionMessageInput } from "../domain/attachment-contracts.js";
+import { createUserMessage, normalizeSessionMessageInput, userMessageInput } from "./attachments.js";
 
 export interface AgentSessionOptions {
   readonly sessionId: string;
@@ -91,16 +93,16 @@ export class AgentSession implements AgentSessionContract {
     return this.#own(this.options.store.checkoutSession(this.id, entryId, options));
   }
 
-  send(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> {
+  send(content: string | SessionMessageInput, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> {
     this.#assertOpen();
     return this.#own(this.#send(content, options, approval));
   }
 
-  async #send(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> {
-    const prompt = content.trim();
-    if (!prompt) throw new AlphionError("validation", "Session message cannot be empty.", { stage: "session" });
+  async #send(content: string | SessionMessageInput, options: SessionWriteOptions, approval: ApprovalPort): Promise<AgentRunHandle> {
+    const input = normalizeSessionMessageInput(content);
+    const prompt = promptForInput(input);
     const session = await this.#get();
-    const user = userMessage(prompt);
+    const user = userMessage(input);
     const runId = createId("run");
     let initialShape: AgentShape | undefined;
     if (session.shapeStatus === "legacy-unshaped") throw new AlphionError("conflict", "This migrated Session must be explicitly reshaped before send.", { stage: "shape" });
@@ -109,11 +111,12 @@ export class AgentSession implements AgentSessionContract {
       const harness = this.options.plan(prompt);
       initialShape = await this.options.shape({ goal: prompt, ...(session.providerId ? { providerId: session.providerId } : {}) }, 1, profile, harness);
     }
+    const runProviderId = await this.#assertVisionSupport(input, initialShape?.providerId ?? session.providerId, initialShape ?? await this.options.store.getSessionShape(this.id));
     const started = await this.options.store.beginShapedSessionRun(this.id, runId, user, initialShape, options);
     if (started.receipt.replayed) throw new AlphionError("conflict", "This send command was already applied; subscribe to the session instead of starting it again.", { stage: "session" });
     let handle: AgentRunHandle;
     try {
-      handle = await this.#executeLeased(prompt, runId, started.session.providerId, started.shape, approval, Object.freeze({ correlationId: createId("correlation"), hop: 0 }));
+      handle = await this.#executeLeased(input, prompt, runId, runProviderId ?? started.session.providerId, started.shape, approval, Object.freeze({ correlationId: createId("correlation"), hop: 0 }));
     } catch (error) {
       await this.options.store.releaseRunLease(this.id, runId);
       throw error;
@@ -126,17 +129,26 @@ export class AgentSession implements AgentSessionContract {
     return { runId: handle.runId, sessionId: handle.sessionId, events: publicEvents, result, cancel: (reason?: string) => handle.cancel(reason) };
   }
 
-  steer(content: string, options: SessionWriteOptions): Promise<SessionWriteReceipt> {
+  steer(content: string | SessionMessageInput, options: SessionWriteOptions): Promise<SessionWriteReceipt> {
     this.#assertOpen();
-    return this.#own(this.options.store.enqueuePending(this.id, "steer", userMessage(content), options));
+    return this.#own(this.#steer(content, options));
   }
-  followUp(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt> {
+  async #steer(content: string | SessionMessageInput, options: SessionWriteOptions): Promise<SessionWriteReceipt> {
+    const input = normalizeSessionMessageInput(content);
+    const session = await this.#get();
+    await this.#assertVisionSupport(input, session.providerId, await this.options.store.getSessionShape(this.id));
+    return this.options.store.enqueuePending(this.id, "steer", userMessage(input), options);
+  }
+  followUp(content: string | SessionMessageInput, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt> {
     this.#assertOpen();
     return this.#own(this.#followUp(content, options, approval));
   }
 
-  async #followUp(content: string, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt> {
-    const receipt = await this.options.store.enqueuePending(this.id, "follow-up", userMessage(content), options);
+  async #followUp(content: string | SessionMessageInput, options: SessionWriteOptions, approval: ApprovalPort): Promise<SessionWriteReceipt> {
+    const input = normalizeSessionMessageInput(content);
+    const current = await this.#get();
+    await this.#assertVisionSupport(input, current.providerId, await this.options.store.getSessionShape(this.id));
+    const receipt = await this.options.store.enqueuePending(this.id, "follow-up", userMessage(input), options);
     const session = await this.#get();
     if (!this.#closed && session.status === "idle") {
       this.#launchQueuedFollowUps(approval);
@@ -218,7 +230,7 @@ export class AgentSession implements AgentSessionContract {
     }
   }
 
-  async #executeLeased(prompt: string, runId: string, providerId: string | undefined, shape: AgentShape, approval: ApprovalPort, collaboration: CollaborationContext): Promise<AgentRunHandle> {
+  async #executeLeased(input: SessionMessageInput, prompt: string, runId: string, providerId: string | undefined, shape: AgentShape, approval: ApprovalPort, collaboration: CollaborationContext): Promise<AgentRunHandle> {
     let activeCollaboration = collaboration;
     const branch = await this.#view();
     const profile = await this.options.projectProfile();
@@ -239,7 +251,7 @@ export class AgentSession implements AgentSessionContract {
     if (compaction.record) await this.options.store.appendCompaction(compaction.record);
     const history = compaction.messages;
     const effectiveProviderId = selectedProviderId ?? compactionProvider?.profile.id;
-    return this.options.agent.execute({ prompt, runId, sessionId: this.id, projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}), projectProfile: profile, history, environment, harnessPlan: shape.harnessPlan, shape, collaboration, ...(recall ? { recall } : {}) }, approval, {
+    return this.options.agent.execute({ prompt, currentInput: input, runId, sessionId: this.id, projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}), projectProfile: profile, history, environment, harnessPlan: shape.harnessPlan, shape, collaboration, ...(recall ? { recall } : {}) }, approval, {
       drainSteering: async (activeRunId, signal) => {
         if (signal.aborted) throw signal.reason ?? new DOMException("Steering drain cancelled.", "AbortError");
         const drained = await this.options.store.drainPending(this.id, "steer", activeRunId);
@@ -284,14 +296,16 @@ export class AgentSession implements AgentSessionContract {
         await this.options.store.appendSessionEntry(this.id, item.message, { expectedRevision: current.revision, idempotencyKey: `drain:${runId}:${item.id}` }, runId);
       }
       await this.options.store.acknowledgePending(this.id, "follow-up", runId, pending.map((item) => item.id));
-      const prompt = pending.map((item) => item.message.content).join("\n\n");
+      const input = mergePendingInput(pending.map((item) => item.message));
+      const prompt = promptForInput(input);
       const shape = await this.options.store.getSessionShape(this.id);
       if (!shape) throw new AlphionError("conflict", "Queued follow-up requires a shaped Session.", { stage: "shape" });
       const inbound = [...pending].reverse().find((item) => item.message.kind === "agent" && item.message.schemaVersion === 2)?.message;
       const collaboration: CollaborationContext = inbound && inbound.kind === "agent" && inbound.schemaVersion === 2
         ? Object.freeze({ correlationId: inbound.correlationId, causationId: inbound.id, hop: inbound.hop })
         : Object.freeze({ correlationId: createId("correlation"), hop: 0 });
-      const handle = await this.#executeLeased(prompt, runId, leased.providerId, shape, approval, collaboration);
+      const providerId = await this.#assertVisionSupport(input, leased.providerId, shape);
+      const handle = await this.#executeLeased(input, prompt, runId, providerId ?? leased.providerId, shape, approval, collaboration);
       this.#activeRuns.add(handle);
       if (this.#closed) handle.cancel("Session is closing.");
       await this.#observe(handle, undefined, approval);
@@ -336,6 +350,14 @@ export class AgentSession implements AgentSessionContract {
 
   #assertOpen(): void {
     if (this.#closed) throw new AlphionError("conflict", "Agent session is closed.", { stage: "session" });
+  }
+
+  async #assertVisionSupport(input: SessionMessageInput, providerId: string | undefined, shape: AgentShape | undefined): Promise<string | undefined> {
+    if (!input.attachments?.length) return providerId;
+    if (!this.options.models) throw new AlphionError("dependency-unavailable", "Image messages require a configured vision Provider.", { stage: "attachment" });
+    const provider = await this.options.models.resolveModel({ sessionId: this.id, ...(providerId ? { providerId } : {}), requiredCapabilities: shape?.requiredProviderCapabilities ?? [] });
+    if (!provider.profile.capabilities.vision) throw new AlphionError("validation", "The selected Provider does not support image messages. Remove the image or switch Provider.", { stage: "attachment", reason: "provider-vision-required" });
+    return provider.profile.id;
   }
 }
 
@@ -399,10 +421,12 @@ function isEvidence(value: unknown): value is NonNullable<Extract<AgentMessage, 
   return typeof item.id === "string" && typeof item.digest === "string" && typeof item.summary === "string" && ["file", "search", "change", "process"].includes(String(item.kind));
 }
 
-function userMessage(content: string): Extract<AgentMessage, { readonly kind: "user" }> {
-  const value = content.trim();
-  if (!value) throw new AlphionError("validation", "Session message cannot be empty.", { stage: "session" });
-  return Object.freeze({ schemaVersion: 1, kind: "user", id: createId("message"), createdAt: new Date().toISOString(), content: value });
+function userMessage(input: SessionMessageInput): Extract<AgentMessage, { readonly kind: "user" }> { return createUserMessage(input, createId("message"), new Date().toISOString()); }
+function promptForInput(input: SessionMessageInput): string { return input.text ?? `User supplied ${input.attachments?.length ?? 0} image attachment(s): ${(input.attachments ?? []).map((item) => item.fileName).join(", ")}.`; }
+function mergePendingInput(messages: readonly Extract<AgentMessage, { readonly kind: "user" | "agent" }>[]): SessionMessageInput {
+  const text = messages.map((message) => message.kind === "user" ? userMessageInput(message).text ?? "" : message.content).filter(Boolean).join("\n\n");
+  const attachments = messages.flatMap((message) => message.kind === "user" ? [...(userMessageInput(message).attachments ?? [])] : []);
+  return normalizeSessionMessageInput({ schemaVersion: 1, ...(text ? { text } : {}), ...(attachments.length ? { attachments } : {}) });
 }
 
 const SUBSCRIBER_BYTES = 1024 * 1024;
