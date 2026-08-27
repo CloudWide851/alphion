@@ -1,13 +1,13 @@
-import type { ProviderProfile, ProviderProfileInput, VaultStatus } from "../domain/contracts.js";
-import type { ProviderConfigurationService, ProviderProfileStore, SecretVault } from "../ports/index.js";
+import type { ProjectCredentialStatus, ProviderProfile, ProviderProfileInput } from "../domain/contracts.js";
+import type { ProjectCredentialStore, ProviderConfigurationService, ProviderProfileStore } from "../ports/index.js";
 
 export class ProviderConfigurationManager implements ProviderConfigurationService {
   readonly #profiles: ProviderProfileStore;
-  readonly #vault: SecretVault;
+  readonly #credentials: ProjectCredentialStore;
 
-  constructor(profiles: ProviderProfileStore, vault: SecretVault) {
+  constructor(profiles: ProviderProfileStore, credentials: ProjectCredentialStore) {
     this.#profiles = profiles;
-    this.#vault = vault;
+    this.#credentials = credentials;
   }
 
   listProfiles(): Promise<readonly ProviderProfile[]> {
@@ -22,24 +22,13 @@ export class ProviderConfigurationManager implements ProviderConfigurationServic
     return this.#profiles.activateProfile(idOrName);
   }
 
-  vaultStatus(): Promise<VaultStatus> {
-    return this.#vault.status();
-  }
-
-  provisionVault(): Promise<void> { return this.#vault.provision(); }
+  credentialStatus(): Promise<ProjectCredentialStatus> { return this.#credentials.credentialStatus(); }
 
   importCredential(profileId: string, secret: string): Promise<ProviderProfile> {
-    return this.#vault.importCredential(profileId, secret);
+    return this.#credentials.importCredential(profileId, secret);
   }
 
   removeCredential(profileId: string): Promise<ProviderProfile> {
-    return this.#vault.removeCredential(profileId);
+    return this.#credentials.removeCredential(profileId);
   }
-
-  resetVault(): Promise<number> {
-    return this.#vault.reset();
-  }
-
-  legacyVaultStatus(): Promise<Readonly<{ disabled: boolean; secretCount: number }>> { return this.#vault.legacyStatus(); }
-  resetLegacyVault(): Promise<number> { return this.#vault.resetLegacy(); }
 }

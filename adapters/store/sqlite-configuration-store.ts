@@ -1,8 +1,7 @@
-import { randomBytes } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import type { ProviderProfile, ProviderProfileInput, ShellRule, VaultStatus } from "../../src/domain/contracts.js";
-import type { CacheEntry, CacheStats, CacheStore, ProviderProfileStore, SecretVault, ShellPolicyStore } from "../../src/ports/index.js";
+import type { ProjectCredentialStatus, ProviderProfile, ProviderProfileInput, ShellRule } from "../../src/domain/contracts.js";
+import type { CacheEntry, CacheStats, CacheStore, ProjectCredentialStore, ProviderProfileStore, ShellPolicyStore } from "../../src/ports/index.js";
 import { canonicalJson, createId } from "../../src/application/canonical.js";
 import { AlphionError } from "../../src/application/errors.js";
 import { containsPotentialSecret } from "../../src/application/sensitive-data.js";
@@ -13,7 +12,7 @@ import {
 } from "./sqlite-codecs.js";
 
 export abstract class SqliteConfigurationStore extends SqliteStoreBase
-  implements CacheStore, ProviderProfileStore, SecretVault, ShellPolicyStore {
+  implements CacheStore, ProviderProfileStore, ProjectCredentialStore, ShellPolicyStore {
   async upsertProfile(
     input: ProviderProfileInput,
   ): Promise<ProviderProfile> {
@@ -22,15 +21,14 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
       const existing = optionalRow(this.database.prepare("SELECT revision, active FROM provider_profiles WHERE id = ?").get(input.id));
       const revision = existing ? readNumber(existing, "revision") + 1 : 1;
       const active = input.active ?? (existing ? readNumber(existing, "active") === 1 : false);
-      if (input.auth.mode === "encrypted-sqlite") {
+      if (input.auth.mode === "encrypted-project") {
         const secret = optionalRow(
           this.database
-            .prepare(`SELECT profile_id FROM device_vault_secrets WHERE secret_id = ?
-              UNION ALL SELECT profile_id FROM vault_secrets WHERE secret_id = ? LIMIT 1`)
-            .get(input.auth.secretId, input.auth.secretId),
+            .prepare("SELECT profile_id, project_id FROM project_credentials WHERE secret_id = ?")
+            .get(input.auth.secretId),
         );
-        if (!secret || readString(secret, "profile_id") !== input.id) {
-          throw new AlphionError("validation", "Vault credential reference does not belong to this profile.", {
+        if (!secret || readString(secret, "profile_id") !== input.id || readString(secret, "project_id") !== this.credentialProjectId) {
+          throw new AlphionError("validation", "Project credential reference does not belong to this profile.", {
             stage: "config",
           });
         }
@@ -65,7 +63,7 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
           input.protocol,
           input.auth.mode,
           input.auth.mode === "bearer-env" ? input.auth.environmentVariable : null,
-          input.auth.mode === "encrypted-sqlite" ? input.auth.secretId : null,
+          input.auth.mode === "encrypted-project" ? input.auth.secretId : null,
           JSON.stringify(input.capabilities),
           revision,
           active ? 1 : 0,
@@ -108,64 +106,32 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
     return profile;
   }
 
-  async status(): Promise<VaultStatus> {
-    const deviceMetadata = optionalRow(this.database.prepare("SELECT id FROM device_vault_metadata WHERE id = 1").get());
-    const deviceCount = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM device_vault_secrets").get()), "count");
-    const legacyCount = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get()), "count");
-    const deviceKeyAvailable = await this.deviceKeyProvider.load().then((value) => value?.byteLength === 32, () => false);
+  async credentialStatus(): Promise<ProjectCredentialStatus> {
+    const secretCount = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM project_credentials WHERE project_id = ?").get(this.credentialProjectId)), "count");
+    const reentryRequiredProfileIds = this.database.prepare("SELECT profile_id FROM project_credential_migrations WHERE state = 'reentry-required' ORDER BY profile_id").all()
+      .map((row) => readString(requiredRow(row), "profile_id"));
+    const projectKeyAvailable = secretCount === 0 || await this.projectKeyProvider.load(this.credentialProjectId).then((value) => value?.byteLength === 32, () => false);
     return Object.freeze({
-      schemaVersion: 2,
-      mode: deviceMetadata ? "device" : legacyCount > 0 ? "legacy-disabled" : "unprovisioned",
-      provisioned: deviceMetadata !== undefined,
-      deviceKeyAvailable,
-      secretCount: deviceCount,
-      legacySecretCount: legacyCount,
+      schemaVersion: 1,
+      projectKeyAvailable,
+      secretCount,
+      reentryRequiredProfileIds: Object.freeze(reentryRequiredProfileIds),
     });
   }
 
-  async provision(): Promise<void> {
-    if (optionalRow(this.database.prepare("SELECT id FROM device_vault_metadata WHERE id = 1").get())) {
-      const key = await this.loadDeviceDataKey();
-      key.fill(0);
-      return;
-    }
-    const deviceKey = await this.loadDeviceKey(true);
-    const dataKey = randomBytes(32);
-    const keyId = createId("device_key");
-    try {
-      const wrapped = encryptValue(deviceKey, dataKey, deviceVaultAad(keyId));
-      const now = new Date().toISOString();
-      this.transaction(() => this.database.prepare(
-        `INSERT INTO device_vault_metadata
-         (id, schema_version, key_id, wrapped_key_nonce, wrapped_key_ciphertext, wrapped_key_tag, created_at, updated_at)
-         VALUES (1, 1, ?, ?, ?, ?, ?, ?)`,
-      ).run(keyId, wrapped.nonce, wrapped.ciphertext, wrapped.authTag, now, now));
-    } catch (error) {
-      if (!optionalRow(this.database.prepare("SELECT id FROM device_vault_metadata WHERE id = 1").get())) throw error;
-    } finally {
-      deviceKey.fill(0);
-      dataKey.fill(0);
-    }
-  }
-
   async resolve(reference: string): Promise<string | undefined> {
-    if (!/^vault_[A-Za-z0-9_-]{8,}$/.test(reference)) return undefined;
+    if (!/^credential_[A-Za-z0-9_-]{8,}$/u.test(reference)) return undefined;
     const row = optionalRow(this.database.prepare(
-      "SELECT secret_id, profile_id, revision, nonce, ciphertext, auth_tag FROM device_vault_secrets WHERE secret_id = ?",
-    ).get(reference));
-    if (!row) {
-      if (optionalRow(this.database.prepare("SELECT secret_id FROM vault_secrets WHERE secret_id = ?").get(reference))) {
-        throw new AlphionError("dependency-unavailable", "Legacy password credential is disabled; reset and re-import it.", { stage: "vault", reason: "legacy-vault-disabled" });
-      }
-      return undefined;
-    }
-    const key = await this.loadDeviceDataKey();
+      "SELECT secret_id, project_id, profile_id, revision, nonce, ciphertext, auth_tag FROM project_credentials WHERE secret_id = ? AND project_id = ?",
+    ).get(reference, this.credentialProjectId));
+    if (!row) return undefined;
+    const key = await this.loadProjectKey(false);
     let plaintext: Buffer | undefined;
     try {
-      plaintext = decryptValue(key, readBuffer(row, "nonce"), readBuffer(row, "ciphertext"), readBuffer(row, "auth_tag"), deviceSecretAad(readString(row, "secret_id"), readString(row, "profile_id"), readNumber(row, "revision")));
+      plaintext = decryptValue(key, readBuffer(row, "nonce"), readBuffer(row, "ciphertext"), readBuffer(row, "auth_tag"), projectCredentialAad(readString(row, "project_id"), readString(row, "secret_id"), readString(row, "profile_id"), readNumber(row, "revision")));
       return plaintext.toString("utf8");
     } catch (error) {
-      throw new AlphionError("integrity-failed", "Encrypted credential failed authentication.", { stage: "vault", reason: "credential-authentication-failed", cause: error });
+      throw new AlphionError("integrity-failed", "Project credential failed authentication.", { stage: "credential", reason: "credential-authentication-failed", cause: error });
     } finally {
       key.fill(0);
       plaintext?.fill(0);
@@ -173,43 +139,17 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
   }
 
   async importCredential(profileId: string, secret: string): Promise<ProviderProfile> {
-    if (secret.length === 0 || secret.length > 16_384 || secret.includes("\0")) throw new AlphionError("validation", "Credential must be between 1 and 16384 characters.", { stage: "vault" });
-    await this.provision();
-    const key = await this.loadDeviceDataKey();
-    const profile = await this.getProfile(profileId);
-    if (!profile) { key.fill(0); throw new AlphionError("validation", `Unknown provider profile: ${profileId}`, { stage: "vault" }); }
-    const existing = optionalRow(this.database.prepare("SELECT secret_id, revision FROM device_vault_secrets WHERE profile_id = ?").get(profile.id));
-    const secretId = existing ? readString(existing, "secret_id") : createId("vault");
-    const secretRevision = existing ? readNumber(existing, "revision") + 1 : 1;
+    if (secret.length === 0 || secret.length > 16_384 || secret.includes("\0")) throw new AlphionError("validation", "Credential must be between 1 and 16384 characters.", { stage: "credential" });
     const plaintext = Buffer.from(secret, "utf8");
-    try {
-      const encrypted = encryptValue(key, plaintext, deviceSecretAad(secretId, profile.id, secretRevision));
-      this.transaction(() => {
-        const now = new Date().toISOString();
-        this.database.prepare(
-          `INSERT INTO device_vault_secrets
-           (secret_id, profile_id, revision, nonce, ciphertext, auth_tag, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(profile_id) DO UPDATE SET secret_id = excluded.secret_id, revision = excluded.revision,
-             nonce = excluded.nonce, ciphertext = excluded.ciphertext, auth_tag = excluded.auth_tag, updated_at = excluded.updated_at`,
-        ).run(secretId, profile.id, secretRevision, encrypted.nonce, encrypted.ciphertext, encrypted.authTag, now, now);
-        this.database.prepare(
-          `UPDATE provider_profiles SET auth_mode = 'encrypted-sqlite', auth_environment_variable = NULL,
-           auth_secret_id = ?, revision = revision + 1, updated_at = ? WHERE id = ?`,
-        ).run(secretId, now, profile.id);
-      });
-      return this.requireProfile(profile.id);
-    } finally {
-      key.fill(0);
-      plaintext.fill(0);
-    }
+    try { return await this.saveProjectCredential(profileId, plaintext); }
+    finally { plaintext.fill(0); }
   }
 
   async removeCredential(profileId: string): Promise<ProviderProfile> {
     const profile = await this.getProfile(profileId);
-    if (!profile) throw new AlphionError("validation", `Unknown provider profile: ${profileId}`, { stage: "vault" });
+    if (!profile) throw new AlphionError("validation", `Unknown provider profile: ${profileId}`, { stage: "credential" });
     this.transaction(() => {
-      this.database.prepare("DELETE FROM device_vault_secrets WHERE profile_id = ?").run(profile.id);
+      this.database.prepare("DELETE FROM project_credentials WHERE profile_id = ? AND project_id = ?").run(profile.id, this.credentialProjectId);
       this.database.prepare(
         `UPDATE provider_profiles SET auth_mode = 'none', auth_environment_variable = NULL,
          auth_secret_id = NULL, revision = revision + 1, updated_at = ? WHERE id = ?`,
@@ -218,41 +158,32 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
     return this.requireProfile(profile.id);
   }
 
-  async reset(): Promise<number> {
-    const deleted = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM device_vault_secrets").get()), "count");
-    this.transaction(() => {
-      const now = new Date().toISOString();
-      this.database.prepare(
-        `UPDATE provider_profiles SET auth_mode = 'none', auth_environment_variable = NULL,
-         auth_secret_id = NULL, revision = revision + 1, updated_at = ?
-         WHERE auth_secret_id IN (SELECT secret_id FROM device_vault_secrets)`,
-      ).run(now);
-      this.database.prepare("DELETE FROM device_vault_secrets").run();
-      this.database.prepare("DELETE FROM device_vault_metadata WHERE id = 1").run();
-    });
-    return deleted;
-  }
-
-  async legacyStatus(): Promise<Readonly<{ disabled: boolean; secretCount: number }>> {
-    const state = optionalRow(this.database.prepare("SELECT state FROM vault_legacy_state WHERE id = 1").get());
-    const secretCount = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get()), "count");
-    return Object.freeze({ disabled: state ? readString(state, "state") === "legacy-disabled" : false, secretCount });
-  }
-
-  async resetLegacy(): Promise<number> {
-    const deleted = readNumber(requiredRow(this.database.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get()), "count");
-    this.transaction(() => {
-      const now = new Date().toISOString();
-      this.database.prepare(
-        `UPDATE provider_profiles SET auth_mode = 'none', auth_environment_variable = NULL,
-         auth_secret_id = NULL, revision = revision + 1, updated_at = ?
-         WHERE auth_secret_id IN (SELECT secret_id FROM vault_secrets)`,
-      ).run(now);
-      this.database.prepare("DELETE FROM vault_secrets").run();
-      this.database.prepare("DELETE FROM vault_metadata").run();
-      this.database.prepare("UPDATE vault_legacy_state SET state = 'none', updated_at = ? WHERE id = 1").run(now);
-    });
-    return deleted;
+  async migrateLegacyCredentials(): Promise<void> {
+    const rows = this.database.prepare("SELECT profile_id, source_secret_id FROM project_credential_migrations WHERE state = 'pending' ORDER BY profile_id").all().map(requiredRow);
+    if (rows.length === 0) return;
+    const metadata = optionalRow(this.database.prepare("SELECT * FROM device_vault_metadata WHERE id = 1").get());
+    if (!metadata || !this.legacyDeviceKeyPath) { this.markLegacyReentry(rows); return; }
+    let deviceKey: Buffer | undefined;
+    let dataKey: Buffer | undefined;
+    try {
+      deviceKey = Buffer.from(await readFile(this.legacyDeviceKeyPath));
+      if (deviceKey.byteLength !== 32 || readNumber(metadata, "schema_version") !== 1) throw new Error("Legacy key envelope is unavailable.");
+      dataKey = decryptValue(deviceKey, readBuffer(metadata, "wrapped_key_nonce"), readBuffer(metadata, "wrapped_key_ciphertext"), readBuffer(metadata, "wrapped_key_tag"), legacyDeviceKeyAad(readString(metadata, "key_id")));
+      if (dataKey.byteLength !== 32) throw new Error("Legacy data key is invalid.");
+      for (const migration of rows) {
+        const profileId = readString(migration, "profile_id");
+        const sourceSecretId = readString(migration, "source_secret_id");
+        const source = optionalRow(this.database.prepare("SELECT * FROM device_vault_secrets WHERE secret_id = ? AND profile_id = ?").get(sourceSecretId, profileId));
+        if (!source) { this.markLegacyReentry([migration]); continue; }
+        let plaintext: Buffer | undefined;
+        try {
+          plaintext = decryptValue(dataKey, readBuffer(source, "nonce"), readBuffer(source, "ciphertext"), readBuffer(source, "auth_tag"), legacyDeviceSecretAad(sourceSecretId, profileId, readNumber(source, "revision")));
+          await this.saveProjectCredential(profileId, plaintext, true);
+        } catch { this.markLegacyReentry([migration]); }
+        finally { plaintext?.fill(0); }
+      }
+    } catch { this.markLegacyReentry(rows); }
+    finally { deviceKey?.fill(0); dataKey?.fill(0); }
   }
 
   async get(namespace: string, key: string): Promise<CacheEntry | undefined> {
@@ -386,32 +317,46 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
     return decodeProviderProfile(row);
   }
 
-  private async loadDeviceDataKey(): Promise<Buffer> {
-    const row = optionalRow(this.database.prepare("SELECT * FROM device_vault_metadata WHERE id = 1").get());
-    if (!row) throw new AlphionError("conflict", "Device credential vault is not provisioned.", { stage: "vault" });
-    if (readNumber(row, "schema_version") !== 1) throw new AlphionError("incompatible-schema", "Device credential envelope is unsupported.", { stage: "vault" });
-    const deviceKey = await this.loadDeviceKey(false);
+  private async saveProjectCredential(profileId: string, plaintext: Buffer, migrated = false): Promise<ProviderProfile> {
+    const profile = await this.getProfile(profileId);
+    if (!profile) throw new AlphionError("validation", `Unknown provider profile: ${profileId}`, { stage: "credential" });
+    const existing = optionalRow(this.database.prepare("SELECT secret_id, revision FROM project_credentials WHERE profile_id = ? AND project_id = ?").get(profile.id, this.credentialProjectId));
+    const secretId = existing ? readString(existing, "secret_id") : createId("credential");
+    const secretRevision = existing ? readNumber(existing, "revision") + 1 : 1;
+    const key = await this.loadProjectKey(true);
     try {
-      const value = decryptValue(
-        deviceKey,
-        readBuffer(row, "wrapped_key_nonce"),
-        readBuffer(row, "wrapped_key_ciphertext"),
-        readBuffer(row, "wrapped_key_tag"),
-        deviceVaultAad(readString(row, "key_id")),
-      );
-      if (value.byteLength !== 32) { value.fill(0); throw new Error("Invalid data key length."); }
-      return value;
-    } catch (error) {
-      throw new AlphionError("integrity-failed", "Device credential envelope failed authentication.", { stage: "vault", reason: "device-envelope-authentication-failed", cause: error });
-    } finally {
-      deviceKey.fill(0);
-    }
+      const encrypted = encryptValue(key, plaintext, projectCredentialAad(this.credentialProjectId, secretId, profile.id, secretRevision));
+      this.transaction(() => {
+        const now = new Date().toISOString();
+        this.database.prepare(
+          `INSERT INTO project_credentials
+           (secret_id, project_id, profile_id, revision, nonce, ciphertext, auth_tag, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(profile_id) DO UPDATE SET secret_id = excluded.secret_id, project_id = excluded.project_id,
+             revision = excluded.revision, nonce = excluded.nonce, ciphertext = excluded.ciphertext,
+             auth_tag = excluded.auth_tag, updated_at = excluded.updated_at`,
+        ).run(secretId, this.credentialProjectId, profile.id, secretRevision, encrypted.nonce, encrypted.ciphertext, encrypted.authTag, now, now);
+        this.database.prepare(
+          `UPDATE provider_profiles SET auth_mode = 'encrypted-project', auth_environment_variable = NULL,
+           auth_secret_id = ?, revision = revision + 1, updated_at = ? WHERE id = ?`,
+        ).run(secretId, now, profile.id);
+        if (migrated) this.database.prepare("UPDATE project_credential_migrations SET state = 'migrated', updated_at = ? WHERE profile_id = ?").run(now, profile.id);
+        else this.database.prepare("DELETE FROM project_credential_migrations WHERE profile_id = ?").run(profile.id);
+      });
+      return this.requireProfile(profile.id);
+    } finally { key.fill(0); }
   }
 
-  private async loadDeviceKey(create: boolean): Promise<Buffer> {
-    const value = create ? await this.deviceKeyProvider.loadOrCreate() : await this.deviceKeyProvider.load();
-    if (!value || value.byteLength !== 32) throw new AlphionError("dependency-unavailable", "Device credential key is unavailable.", { stage: "vault", reason: "device-key-unavailable" });
+  private async loadProjectKey(create: boolean): Promise<Buffer> {
+    const value = create ? await this.projectKeyProvider.loadOrCreate(this.credentialProjectId) : await this.projectKeyProvider.load(this.credentialProjectId);
+    if (!value || value.byteLength !== 32) throw new AlphionError("dependency-unavailable", "Project credential key is unavailable.", { stage: "credential", reason: "project-key-unavailable" });
     return Buffer.from(value);
+  }
+
+  private markLegacyReentry(rows: readonly Readonly<Record<string, unknown>>[]): void {
+    const now = new Date().toISOString();
+    const update = this.database.prepare("UPDATE project_credential_migrations SET state = 'reentry-required', updated_at = ? WHERE profile_id = ?");
+    this.transaction(() => { for (const row of rows) update.run(now, readString(row, "profile_id")); });
   }
 
   private pruneCache(): void {
@@ -427,10 +372,14 @@ export abstract class SqliteConfigurationStore extends SqliteStoreBase
   }
 }
 
-function deviceVaultAad(keyId: string): Buffer {
+function legacyDeviceKeyAad(keyId: string): Buffer {
   return Buffer.from(canonicalJson({ schemaVersion: 1, kind: "device-data-key", keyId }), "utf8");
 }
 
-function deviceSecretAad(secretId: string, profileId: string, revision: number): Buffer {
+function legacyDeviceSecretAad(secretId: string, profileId: string, revision: number): Buffer {
   return Buffer.from(canonicalJson({ schemaVersion: 2, kind: "provider-credential", secretId, profileId, revision }), "utf8");
+}
+
+function projectCredentialAad(projectId: string, secretId: string, profileId: string, revision: number): Buffer {
+  return Buffer.from(canonicalJson({ schemaVersion: 1, kind: "project-provider-credential", projectId, secretId, profileId, revision }), "utf8");
 }

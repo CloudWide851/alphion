@@ -14,7 +14,7 @@ export interface ChatMessage { readonly id: string; readonly role: "user" | "ass
 export const BRAND_PURPLE = "#A377F6";
 const SECTIONS: readonly Readonly<{ id: WorkbenchSection; label: string }>[] = Object.freeze([
   { id: "home", label: "对话" }, { id: "projects", label: "项目" },
-  { id: "profile", label: "项目画像" }, { id: "providers", label: "Provider / 设备凭据" }, { id: "sessions", label: "共享会话" },
+  { id: "profile", label: "项目画像" }, { id: "providers", label: "Provider" }, { id: "sessions", label: "共享会话" },
   { id: "resources", label: "Agent 资源" }, { id: "harness", label: "HarnessPlan" }, { id: "context", label: "上下文优化" },
   { id: "goals", label: "长期 Goal" }, { id: "goal", label: "Goal 操作" }, { id: "schedules", label: "定时任务" }, { id: "doctor", label: "只读诊断" }, { id: "help", label: "快捷命令" },
 ]);

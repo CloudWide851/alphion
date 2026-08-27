@@ -34,7 +34,7 @@ import type {
   ShellRule,
   ToolContract,
   ToolResult,
-  VaultStatus,
+  ProjectCredentialStatus,
 } from "../domain/contracts.js";
 import type { AgentEvent, AgentEventDraft, AgentStreamEvent } from "../protocol/events.js";
 import type { CompactionProjection, CompactionRecord } from "../domain/compaction-contracts.js";
@@ -172,9 +172,9 @@ export interface SessionStore {
   getCompactionProjection(sessionId: string): Promise<CompactionProjection>;
 }
 
-export interface DeviceKeyProvider {
-  load(): Promise<Uint8Array | undefined>;
-  loadOrCreate(): Promise<Uint8Array>;
+export interface ProjectKeyProvider {
+  load(projectId: string): Promise<Uint8Array | undefined>;
+  loadOrCreate(projectId: string): Promise<Uint8Array>;
 }
 
 export interface AutomationStore {
@@ -230,27 +230,20 @@ export interface ProviderProfileStore {
   activateProfile(idOrName: string): Promise<ProviderProfile>;
 }
 
-export interface SecretVault extends SecretResolver {
-  status(): Promise<VaultStatus>;
-  provision(): Promise<void>;
+export interface ProjectCredentialStore extends SecretResolver {
+  credentialStatus(): Promise<ProjectCredentialStatus>;
   importCredential(profileId: string, secret: string): Promise<ProviderProfile>;
   removeCredential(profileId: string): Promise<ProviderProfile>;
-  reset(): Promise<number>;
-  legacyStatus(): Promise<Readonly<{ disabled: boolean; secretCount: number }>>;
-  resetLegacy(): Promise<number>;
+  migrateLegacyCredentials(): Promise<void>;
 }
 
 export interface ProviderConfigurationService {
   listProfiles(): Promise<readonly ProviderProfile[]>;
   upsertProfile(profile: ProviderProfileInput): Promise<ProviderProfile>;
   activateProfile(idOrName: string): Promise<ProviderProfile>;
-  vaultStatus(): Promise<VaultStatus>;
-  provisionVault(): Promise<void>;
+  credentialStatus(): Promise<ProjectCredentialStatus>;
   importCredential(profileId: string, secret: string): Promise<ProviderProfile>;
   removeCredential(profileId: string): Promise<ProviderProfile>;
-  resetVault(): Promise<number>;
-  legacyVaultStatus(): Promise<Readonly<{ disabled: boolean; secretCount: number }>>;
-  resetLegacyVault(): Promise<number>;
 }
 
 export interface ProjectProfiler {

@@ -10,7 +10,8 @@ import {
 import { SQLITE_SCHEMA_VERSION } from "./sqlite-constants.js";
 import { createSessionForkSchemaV6 } from "./sqlite-fork-schema.js";
 import { createRuntimeSchemaV7 } from "./sqlite-v7-schema.js";
-import type { DeviceKeyProvider } from "../../src/ports/index.js";
+import { createProjectCredentialSchemaV8 } from "./sqlite-v8-schema.js";
+import type { ProjectKeyProvider } from "../../src/ports/index.js";
 
 const OPEN_DATABASES = new Set<string>();
 const DEFAULT_RUN_LEASE_MS = 2 * 60 * 1000;
@@ -20,15 +21,16 @@ export interface SqliteStoreOptions {
   readonly domainId?: string;
   readonly projectId?: string;
   readonly runLeaseMs?: number;
-  readonly deviceKeyProvider?: DeviceKeyProvider;
+  readonly projectKeyProvider?: ProjectKeyProvider;
+  readonly legacyDeviceKeyPath?: string;
 }
 
-const UNAVAILABLE_DEVICE_KEY: DeviceKeyProvider = Object.freeze({
+const UNAVAILABLE_PROJECT_KEY: ProjectKeyProvider = Object.freeze({
   load: () => Promise.resolve(undefined),
   loadOrCreate: () => Promise.reject(new AlphionError(
     "dependency-unavailable",
-    "Device credential key is unavailable.",
-    { stage: "vault", reason: "device-key-unavailable" },
+    "Project credential key is unavailable.",
+    { stage: "credential", reason: "project-key-unavailable" },
   )),
 });
 
@@ -40,7 +42,9 @@ export abstract class SqliteStoreBase {
   protected readonly runLeaseMs: number;
   protected readonly domainId: string;
   protected readonly projectId: string | undefined;
-  protected readonly deviceKeyProvider: DeviceKeyProvider;
+  protected readonly projectKeyProvider: ProjectKeyProvider;
+  protected readonly credentialProjectId: string;
+  protected readonly legacyDeviceKeyPath: string | undefined;
   protected leaseHeartbeat: NodeJS.Timeout | undefined;
   protected closed = false;
 
@@ -52,7 +56,9 @@ export abstract class SqliteStoreBase {
     this.databaseKey = pathKey(databasePath);
     this.domainId = options.domainId ?? `domain_${sha256(pathKey(databasePath)).slice(0, 32)}`;
     this.projectId = options.projectId;
-    this.deviceKeyProvider = options.deviceKeyProvider ?? UNAVAILABLE_DEVICE_KEY;
+    this.projectKeyProvider = options.projectKeyProvider ?? UNAVAILABLE_PROJECT_KEY;
+    this.credentialProjectId = options.projectId ?? this.domainId;
+    this.legacyDeviceKeyPath = options.legacyDeviceKeyPath;
     this.runLeaseMs = options.runLeaseMs ?? DEFAULT_RUN_LEASE_MS;
     if (!Number.isSafeInteger(this.runLeaseMs) || this.runLeaseMs < 1_000 || this.runLeaseMs > 24 * 60 * 60 * 1000) {
       throw new AlphionError("validation", "Run lease duration must be between one second and 24 hours.", { stage: "session" });
@@ -70,7 +76,12 @@ export abstract class SqliteStoreBase {
       this.database = database;
       this.database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;");
       this.assertIntegrity();
-      this.migrate();
+      this.database.exec("PRAGMA foreign_keys = OFF");
+      try { this.migrate(); }
+      finally { this.database.exec("PRAGMA foreign_keys = ON"); }
+      if (this.database.prepare("PRAGMA foreign_key_check").get() !== undefined) {
+        throw new AlphionError("integrity-failed", "SQLite migration produced an invalid foreign-key graph.", { stage: "database" });
+      }
       this.reconcileSessionSchemaV5();
       this.registerOwnerAndRecover();
       this.leaseHeartbeat = setInterval(() => this.heartbeatOwner(), Math.max(500, Math.floor(this.runLeaseMs / 3)));
@@ -116,32 +127,38 @@ export abstract class SqliteStoreBase {
         this.createProjectSessionSchemaV5();
         createSessionForkSchemaV6(this.database);
         createRuntimeSchemaV7(this.database);
+        createProjectCredentialSchemaV8(this.database);
       });
       return;
     }
     if (current === 2) {
       this.backupV2();
-      this.transaction(() => { this.createSessionSchemaV3(); this.createShapeSchemaV4(false); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); });
+      this.transaction(() => { this.createSessionSchemaV3(); this.createShapeSchemaV4(false); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); });
       return;
     }
     if (current === 3) {
       this.backupV3();
-      this.transaction(() => { this.createShapeSchemaV4(true); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); });
+      this.transaction(() => { this.createShapeSchemaV4(true); this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); });
       return;
     }
     if (current === 4) {
       this.backupSchema(4, `${this.databasePath}.v4-backup`);
-      this.transaction(() => { this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); });
+      this.transaction(() => { this.createProjectSessionSchemaV5(); createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); });
       return;
     }
     if (current === 5) {
       this.backupSchema(5, `${this.databasePath}.v5-backup`);
-      this.transaction(() => { createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); });
+      this.transaction(() => { createSessionForkSchemaV6(this.database); createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); });
       return;
     }
     if (current === 6) {
       this.backupSchema(6, `${this.databasePath}.v6-backup`);
-      this.transaction(() => createRuntimeSchemaV7(this.database));
+      this.transaction(() => { createRuntimeSchemaV7(this.database); createProjectCredentialSchemaV8(this.database); });
+      return;
+    }
+    if (current === 7) {
+      this.backupSchema(7, `${this.databasePath}.v7-backup`);
+      this.transaction(() => createProjectCredentialSchemaV8(this.database));
       return;
     }
     if (current !== 1) {
@@ -189,6 +206,7 @@ export abstract class SqliteStoreBase {
       this.createProjectSessionSchemaV5();
       createSessionForkSchemaV6(this.database);
       createRuntimeSchemaV7(this.database);
+      createProjectCredentialSchemaV8(this.database);
     });
   }
 
@@ -526,7 +544,7 @@ export abstract class SqliteStoreBase {
           base_url TEXT NOT NULL,
           model TEXT NOT NULL,
           protocol TEXT NOT NULL CHECK (protocol IN ('chat-completions', 'responses')),
-          auth_mode TEXT NOT NULL CHECK (auth_mode IN ('none', 'bearer-env', 'encrypted-sqlite')),
+          auth_mode TEXT NOT NULL CHECK (auth_mode IN ('none', 'bearer-env', 'encrypted-project')),
           auth_environment_variable TEXT,
           auth_secret_id TEXT,
           capabilities_json TEXT NOT NULL,

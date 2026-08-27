@@ -5,64 +5,72 @@ import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { AlphionError } from "../../src/application/errors.js";
-import type { DeviceKeyProvider } from "../../src/ports/index.js";
+import type { ProjectKeyProvider } from "../../src/ports/index.js";
 import { defaultProjectRegistryPath } from "../project/project-manager.js";
 
-const DEVICE_KEY_BYTES = 32;
+const PROJECT_KEY_BYTES = 32;
 const execFileAsync = promisify(execFile);
 
-export class FileDeviceKeyProvider implements DeviceKeyProvider {
-  readonly #path: string;
+export class FileProjectKeyProvider implements ProjectKeyProvider {
   #writeTail: Promise<void> = Promise.resolve();
 
-  constructor(path = defaultDeviceKeyPath()) { this.#path = path; }
+  constructor(private readonly root = defaultProjectKeyRoot()) {}
 
-  async load(): Promise<Uint8Array | undefined> {
-    try { return validateDeviceKey(await readFile(this.#path)); }
+  async load(projectId: string): Promise<Uint8Array | undefined> {
+    const path = this.pathFor(projectId);
+    try { return validateProjectKey(await readFile(path)); }
     catch (error) {
-      if (isMissing(error)) return undefined;
+      if (hasCode(error, "ENOENT")) return undefined;
       if (error instanceof AlphionError) throw error;
       throw unavailable(error);
     }
   }
 
-  async loadOrCreate(): Promise<Uint8Array> {
-    const present = await this.load();
+  async loadOrCreate(projectId: string): Promise<Uint8Array> {
+    const present = await this.load(projectId);
     if (present) return present;
     let result: Uint8Array | undefined;
     let failure: unknown;
     const operation = this.#writeTail.then(async () => {
-      try { result = await this.load() ?? await createDeviceKey(this.#path); }
+      try { result = await this.load(projectId) ?? await createProjectKey(this.pathFor(projectId)); }
       catch (error) { failure = error; }
     });
     this.#writeTail = operation;
     await operation;
     if (failure) throw failure;
-    if (!result) throw unavailable(new Error("Device key creation did not return a key."));
+    if (!result) throw unavailable(new Error("Project key creation did not return a key."));
     return result;
+  }
+
+  pathFor(projectId: string): string {
+    if (!/^[A-Za-z0-9_-]{8,128}$/u.test(projectId)) {
+      throw new AlphionError("validation", "Project credential identity is invalid.", { stage: "credential" });
+    }
+    return join(this.root, `${projectId}.key`);
   }
 }
 
-export function defaultDeviceKeyPath(environment: NodeJS.ProcessEnv = process.env): string {
+export function defaultProjectKeyRoot(environment: NodeJS.ProcessEnv = process.env): string {
+  return join(dirname(defaultProjectRegistryPath(environment)), "project-keys");
+}
+
+export function defaultLegacyDeviceKeyPath(environment: NodeJS.ProcessEnv = process.env): string {
   return join(dirname(defaultProjectRegistryPath(environment)), "device.key");
 }
 
-async function createDeviceKey(path: string): Promise<Uint8Array> {
+async function createProjectKey(path: string): Promise<Uint8Array> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${randomBytes(8).toString("hex")}`;
-  const key = randomBytes(DEVICE_KEY_BYTES);
+  const key = randomBytes(PROJECT_KEY_BYTES);
   try {
     const handle = await open(temporary, "wx", 0o600);
     try { await handle.writeFile(key); await handle.sync(); }
     finally { await handle.close(); }
     await restrictAccess(temporary);
     try { await link(temporary, path); }
-    catch (error) {
-      if (!isExists(error)) throw error;
-    }
+    catch (error) { if (!hasCode(error, "EEXIST")) throw error; }
     await unlink(temporary).catch(() => undefined);
-    const stored = await readFile(path);
-    return validateDeviceKey(stored);
+    return validateProjectKey(await readFile(path));
   } catch (error) {
     await unlink(temporary).catch(() => undefined);
     throw error instanceof AlphionError ? error : unavailable(error);
@@ -77,7 +85,7 @@ async function restrictAccess(path: string): Promise<void> {
     const principal = resolved.stdout.trim() || windowsPrincipal();
     await execFileAsync("icacls", [path, "/inheritance:r", "/grant:r", `${principal}:(F)`], { windowsHide: true });
   } catch (error) {
-    throw new AlphionError("dependency-unavailable", "Device credential key permissions could not be restricted.", { stage: "vault", reason: "device-key-permission-failed", cause: error });
+    throw new AlphionError("dependency-unavailable", "Project credential key permissions could not be restricted.", { stage: "credential", reason: "project-key-permission-failed", cause: error });
   }
 }
 
@@ -87,15 +95,15 @@ function windowsPrincipal(): string {
   return domain ? `${domain}\\${username}` : username;
 }
 
-function validateDeviceKey(value: Uint8Array): Uint8Array {
-  if (value.byteLength !== DEVICE_KEY_BYTES) throw new AlphionError("integrity-failed", "Device credential key has an invalid length.", { stage: "vault", reason: "device-key-corrupt" });
+function validateProjectKey(value: Uint8Array): Uint8Array {
+  if (value.byteLength !== PROJECT_KEY_BYTES) throw new AlphionError("integrity-failed", "Project credential key has an invalid length.", { stage: "credential", reason: "project-key-corrupt" });
   return Uint8Array.from(value);
 }
 
 function unavailable(cause: unknown): AlphionError {
-  return new AlphionError("dependency-unavailable", "Device credential key is unavailable.", { stage: "vault", reason: "device-key-unavailable", cause });
+  return new AlphionError("dependency-unavailable", "Project credential key is unavailable.", { stage: "credential", reason: "project-key-unavailable", cause });
 }
 
-function isMissing(error: unknown): boolean { return hasCode(error, "ENOENT"); }
-function isExists(error: unknown): boolean { return hasCode(error, "EEXIST"); }
-function hasCode(error: unknown, code: string): boolean { return !!error && typeof error === "object" && "code" in error && (error as { readonly code?: unknown }).code === code; }
+function hasCode(error: unknown, code: string): boolean {
+  return !!error && typeof error === "object" && "code" in error && (error as { readonly code?: unknown }).code === code;
+}

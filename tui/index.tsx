@@ -431,7 +431,7 @@ function toProfileId(value: string): string {
 }
 
 function authLabel(profile: ProviderProfile): string {
-  if (profile.auth.mode === "encrypted-sqlite") return "✓ 已加密配置";
+  if (profile.auth.mode === "encrypted-project") return "✓ Project 独立加密";
   if (profile.auth.mode === "bearer-env") return `✓ 环境引用 ${profile.auth.environmentVariable}`;
   return "! 未配置凭据";
 }

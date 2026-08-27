@@ -10,7 +10,7 @@ v0.8.0 的 WebUI 与 Electron Renderer 共享 slash 命令面板、`Conversation
 - `POST /api/command` 只接受共享严格 decoder 的版本化命令；写操作携带 revision/idempotency。
 - `GET /api/events` 以 cursor SSE 续传。落后客户端收到 `stream.resync-required` 后加载 Session snapshot，不采用最后写入者获胜。
 - Provider credential 与 approval 使用独立 CSRF-bound endpoint；秘密不进入 local/session storage、事件或普通命令。
-- 设备凭据首次导入时自动 provision；浏览器从不接触 device key、wrapped data key 或 legacy Vault 密文。
+- API Key 由 Project 独立密钥认证加密；浏览器从不接触 Project key、凭据密文或迁移材料。
 
 ## 界面与内容
 
@@ -22,4 +22,4 @@ v0.8.0 的 WebUI 与 Electron Renderer 共享 slash 命令面板、`Conversation
 
 ## 边界
 
-WebUI 不直接读 SQLite、模型、文件工具、device key 或凭据密文。`src/` 不依赖 Web/React/Vite。服务端负责输入验证、Origin/CSRF、秘密脱敏和安全错误；浏览器只持有短期 UI 状态。
+WebUI 不直接读 SQLite、模型、文件工具、Project key 或凭据密文。`src/` 不依赖 Web/React/Vite。服务端负责输入验证、Origin/CSRF、秘密脱敏和安全错误；浏览器只持有短期 UI 状态。

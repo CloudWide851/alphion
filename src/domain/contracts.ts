@@ -14,7 +14,7 @@ export interface ProviderCapabilities {
 export type ProviderAuth = Readonly<
   | { readonly mode: "none" }
   | { readonly mode: "bearer-env"; readonly environmentVariable: string }
-  | { readonly mode: "encrypted-sqlite"; readonly secretId: string }
+  | { readonly mode: "encrypted-project"; readonly secretId: string }
 >;
 
 interface ProviderProfileBase {
@@ -689,13 +689,11 @@ export interface AgentExecutionRequest extends Omit<AgentRunRequest, "systemProm
   readonly recall?: RecallResult;
 }
 
-export interface VaultStatus {
-  readonly schemaVersion: 2;
-  readonly mode: "unprovisioned" | "device" | "legacy-disabled";
-  readonly provisioned: boolean;
-  readonly deviceKeyAvailable: boolean;
+export interface ProjectCredentialStatus {
+  readonly schemaVersion: 1;
+  readonly projectKeyAvailable: boolean;
   readonly secretCount: number;
-  readonly legacySecretCount: number;
+  readonly reentryRequiredProfileIds: readonly string[];
 }
 
 export interface GroundingReport {

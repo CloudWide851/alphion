@@ -73,7 +73,7 @@ export class DeepSeekProvider implements AgentProvider {
       : this.profile.auth.secretId;
     const apiKey = await this.#secrets.resolve(reference);
     if (!apiKey) {
-      throw new AlphionError("dependency-unavailable", "The DeepSeek device credential is unavailable.", {
+      throw new AlphionError("dependency-unavailable", "The DeepSeek Project credential is unavailable.", {
         stage: "provider",
         reason: "credential-unavailable",
       });
@@ -166,8 +166,8 @@ function validateProfile(profile: ProviderProfile, endpoint: (profile: ProviderP
   if (profile.auth.mode === "bearer-env" && !/^[A-Z_][A-Z0-9_]*$/.test(profile.auth.environmentVariable)) {
     throw new AlphionError("validation", "DeepSeek environment credential reference is invalid.", { stage: "provider" });
   }
-  if (profile.auth.mode === "encrypted-sqlite" && !/^vault_[A-Za-z0-9_-]{8,}$/.test(profile.auth.secretId)) {
-    throw new AlphionError("validation", "DeepSeek vault credential reference is invalid.", { stage: "provider" });
+  if (profile.auth.mode === "encrypted-project" && !/^credential_[A-Za-z0-9_-]{8,}$/u.test(profile.auth.secretId)) {
+    throw new AlphionError("validation", "DeepSeek Project credential reference is invalid.", { stage: "provider" });
   }
 }
 

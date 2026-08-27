@@ -12,10 +12,10 @@ navigation, new windows, WebView attachment and non-allowlisted IPC are denied.
 
 Integrations that require the old line protocol must remain on v0.4.x or move
 to the loopback Web command/SSE boundary. There is no compatibility façade.
-Device keys, wrapped data keys and legacy Vault ciphertext are never exposed
-through IPC. Provider credentials use the dedicated one-use bridge method,
-provision the device vault in Main when needed, and are cleared by the form
-after every outcome.
+Project keys, credential ciphertext and legacy migration material are never
+exposed through IPC. Provider credentials use the dedicated one-use bridge
+method, are encrypted by Main for the active Project, and are cleared by the
+form after every outcome.
 
 In v0.8.0 the Renderer inherits the WebUI slash palette, conversation Run,
 Compaction, Goal and Schedule projections. No generic Node capability or IPC

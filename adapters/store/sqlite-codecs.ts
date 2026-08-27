@@ -74,15 +74,15 @@ export function validateProviderProfile(
   ) {
     throw new AlphionError("validation", "Provider capabilities must be booleans.", { stage: "config" });
   }
-  if (input.auth.mode !== "none" && input.auth.mode !== "bearer-env" && input.auth.mode !== "encrypted-sqlite") {
+  if (input.auth.mode !== "none" && input.auth.mode !== "bearer-env" && input.auth.mode !== "encrypted-project") {
     throw new AlphionError("validation", "Provider authentication mode is unsupported.", { stage: "config" });
   }
   validateProviderPreset(input);
   if (input.auth.mode === "bearer-env" && !/^[A-Z_][A-Z0-9_]*$/.test(input.auth.environmentVariable)) {
     throw new AlphionError("validation", "Secret references must be portable uppercase environment-variable names.", { stage: "config" });
   }
-  if (input.auth.mode === "encrypted-sqlite" && !/^vault_[A-Za-z0-9_-]{8,}$/.test(input.auth.secretId)) {
-    throw new AlphionError("validation", "Vault secret reference is invalid.", { stage: "config" });
+  if (input.auth.mode === "encrypted-project" && !/^credential_[A-Za-z0-9_-]{8,}$/u.test(input.auth.secretId)) {
+    throw new AlphionError("validation", "Project credential reference is invalid.", { stage: "config" });
   }
   return { baseUrl: input.kind === "custom-openai-compatible" ? resolveProviderEndpoint(input) : input.presetId };
 }
@@ -107,8 +107,8 @@ export function decodeProviderProfile(row: Readonly<Record<string, unknown>>): P
     ? ({ mode: "none" } as const)
     : authMode === "bearer-env"
       ? ({ mode: "bearer-env", environmentVariable: requireNullableString(row, "auth_environment_variable") } as const)
-      : authMode === "encrypted-sqlite"
-        ? ({ mode: "encrypted-sqlite", secretId: requireNullableString(row, "auth_secret_id") } as const)
+      : authMode === "encrypted-project"
+        ? ({ mode: "encrypted-project", secretId: requireNullableString(row, "auth_secret_id") } as const)
         : undefined;
   if (!auth) throw new AlphionError("integrity-failed", `Invalid provider auth mode: ${authMode}`, { stage: "database" });
   const storedEndpoint = readString(row, "base_url");

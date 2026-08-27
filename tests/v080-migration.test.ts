@@ -7,17 +7,17 @@ import { diagnoseLocalProject } from "../adapters/local/local-application.js";
 import { openSqliteDatabase } from "../adapters/store/database.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
 
-test("SQLite v6 migration creates a verified adjacent backup and upgrades to v7", async () => {
+test("SQLite v6 migration preserves its backup and upgrades through v8", async () => {
   await temporary(async (directory) => {
     const path = join(directory, "migration.sqlite3");
     createV6(path);
     const store = new SqliteStore({ path, projectId: "project_migration", domainId: "domain_migration" });
     store.close();
-    assert.equal(version(path), 7);
+    assert.equal(version(path), 8);
     assert.equal(version(`${path}.v6-backup`), 6);
     const database = openSqliteDatabase(path, { readOnly: true });
     try {
-      for (const table of ["device_vault_metadata", "compaction_records", "goals", "goal_revisions", "schedules", "schedule_executions"]) {
+      for (const table of ["device_vault_metadata", "project_credentials", "project_credential_migrations", "compaction_records", "goals", "goal_revisions", "schedules", "schedule_executions"]) {
         assert.equal((database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { count: number }).count, 1);
       }
       assert.equal((database.prepare("PRAGMA quick_check").get() as { quick_check: string }).quick_check, "ok");
@@ -25,7 +25,7 @@ test("SQLite v6 migration creates a verified adjacent backup and upgrades to v7"
   });
 });
 
-test("v7 migration failure rolls back the live v6 database and retains its backup", async () => {
+test("runtime migration failure rolls back the live v6 database and retains its backup", async () => {
   await temporary(async (directory) => {
     const path = join(directory, "rollback.sqlite3");
     createV6(path, true);
@@ -50,9 +50,9 @@ test("doctor reports v6 as pending without migrating and future schema fails clo
     assert.equal(version(path), 6);
     await assert.rejects(access(`${path}.v6-backup`));
 
-    const database = openSqliteDatabase(path); database.exec("PRAGMA user_version = 8"); database.close();
+    const database = openSqliteDatabase(path); database.exec("PRAGMA user_version = 9"); database.close();
     assert.throws(() => new SqliteStore({ path }), (error) => error instanceof Error && "code" in error && error.code === "incompatible-schema");
-    assert.equal(version(path), 8);
+    assert.equal(version(path), 9);
   });
 });
 
@@ -66,6 +66,7 @@ function createV6(path: string, conflictingGoalTable = false): void {
       DROP TABLE goal_commands; DROP TABLE goal_revisions; DROP TABLE goals;
       DROP TABLE compaction_records; DROP TABLE vault_legacy_state;
       DROP TABLE device_vault_secrets; DROP TABLE device_vault_metadata;
+      DROP TABLE project_credential_migrations; DROP TABLE project_credentials;
       PRAGMA user_version = 6;
     `);
     if (conflictingGoalTable) database.exec("CREATE TABLE goals (invalid TEXT)");

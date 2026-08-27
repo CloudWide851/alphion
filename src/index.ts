@@ -107,7 +107,7 @@ export type {
   ProjectProfile,
   ToolContract,
   ToolResult,
-  VaultStatus,
+  ProjectCredentialStatus,
   WorkingMemorySnapshot,
 } from "./domain/contracts.js";
 export type { CompactionPolicy, CompactionProjection, CompactionRecord, CompactionResult, CompactionSummary } from "./domain/compaction-contracts.js";
@@ -133,7 +133,7 @@ export type {
   AutomationStore,
   CapabilityPolicy,
   EventStore,
-  DeviceKeyProvider,
+  ProjectKeyProvider,
   GoalManager,
   SessionStore,
   ResourceLoader,
@@ -150,7 +150,7 @@ export type {
   ProjectProfiler,
   ProjectManager,
   SecretResolver,
-  SecretVault,
+  ProjectCredentialStore,
   ShellPolicyStore,
   ToolExecutionContext,
   ToolExecutor,

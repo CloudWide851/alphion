@@ -32,7 +32,7 @@ import type {
   AgentApplication,
   AgentContract,
   CacheStats,
-  DeviceKeyProvider,
+  ProjectKeyProvider,
   GoalManager,
   ProviderConfigurationService,
   ScheduleManager,
@@ -44,7 +44,7 @@ import { LocalModelResolver } from "../model/local-model-resolver.js";
 import { NodeProjectProfiler } from "../project/project-profiler.js";
 import { projectRevision } from "../project/project-revision.js";
 import { CompositeSecretResolver } from "../secrets/composite-secret.js";
-import { FileDeviceKeyProvider } from "../secrets/device-key.js";
+import { defaultLegacyDeviceKeyPath, FileProjectKeyProvider } from "../secrets/project-key.js";
 import { EnvironmentSecretResolver } from "../secrets/environment-secret.js";
 import { LocalResourceLoader } from "../resources/local-resource-loader.js";
 import { ProjectCodeRecall } from "../recall/project-code-recall.js";
@@ -58,7 +58,8 @@ export interface LocalApplicationOptions {
   readonly projectId?: string;
   readonly domainId?: string;
   readonly unowned?: boolean;
-  readonly deviceKeyProvider?: DeviceKeyProvider;
+  readonly projectKeyProvider?: ProjectKeyProvider;
+  readonly legacyDeviceKeyPath?: string;
 }
 
 const execFileAsync = promisify(execFile);
@@ -78,7 +79,8 @@ export class LocalAlphionApplication implements AgentApplication {
   readonly #resources = new LocalResourceLoader();
   readonly #recall = new ProjectCodeRecall();
   readonly #models: LocalModelResolver;
-  readonly #deviceKeyProvider: DeviceKeyProvider;
+  readonly #projectKeyProvider: ProjectKeyProvider;
+  readonly #credentialProjectId: string;
   readonly #unowned: boolean;
   readonly #capabilities = new CapabilityRegistry([
     { id: "project.read", description: "Read bounded project context.", taskLabels: ["explain", "diagnose", "implement", "verify", "release"], permissions: ["project:read"], defaultBudget: 20 },
@@ -91,12 +93,13 @@ export class LocalAlphionApplication implements AgentApplication {
   #closed = false;
   #closePromise: Promise<void> | undefined;
 
-  private constructor(projectRoot: string, statePath: string, store: SqliteRuntimeStore, unowned: boolean, deviceKeyProvider: DeviceKeyProvider) {
+  private constructor(projectRoot: string, statePath: string, store: SqliteRuntimeStore, unowned: boolean, projectKeyProvider: ProjectKeyProvider, credentialProjectId: string) {
     this.#projectRoot = projectRoot;
     this.#unowned = unowned;
     this.#statePath = statePath;
     this.#store = store;
-    this.#deviceKeyProvider = deviceKeyProvider;
+    this.#projectKeyProvider = projectKeyProvider;
+    this.#credentialProjectId = credentialProjectId;
     this.#secrets = new CompositeSecretResolver([new EnvironmentSecretResolver(), store]);
     this.#cache = new TieredCache(new MemoryLruCache(), store);
     this.goals = new DefaultGoalManager(store, () => this.#assertOpen());
@@ -116,9 +119,13 @@ export class LocalAlphionApplication implements AgentApplication {
   static async open(options: LocalApplicationOptions): Promise<LocalAlphionApplication> {
     const projectRoot = await realpath(resolve(options.projectRoot));
     const statePath = resolve(options.statePath ?? join(projectRoot, ".alphion", "alphion.sqlite3"));
-    const deviceKeyProvider = options.deviceKeyProvider ?? new FileDeviceKeyProvider();
+    const projectKeyProvider = options.projectKeyProvider ?? new FileProjectKeyProvider();
     const projectId = options.unowned === true ? undefined : options.projectId ?? derivedProjectId(projectRoot);
-    return new LocalAlphionApplication(projectRoot, statePath, new SqliteRuntimeStore({ path: statePath, deviceKeyProvider, ...(projectId ? { projectId } : {}), ...(options.domainId ? { domainId: options.domainId } : {}) }), options.unowned === true, deviceKeyProvider);
+    const credentialProjectId = projectId ?? options.domainId ?? "domain_unowned";
+    const store = new SqliteRuntimeStore({ path: statePath, projectKeyProvider, legacyDeviceKeyPath: options.legacyDeviceKeyPath ?? defaultLegacyDeviceKeyPath(), ...(projectId ? { projectId } : {}), ...(options.domainId ? { domainId: options.domainId } : {}) });
+    try { await store.migrateLegacyCredentials(); }
+    catch (error) { store.close(); throw error; }
+    return new LocalAlphionApplication(projectRoot, statePath, store, options.unowned === true, projectKeyProvider, credentialProjectId);
   }
 
   planHarness(prompt: string, overlay?: HarnessTaskOverlay): Promise<HarnessPlan> { this.#assertOpen(); return Promise.resolve(planHarness(prompt, this.#capabilities, overlay)); }
@@ -136,7 +143,7 @@ export class LocalAlphionApplication implements AgentApplication {
 
   diagnose(): Promise<DiagnosticReport> {
     this.#assertOpen();
-    return diagnoseLocalProject({ projectRoot: this.#projectRoot, statePath: this.#statePath, deviceKeyProvider: this.#deviceKeyProvider });
+    return diagnoseLocalProject({ projectRoot: this.#projectRoot, statePath: this.#statePath, projectId: this.#credentialProjectId, projectKeyProvider: this.#projectKeyProvider });
   }
 
   providerPresets(): readonly ProviderPreset[] {
@@ -194,7 +201,8 @@ export async function diagnoseLocalProject(options: LocalApplicationOptions): Pr
   checks.push(await gitCheck(projectRoot));
   checks.push(await codeGraphCheck(projectRoot));
   const statePath = resolve(options.statePath ?? join(projectRoot, ".alphion", "alphion.sqlite3"));
-  checks.push(...await sqliteChecks(statePath, options.deviceKeyProvider ?? new FileDeviceKeyProvider()));
+  const credentialProjectId = options.projectId ?? options.domainId ?? (options.unowned ? "domain_unowned" : derivedProjectId(projectRoot));
+  checks.push(...await sqliteChecks(statePath, credentialProjectId, options.projectKeyProvider ?? new FileProjectKeyProvider()));
   const overall = checks.some((check) => check.status === "fail")
     ? "unhealthy"
     : checks.some((check) => check.status === "warning" || check.status === "unknown")
@@ -258,7 +266,7 @@ async function codeGraphCheck(root: string): Promise<DiagnosticCheck> {
   }
 }
 
-async function sqliteChecks(path: string, deviceKeyProvider: DeviceKeyProvider): Promise<readonly DiagnosticCheck[]> {
+async function sqliteChecks(path: string, credentialProjectId: string, projectKeyProvider: ProjectKeyProvider): Promise<readonly DiagnosticCheck[]> {
   try {
     probeSqliteDriver();
   } catch (error) {
@@ -289,17 +297,16 @@ async function sqliteChecks(path: string, deviceKeyProvider: DeviceKeyProvider):
     if (schema < SQLITE_SCHEMA_VERSION) return [Object.freeze({ id: "sqlite", label: "本地状态", status: "warning", summary: `SQLite schema ${schema} 尚未迁移至 ${SQLITE_SCHEMA_VERSION}；doctor 未做修改。`, remediation: "备份后通过正常应用启动执行迁移。" })];
     const providerCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles").get(), "count");
     const activeCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles WHERE active = 1").get(), "count");
-    const deviceCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM device_vault_metadata").get(), "count");
-    const deviceSecretCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM device_vault_secrets").get(), "count");
-    const legacySecretCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM vault_secrets").get(), "count");
-    const deviceCheck = await deviceVaultCheck(deviceCount, deviceSecretCount, deviceKeyProvider);
+    const credentialCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM project_credentials WHERE project_id = ?").get(credentialProjectId), "count");
+    const reentryCount = numericCell(database.prepare("SELECT COUNT(*) AS count FROM project_credential_migrations WHERE state = 'reentry-required'").get(), "count");
+    const credentialCheck = await projectCredentialCheck(credentialProjectId, credentialCount, projectKeyProvider);
     return [Object.freeze({
       id: "sqlite",
       label: "本地状态",
       status: activeCount > 0 ? "pass" : "warning",
-      summary: `schema ${schema} 完整；Provider ${providerCount} 个，活动 ${activeCount} 个；设备凭据 ${deviceSecretCount} 个；旧凭据 ${legacySecretCount} 个${legacySecretCount > 0 ? "（已禁用）" : ""}。`,
-      ...(activeCount === 0 ? { remediation: "请在 Alphion 设置中配置并激活 Provider。" } : {}),
-    }), deviceCheck];
+      summary: `schema ${schema} 完整；Provider ${providerCount} 个，活动 ${activeCount} 个；Project 加密凭据 ${credentialCount} 个；需重新录入 ${reentryCount} 个。`,
+      ...(activeCount === 0 ? { remediation: "请配置并激活 Provider。" } : {}),
+    }), credentialCheck];
   } catch (error) {
     if (error instanceof AlphionError && error.code === "incompatible-schema") {
       return [Object.freeze({ id: "sqlite", label: "本地状态", status: "fail", summary: error.message, remediation: "请使用兼容版本的 Alphion。" })];
@@ -310,15 +317,16 @@ async function sqliteChecks(path: string, deviceKeyProvider: DeviceKeyProvider):
   }
 }
 
-async function deviceVaultCheck(metadataCount: number, secretCount: number, provider: DeviceKeyProvider): Promise<DiagnosticCheck> {
-  if (metadataCount === 0) return Object.freeze({ id: "device-vault", label: "设备凭据", status: "pass", summary: "尚未 provision；首次导入 Provider 凭据时自动创建，无需密码。" });
+async function projectCredentialCheck(projectId: string, secretCount: number, provider: ProjectKeyProvider): Promise<DiagnosticCheck> {
+  if (secretCount === 0) return Object.freeze({ id: "project-credentials", label: "Project 凭据", status: "pass", summary: "尚未保存加密凭据；首次导入时自动创建 Project 独立密钥。" });
   try {
-    const key = await provider.load();
-    if (!key || key.byteLength !== 32) return Object.freeze({ id: "device-vault", label: "设备凭据", status: "fail", summary: "设备密钥不可用。", remediation: "请保留数据库；确认平台配置目录中的 device.key 可由当前 OS 用户读取，然后重新导入凭据。" });
-    return Object.freeze({ id: "device-vault", label: "设备凭据", status: "pass", summary: `设备密钥可用；已保护 ${secretCount} 个 Provider 凭据。` });
+    const key = await provider.load(projectId);
+    if (!key || key.byteLength !== 32) return Object.freeze({ id: "project-credentials", label: "Project 凭据", status: "fail", summary: "Project 密钥不可用。", remediation: "请保留数据库并为受影响的 Provider 重新录入 API Key。" });
+    key.fill(0);
+    return Object.freeze({ id: "project-credentials", label: "Project 凭据", status: "pass", summary: `Project 密钥可用；已保护 ${secretCount} 个 Provider 凭据。` });
   } catch (error) {
-    const corrupt = error instanceof AlphionError && error.reason === "device-key-corrupt";
-    return Object.freeze({ id: "device-vault", label: "设备凭据", status: "fail", summary: corrupt ? "设备密钥损坏。" : "设备密钥不可用。", remediation: "不要删除 SQLite；修复平台配置目录中的 device.key，或显式重置设备凭据后重新导入。" });
+    const corrupt = error instanceof AlphionError && error.reason === "project-key-corrupt";
+    return Object.freeze({ id: "project-credentials", label: "Project 凭据", status: "fail", summary: corrupt ? "Project 密钥损坏。" : "Project 密钥不可用。", remediation: "不要删除 SQLite；保留状态并为受影响的 Provider 重新录入 API Key。" });
   }
 }
 
