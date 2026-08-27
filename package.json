@@ -1,7 +1,7 @@
 {
   "name": "alphion",
-  "version": "0.8.0",
-  "description": "A project-scoped Agent workbench with durable goals, scheduling, and model-aware context compaction.",
+  "version": "0.9.0",
+  "description": "A multi-project Agent workbench with durable sessions, provider diagnostics, goals, and context compaction.",
   "private": true,
   "type": "module",
   "sideEffects": false,

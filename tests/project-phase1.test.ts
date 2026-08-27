@@ -227,7 +227,7 @@ test("doctor fails closed on corrupt and future SQLite state without migration",
   }
 });
 
-test("doctor reports schema v2 as a pending read-only upgrade to v6", async () => {
+test("doctor reports schema v2 as a pending read-only upgrade to v8", async () => {
   const directory = await mkdtemp(join(tmpdir(), "alphion-doctor-v2-"));
   try {
     const statePath = join(directory, "v2.sqlite3");
@@ -241,7 +241,7 @@ test("doctor reports schema v2 as a pending read-only upgrade to v6", async () =
     const report = await diagnoseLocalProject({ projectRoot: directory, statePath });
     const check = report.checks.find((item) => item.id === "sqlite");
     assert.equal(check?.status, "warning");
-    assert.match(check?.summary ?? "", /schema 2.*7/u);
+    assert.match(check?.summary ?? "", /schema 2.*8/u);
     const verify = openSqliteDatabase(statePath, { readOnly: true });
     const version = verify.prepare("PRAGMA user_version").get() as Readonly<Record<string, number>>;
     verify.close();

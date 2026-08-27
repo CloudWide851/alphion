@@ -20,15 +20,20 @@
 
 ## Verification record
 
-The release gate runs only after source, tests, migration, docs and version files are complete. Final command results, test counts, benchmark measurements, package sizes and artifact identities are recorded here after the gate.
+The release gate ran after source, tests, migration, docs and version files were complete.
 
-- Static/32 KiB: pending.
-- Root install/audit and isolated Node/Electron ABI: pending.
-- Typecheck and formal build: pending.
-- Built and focused security/migration/Provider/Workspace/performance tests: pending.
-- WebUI E2E and Electron IPC/start/package smoke: pending.
-- Benchmark, subpath import and `npm pack --dry-run`: pending.
-- CodeGraph dependency/API review and Trellis full check: pending.
+- Static/32 KiB: passed; 55 maintained Markdown files and 38 core source files were checked with no undeclared exception.
+- Root install/audit: 454 packages installed, 455 audited, 0 vulnerabilities. The isolated Desktop runtime installed 39 packages, audited 40, with 0 vulnerabilities.
+- Native ABI: Node reported ABI 127; the independent Electron `better-sqlite3` process smoke passed without modifying the root addon.
+- Typecheck/build: strict Core, Desktop and WebUI typechecks passed. The clean formal build completed; Vite emitted only its non-blocking 504.22 kB chunk-size advisory.
+- Compiled tests: all 137 tests passed. The focused security, migration, Provider, Workspace, WebUI and Desktop suites passed all 50 tests.
+- Benchmark: memory cache 20,000 operations in 30.77 ms; Project Profile cold/warm 129.74/59.54 ms; ContextPack 1,000 operations in 17.75 ms; SQLite wrote 1,002 events in 330.1 ms with a valid hash chain.
+- Surface/package smoke: Core, WebUI and Desktop IPC subpath imports passed. The packaged Electron executable remained healthy for an isolated 8-second startup smoke.
+- Windows x64 artifacts: `Alphion-0.9.0-x64-setup.exe` (105,153,191 bytes) and `Alphion-0.9.0-x64-portable.exe` (104,790,598 bytes); the setup blockmap is 109,896 bytes.
+- `npm pack --dry-run`: 520 files; 1,465,293-byte package, 3,562,419 bytes unpacked; shasum `dd717c1a0f5a45dcb0bfc3d723387fc21d3841b4`.
+- CodeGraph dependency/API review: passed; `src/` has no reverse dependency on TUI, WebUI, Desktop, Electron or concrete Provider adapters, and the v0.9 Workspace/credential/Provider-test/Surface-v2 blast radius is contained to the intended ports, application and surface consumers.
+- Trellis full check: passed across Backend, Frontend and shared cross-layer/reuse guides; Git whitespace and ignored-output checks also passed.
+- Live paid Provider smoke: intentionally not run; it requires an explicitly supplied credential and authorization for a real billable request. Deterministic local protocol tests cover the exact request path.
 
 ## Rollback
 

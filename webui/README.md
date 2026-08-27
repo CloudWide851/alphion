@@ -1,6 +1,6 @@
 # Alphion WebUI 边界
 
-v0.8.0 的 WebUI 与 Electron Renderer 共享 slash 命令面板、`ConversationRunState`、Compaction/Goal/Schedule 投影和由 `alphion-icon.svg` 生成的品牌资产。assistant 使用完整玻璃气泡；首 token 前显示等待状态，流式内容按约 60 FPS frame 更新，reduced-motion 使用静态反馈且 snapshot/resync 不清 composer draft。
+v0.9.0 的 WebUI 与 Electron Renderer 共享固定底部输入框、可滚动消息区、多 token slash 面板、`ConversationRunState`、Project/Session Workspace、Provider 实测、Compaction/Goal/Schedule 投影和由 `alphion-icon.svg` 生成的品牌资产。用户气泡右对齐，assistant 气泡左对齐；首 token 前显示等待状态，流式内容按约 60 FPS frame 更新，reduced-motion 使用静态反馈且 snapshot/resync 不清按 Project/Session 保存的普通草稿。
 
 `webui/` 是 v0.5.0 的本地 React/Vite 界面和 loopback Node HTTP/SSE adapter。它只绑定 `127.0.0.1`、面向一个本地用户和一个活动 Project；Renderer 也被 Electron 复用。
 

@@ -17,7 +17,7 @@ exposed through IPC. Provider credentials use the dedicated one-use bridge
 method, are encrypted by Main for the active Project, and are cleared by the
 form after every outcome.
 
-In v0.8.0 the Renderer inherits the WebUI slash palette, conversation Run,
+In v0.9.0 the Renderer inherits the WebUI fixed composer, scrollable conversation,
 Compaction, Goal and Schedule projections. No generic Node capability or IPC
 channel is added: all v0.8 commands travel through the existing exact command
 bridge. The Electron window, top-left header, executable, installer, Start Menu
