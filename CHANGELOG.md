@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.10.2] - 2026-08-28
+
+- Bounded Project Code Recall with a 3-second CodeGraph ceiling and a deterministic lexical fallback capped at 1 second, 256 files, 8 MiB and 20 results. Cancelled and time-dependent partial results are not cached.
+- Added a five-second Session Recall ceiling so unavailable or slow optional recall degrades to empty context and ordinary chat continues to the selected Provider; non-degradable Shape, capability and SQLite failures still release the Run lease and fail closed.
+- Added a real SQLite Session → first Shape → bounded Recall → local protocol Provider regression proving that exact Provider test success and ordinary chat can both complete and the current prompt is sent once.
+- Fixed TUI user history geometry so a content-sized block reaches the right edge at wide and compact terminal widths while CJK, Markdown, code and image placeholders remain naturally left-aligned inside it.
+- Removed duplicate preparation/status text from active TUI Runs while preserving fixed composer, scroll, drafts, attachments, usage/context and Provider-test success feedback.
+
+This patch does not change public TypeScript APIs, Provider Profile schema v3, UI transport schemas or SQLite user_version 9. Stop Alphion processes to roll back directly to v0.10.1; no database restoration is required.
+
 ## [0.10.1] - 2026-08-28
 
 - Fixed TUI Provider connectivity feedback so a resolved successful real request renders `✓ 实测成功` through the notice channel instead of a red application error. Mixed test-all results are warnings; all-failed results remain errors.

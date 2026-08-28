@@ -6,11 +6,11 @@
 
 Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前 **v0.10.1** 在 `Workspace → Project → shared Agent → Session → Goal/Run → ProviderConversationPlan → Tool` 脊柱上保留 Provider Profile v3、ref-only 图片消息、最新调用上下文占用和三端专用图片传输，并修复 Provider 实测成功被 TUI 当作错误展示的问题。DeepSeek、Kimi、Qwen、GLM 的普通模型目录已按 2026-08-28 官网资料更新。SQLite 仍使用 user_version 9。
+当前 **v0.10.2** 在 `Workspace → Project → shared Agent → Session → Goal/Run → ProviderConversationPlan → Tool` 脊柱上保留 Provider Profile v3、ref-only 图片消息、最新调用上下文占用和三端专用图片传输，并为 Session Code Recall 建立确定性总预算：召回降级不再阻塞普通聊天。TUI 短用户消息现在以内容尺寸块真正贴右，Run 阶段不再重复显示“准备上下文”。SQLite 仍使用 user_version 9。
 
 资源优先级固定为内置 → 用户共享 → 项目 `.alphion-resources/manifest.json` → Session overrides。扩展包仅支持声明式资源，不执行第三方 JavaScript。用户资源根可通过 `ALPHION_RESOURCE_HOME` 指定，否则使用平台标准配置目录。
 
-v0.10.1 是不改变公共 schema 的补丁版，可停止所有 Alphion 进程后直接切回 v0.10.0，不需要恢复数据库。首次从 v0.9 打开 v8 数据库时仍会 checkpoint 并创建、验证相邻 `.v8-backup`，再事务升级到 SQLite user_version 9；若要回退整个 v0.10 版本线，必须保留失败文件与附件目录用于诊断、恢复 `.v8-backup` 并切回 v0.9.0。
+v0.10.2 是不改变公共 schema 的补丁版，可停止所有 Alphion 进程后直接切回 v0.10.1，不需要恢复数据库。首次从 v0.9 打开 v8 数据库时仍会 checkpoint 并创建、验证相邻 `.v8-backup`，再事务升级到 SQLite user_version 9；若要回退整个 v0.10 版本线，必须保留失败文件与附件目录用于诊断、恢复 `.v8-backup` 并切回 v0.9.0。
 
 ## 当前能力
 
@@ -23,11 +23,12 @@ v0.10.1 是不改变公共 schema 的补丁版，可停止所有 Alphion 进程�
 - Provider 凭据由每个 Project 的独立随机 key 加密，key 位于 SQLite 外的平台配置目录；SQLite 只保存 AES-256-GCM envelope，Provider 调用时短暂解密。密码、Device Vault 和设备凭据公共/UI 合同已删除。
 - idle、已塑形 Session 可按当前 leaf 或指定 entry 原子 Fork；目标保留 Evidence、重映射 entry/Memory 引用、重新计算身份 digest，并记录不可变 provenance。
 - 四层声明式资源解析、确定性 SystemPrompt Composer、任务分类与最小 HarnessPlan，以及 CodeGraph 优先、词法降级的有界代码召回。
+- Code Recall 自身限制 CodeGraph 3 秒及词法 1 秒/256 文件/8 MiB/20 结果，Session 再施加 5 秒总上限；超时或不可用时使用空 degraded Recall 继续 Provider，取消结果不缓存。
 - Node/TypeScript 优先的确定性只读 Project Profile，识别语言、运行时、模块系统、包管理器、框架、质量命令、Git/CI、约束、风险和冲突；未知项目安全降级。
 - 每次运行自动注入最多 2,048 estimated tokens 的不可变 ContextPack；安全、目标、权限和强约束不会被可选画像事实挤出预算。
 - 运行期 Working Memory 仅由当前任务事件 reducer 重放，跟踪阶段、轮次、工具、Evidence、错误和用量，不写入长期记忆。
 - OpenAI-compatible Chat Completions 与 Responses 双协议；DeepSeek、Kimi、Qwen、GLM 提供内置大陆/国际 official endpoint，普通配置无需 Base URL，只有自定义兼容 Provider 接受 URL。普通 picker 使用 DeepSeek V4、Kimi K3/K2.7/K2.6/K2.5、Qwen 3.8/3.7 和 GLM 5.3/5.2；v0.10.0 旧 ID 仅通过 adapter 私有 allowlist 兼容已存 Profile。
-- 简体中文聊天式 Ink TUI、React/Vite loopback WebUI 和 Electron Desktop；三端使用固定底部输入框、可滚动无边框消息区、用户右/Agent 左角色布局与共享 `| / - \\` 回答标识，并完整渲染安全 Markdown/代码，reasoning 不可见。
+- 简体中文聊天式 Ink TUI、React/Vite loopback WebUI 和 Electron Desktop；三端使用固定底部输入框、可滚动无边框消息区、用户右/Agent 左角色布局与共享 `| / - \\` 回答标识。TUI 用户历史以内容尺寸块贴右、块内正文自然左排，并完整渲染安全 Markdown/代码，reasoning 不可见。
 - `read`、`grep`、`edit`、`write` 和 `shell` 工具；写入和进程执行必须逐次审批。
 - SQLite 权威事件写入与 SHA-256 审计链；三端先订阅再取 snapshot，按 30/60 FPS frame 合并 delta/invalidation，慢消费者通过 cursor resync，不延迟 AgentLoop。
 - ProviderConversationPlan 从当前 Run 之前的分支构建合法 user/assistant/tool 消息线；普通审计事件和 `tool.updated` 不进入 Provider 历史，当前 prompt 只追加一次。

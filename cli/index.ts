@@ -393,7 +393,7 @@ function safeEventMessage(payload: Readonly<Record<string, unknown>>): string {
 }
 
 function printHelp(): void {
-  process.stdout.write(`Alphion v0.10.1\n\n`);
+  process.stdout.write(`Alphion v0.10.2\n\n`);
   process.stdout.write(`Commands:\n`);
   process.stdout.write(`  provider set --id ID --preset deepseek|deepseek-international|kimi|kimi-international|qwen|qwen-international|glm|glm-international|custom-openai-compatible --model MODEL [--context-window 4096..4194304] [--vision true|false] [--allow-unlisted-model] [--base-url URL for custom only] [--protocol chat-completions|responses] [--auth-env NAME] [--active]\n`);
   process.stdout.write(`  provider list\n  provider activate ID\n  provider test ID | provider test --all  # 真实请求，可能产生费用\n`);
@@ -417,7 +417,7 @@ function printHelp(): void {
 
 function launcherCommand(command: string | undefined, parsed: ParsedArguments): number {
   if (command === "menu") {
-    process.stdout.write(`\n  ALPHION 0.10.1\n  ==============\n\n`);
+    process.stdout.write(`\n  ALPHION 0.10.2\n  ==============\n\n`);
     process.stdout.write(`  1. 启动 Alphion\n  2. 启动 doctor\n  3. 查看命令帮助\n  4. 退出\n\n`);
     return 0;
   }

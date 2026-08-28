@@ -11,7 +11,7 @@ files:
   - assets/**
 directories:
   app: .desktop-runtime
-  output: release/v0.10.1
+  output: release/v0.10.2
   buildResources: assets
 win:
   icon: alphion.ico
