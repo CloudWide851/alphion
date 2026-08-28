@@ -13,7 +13,7 @@ export interface SurfaceClient {
 }
 
 export function createSurfaceClient(desktop: DesktopRendererBridge | undefined, csrf: string, cursor: Readonly<{ current: number }>): SurfaceClient {
-  return Object.freeze({
+  const client: SurfaceClient = {
     ready: desktop !== undefined || csrf !== "",
     execute: async (command: UiCommand): Promise<UiCommandResult> => {
       const envelope: UiCommandEnvelope = { schemaVersion: 1, requestId: requestId(), command };
@@ -49,7 +49,8 @@ export function createSurfaceClient(desktop: DesktopRendererBridge | undefined, 
       const response = await fetch(`/api/attachment/${encodeURIComponent(ref.id)}`, { credentials: "same-origin" });
       if (!response.ok) throw new Error("图片读取失败"); return new Uint8Array(await response.arrayBuffer());
     },
-  });
+  };
+  return Object.freeze(client);
 }
 
 export class UiApiError extends Error { constructor(readonly status: number, message: string) { super(message); this.name = "UiApiError"; } }

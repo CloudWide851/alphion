@@ -157,6 +157,7 @@ async function createLegacyV7State(path: string, legacyKeyPath: string, credenti
   try {
     database.exec("PRAGMA foreign_keys = OFF");
     database.exec(`
+      DROP TABLE message_attachments; DROP TABLE attachments;
       DROP TABLE project_credential_migrations; DROP TABLE project_credentials;
       CREATE TABLE provider_profiles_v7 (
         id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
@@ -165,7 +166,13 @@ async function createLegacyV7State(path: string, legacyKeyPath: string, credenti
         auth_environment_variable TEXT, auth_secret_id TEXT, capabilities_json TEXT NOT NULL,
         revision INTEGER NOT NULL, active INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
-      INSERT INTO provider_profiles_v7 SELECT * FROM provider_profiles;
+      INSERT INTO provider_profiles_v7
+        (id, name, provider_kind, base_url, model, protocol, auth_mode,
+         auth_environment_variable, auth_secret_id, capabilities_json, revision,
+         active, created_at, updated_at)
+      SELECT id, name, provider_kind, base_url, model, protocol, auth_mode,
+        auth_environment_variable, auth_secret_id, capabilities_json, revision,
+        active, created_at, updated_at FROM provider_profiles;
       DROP INDEX provider_profiles_one_active; DROP TABLE provider_profiles;
       ALTER TABLE provider_profiles_v7 RENAME TO provider_profiles;
       CREATE UNIQUE INDEX provider_profiles_one_active ON provider_profiles(active) WHERE active = 1;

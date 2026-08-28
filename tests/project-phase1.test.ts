@@ -130,7 +130,7 @@ test("ContextPack keeps mandatory items, records omissions and runtime injects i
         active: true,
       },
       async *generate(request) {
-        requests.push(request.messages.map((message) => message.content));
+        requests.push(request.messages.map((message) => typeof message.content === "string" ? message.content : message.content.map((part) => part.type === "text" ? part.text : `[image:${part.attachment.id}]`).join("\n")));
         yield { type: "text-delta", delta: "observed" };
         yield { type: "usage", usage: { inputTokens: 4, outputTokens: 1, cachedInputTokens: 0 } };
         yield { type: "done", finishReason: "stop" };

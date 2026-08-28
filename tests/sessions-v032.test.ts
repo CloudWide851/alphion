@@ -20,6 +20,7 @@ import type { AgentMessage, AgentRunResult, AgentShape, EvidenceRef, ProjectProf
 import type { AgentContract, AgentExecutionHooks, AgentProvider, AgentRunHandle, ApprovalPort, ModelResolver } from "../src/ports/index.js";
 import type { ProviderEvent, ProviderRequest } from "../src/domain/contracts.js";
 import type { AgentEvent, AgentStreamEvent } from "../src/protocol/events.js";
+import { downgradeSessionSchemaFixtureToV2 } from "./session-migration-fixtures.js";
 
 test("session branches enforce revision, idempotency, FIFO queues and leases", async () => {
   const directory = await mkdtemp(join(tmpdir(), "alphion-session-"));
@@ -81,7 +82,7 @@ test("schema v2 migration creates backup and read-only legacy session", async ()
   let store = new SqliteStore({ path });
   store.close();
   const db = openSqliteDatabase(path);
-  db.exec("DROP TABLE schedule_commands; DROP TABLE schedule_executions; DROP TABLE schedules; DROP TABLE goal_commands; DROP TABLE goal_revisions; DROP TABLE goals; DROP TABLE compaction_records; DROP TABLE project_credential_migrations; DROP TABLE project_credentials; DROP TABLE vault_legacy_state; DROP TABLE device_vault_secrets; DROP TABLE device_vault_metadata; DROP TABLE session_shapes; DROP TABLE session_commands; DROP TABLE pending_messages; DROP TABLE session_entries; DROP TABLE sessions; DROP TABLE session_owners; DROP INDEX events_session_sequence; ALTER TABLE events DROP COLUMN session_sequence; ALTER TABLE events DROP COLUMN schema_version; ALTER TABLE runs DROP COLUMN shape_revision; ALTER TABLE runs DROP COLUMN shape_digest; CREATE TABLE backup_fixture (value TEXT NOT NULL); INSERT INTO backup_fixture VALUES ('wal-visible'); PRAGMA user_version = 2;");
+  downgradeSessionSchemaFixtureToV2(db);
   db.close();
   store = new SqliteStore({ path });
   try {
@@ -241,7 +242,8 @@ test("Agent injects bounded recall, resources and complete HarnessPlan into prov
   const system = provider.requests[0]?.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n") ?? "";
   assert.match(system, /RESOURCE_SYSTEM_PROMPT/u);
   assert.doesNotMatch(system, /RECALL_EXCERPT/u);
-  assert.match(provider.requests[0]?.messages.find((message) => message.role === "user" && message.content.includes("RECALL_EXCERPT"))?.content ?? "", /Retrieved evidence context/u);
+  const recalled = provider.requests[0]?.messages.find((message) => message.role === "user" && typeof message.content === "string" && message.content.includes("RECALL_EXCERPT"));
+  assert.match(recalled && typeof recalled.content === "string" ? recalled.content : "", /Retrieved evidence context/u);
   assert.match(system, /permissions=project:read/u);
   assert.match(system, /omissions=project.write/u);
   assert.match(system, /evaluator=quality-gate/u);

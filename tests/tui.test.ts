@@ -126,7 +126,11 @@ test("built-in Provider form saves without asking for a Base URL", async () => {
   assert.match(view.lastFrame() ?? "", /catalog|moonshot-v1-8k/u);
   view.stdin.write("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(saved, { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "moonshot-v1-8k", catalogModels: ["moonshot-v1-8k", "kimi-k2-0711-preview"] });
+  view.stdin.write("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  view.stdin.write("\r");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(saved, { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "moonshot-v1-8k", catalogModels: ["moonshot-v1-8k", "kimi-k2-0711-preview"], contextWindowTokens: 32_768, vision: false });
   assert.doesNotMatch(view.lastFrame() ?? "", /Base URL/u);
   view.unmount();
 });

@@ -55,7 +55,7 @@ test("SQLite v5 records domain identity and creates a recoverable v4 backup", as
     assert.equal(fresh.projectId, "project-1");
     store.close();
     const database = openSqliteDatabase(path);
-    database.exec("DROP TABLE schedule_commands; DROP TABLE schedule_executions; DROP TABLE schedules; DROP TABLE goal_commands; DROP TABLE goal_revisions; DROP TABLE goals; DROP TABLE compaction_records; DROP TABLE project_credential_migrations; DROP TABLE project_credentials; DROP TABLE vault_legacy_state; DROP TABLE device_vault_secrets; DROP TABLE device_vault_metadata; DROP TABLE collaboration_run_budgets; DROP TABLE collaboration_messages; DROP INDEX sessions_domain; ALTER TABLE sessions DROP COLUMN project_id; ALTER TABLE sessions DROP COLUMN domain_id; PRAGMA user_version = 4;");
+    database.exec("DROP TABLE message_attachments; DROP TABLE attachments; ALTER TABLE provider_profiles DROP COLUMN context_window_tokens; DROP TABLE schedule_commands; DROP TABLE schedule_executions; DROP TABLE schedules; DROP TABLE goal_commands; DROP TABLE goal_revisions; DROP TABLE goals; DROP TABLE compaction_records; DROP TABLE project_credential_migrations; DROP TABLE project_credentials; DROP TABLE vault_legacy_state; DROP TABLE device_vault_secrets; DROP TABLE device_vault_metadata; DROP TABLE collaboration_run_budgets; DROP TABLE collaboration_messages; DROP INDEX sessions_domain; ALTER TABLE sessions DROP COLUMN project_id; ALTER TABLE sessions DROP COLUMN domain_id; PRAGMA user_version = 4;");
     database.close();
     store = new SqliteStore({ path, domainId: "domain_project", projectId: "project-1" });
     try {

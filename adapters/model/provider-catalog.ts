@@ -3,18 +3,6 @@ import type { BuiltInProviderKind, ModelDescriptor, ProviderPreset, ProviderProf
 
 interface CatalogEntry extends ProviderPreset { readonly endpoint: string; }
 
-const CATALOG: readonly CatalogEntry[] = Object.freeze([
-  entry("deepseek", "DeepSeek（中国大陆）", "deepseek", "mainland", "https://api.deepseek.com", ["deepseek-chat", "deepseek-reasoner"]),
-  entry("deepseek-international", "DeepSeek（国际）", "deepseek", "international", "https://api.deepseek.com", ["deepseek-chat", "deepseek-reasoner"]),
-  entry("kimi", "Kimi（中国大陆）", "kimi", "mainland", "https://api.moonshot.cn/v1", ["moonshot-v1-8k", "kimi-k2-0711-preview"]),
-  entry("kimi-international", "Kimi（国际）", "kimi", "international", "https://api.moonshot.ai/v1", ["moonshot-v1-8k", "kimi-k2-0711-preview"]),
-  entry("qwen", "Qwen（中国大陆）", "qwen", "mainland", "https://dashscope.aliyuncs.com/compatible-mode/v1", ["qwen-plus", "qwen-max"]),
-  entry("qwen-international", "Qwen（国际）", "qwen", "international", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", ["qwen-plus", "qwen-max"]),
-  entry("glm", "GLM（中国大陆）", "glm", "mainland", "https://open.bigmodel.cn/api/paas/v4", ["glm-4.5", "glm-4.5-air"]),
-  entry("glm-international", "GLM（国际）", "glm", "international", "https://api.z.ai/api/paas/v4", ["glm-4.5", "glm-4.5-air"]),
-  Object.freeze({ id: "custom-openai-compatible", label: "自定义 OpenAI 兼容接口", kind: "custom-openai-compatible", region: "custom", requiresBaseUrl: true, endpoint: "", models: Object.freeze([]), protocol: "chat-completions" }),
-]);
-
 const CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.freeze({
   "deepseek-chat": 131_072,
   "deepseek-reasoner": 131_072,
@@ -27,6 +15,18 @@ const CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.freeze({
 });
 
 const VISION_MODELS: ReadonlySet<string> = new Set<string>([]);
+
+const CATALOG: readonly CatalogEntry[] = Object.freeze([
+  entry("deepseek", "DeepSeek（中国大陆）", "deepseek", "mainland", "https://api.deepseek.com", ["deepseek-chat", "deepseek-reasoner"]),
+  entry("deepseek-international", "DeepSeek（国际）", "deepseek", "international", "https://api.deepseek.com", ["deepseek-chat", "deepseek-reasoner"]),
+  entry("kimi", "Kimi（中国大陆）", "kimi", "mainland", "https://api.moonshot.cn/v1", ["moonshot-v1-8k", "kimi-k2-0711-preview"]),
+  entry("kimi-international", "Kimi（国际）", "kimi", "international", "https://api.moonshot.ai/v1", ["moonshot-v1-8k", "kimi-k2-0711-preview"]),
+  entry("qwen", "Qwen（中国大陆）", "qwen", "mainland", "https://dashscope.aliyuncs.com/compatible-mode/v1", ["qwen-plus", "qwen-max"]),
+  entry("qwen-international", "Qwen（国际）", "qwen", "international", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", ["qwen-plus", "qwen-max"]),
+  entry("glm", "GLM（中国大陆）", "glm", "mainland", "https://open.bigmodel.cn/api/paas/v4", ["glm-4.5", "glm-4.5-air"]),
+  entry("glm-international", "GLM（国际）", "glm", "international", "https://api.z.ai/api/paas/v4", ["glm-4.5", "glm-4.5-air"]),
+  Object.freeze({ id: "custom-openai-compatible", label: "自定义 OpenAI 兼容接口", kind: "custom-openai-compatible", region: "custom", requiresBaseUrl: true, endpoint: "", models: Object.freeze([]), protocol: "chat-completions" }),
+]);
 
 export const LOCAL_PROVIDER_PRESETS: readonly ProviderPreset[] = Object.freeze(CATALOG.map(({ endpoint: _endpoint, ...preset }) => Object.freeze(preset)));
 

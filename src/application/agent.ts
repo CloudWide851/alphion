@@ -1,4 +1,4 @@
-import type { AgentExecutionRequest } from "../domain/contracts.js";
+import type { AgentExecutionRequest, ProviderCapabilities } from "../domain/contracts.js";
 import type { AgentContract, AgentExecutionHooks, AgentRunHandle, ApprovalPort, EventStore, ModelResolver } from "../ports/index.js";
 import { AgentLoop } from "./agent-runtime.js";
 import type { TieredCache } from "./cache.js";
@@ -14,7 +14,7 @@ export class Agent implements AgentContract {
 
   async execute(request: AgentExecutionRequest, approval: ApprovalPort, hooks?: AgentExecutionHooks): Promise<AgentRunHandle> {
     const tools = request.shape ? this.options.tools.select(request.shape.toolIds) : this.options.tools;
-    const requiredCapabilities = new Set(request.shape?.requiredProviderCapabilities ?? (tools.definitions().length > 0 ? ["tools"] : []));
+    const requiredCapabilities = new Set<keyof ProviderCapabilities>(request.shape?.requiredProviderCapabilities ?? (tools.definitions().length > 0 ? ["tools"] : []));
     if (request.currentInput?.attachments?.length || request.history.some((message) => messageAttachments(message).length > 0)) requiredCapabilities.add("vision");
     const provider = await this.options.models.resolveModel({ sessionId: request.sessionId ?? "unbound", ...(request.providerId ? { providerId: request.providerId } : {}), requiredCapabilities: Object.freeze([...requiredCapabilities]) });
     const model = await this.options.models.describeModel?.(provider);

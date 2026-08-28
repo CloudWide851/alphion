@@ -7,17 +7,17 @@ import { diagnoseLocalProject } from "../adapters/local/local-application.js";
 import { openSqliteDatabase } from "../adapters/store/database.js";
 import { SqliteStore } from "../adapters/store/sqlite-store.js";
 
-test("SQLite v6 migration preserves its backup and upgrades through v8", async () => {
+test("SQLite v6 migration preserves its backup and upgrades through v9", async () => {
   await temporary(async (directory) => {
     const path = join(directory, "migration.sqlite3");
     createV6(path);
     const store = new SqliteStore({ path, projectId: "project_migration", domainId: "domain_migration" });
     store.close();
-    assert.equal(version(path), 8);
+    assert.equal(version(path), 9);
     assert.equal(version(`${path}.v6-backup`), 6);
     const database = openSqliteDatabase(path, { readOnly: true });
     try {
-      for (const table of ["device_vault_metadata", "project_credentials", "project_credential_migrations", "compaction_records", "goals", "goal_revisions", "schedules", "schedule_executions"]) {
+      for (const table of ["device_vault_metadata", "project_credentials", "project_credential_migrations", "compaction_records", "goals", "goal_revisions", "schedules", "schedule_executions", "attachments", "message_attachments"]) {
         assert.equal((database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { count: number }).count, 1);
       }
       assert.equal((database.prepare("PRAGMA quick_check").get() as { quick_check: string }).quick_check, "ok");
@@ -50,9 +50,9 @@ test("doctor reports v6 as pending without migrating and future schema fails clo
     assert.equal(version(path), 6);
     await assert.rejects(access(`${path}.v6-backup`));
 
-    const database = openSqliteDatabase(path); database.exec("PRAGMA user_version = 9"); database.close();
+    const database = openSqliteDatabase(path); database.exec("PRAGMA user_version = 10"); database.close();
     assert.throws(() => new SqliteStore({ path }), (error) => error instanceof Error && "code" in error && error.code === "incompatible-schema");
-    assert.equal(version(path), 9);
+    assert.equal(version(path), 10);
   });
 });
 
@@ -62,6 +62,8 @@ function createV6(path: string, conflictingGoalTable = false): void {
   const database = openSqliteDatabase(path);
   try {
     database.exec(`
+      DROP TABLE message_attachments; DROP TABLE attachments;
+      ALTER TABLE provider_profiles DROP COLUMN context_window_tokens;
       DROP TABLE schedule_commands; DROP TABLE schedule_executions; DROP TABLE schedules;
       DROP TABLE goal_commands; DROP TABLE goal_revisions; DROP TABLE goals;
       DROP TABLE compaction_records; DROP TABLE vault_legacy_state;
