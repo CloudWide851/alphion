@@ -1,6 +1,6 @@
 {
   "name": "alphion-desktop-runtime",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "private": true,
   "type": "module",
   "main": "./dist/desktop/main.js",

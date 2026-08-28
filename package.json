@@ -1,6 +1,6 @@
 {
   "name": "alphion",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "A multimodal multi-project Agent workbench with durable sessions, context usage, goals, and scheduling.",
   "private": true,
   "type": "module",
