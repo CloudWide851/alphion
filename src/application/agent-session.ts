@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentRunResult, AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, CollaborationContext, HarnessPlan, SessionForkReceipt, SessionForkRequest, SessionMessageReceipt, SessionMessageRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
+import type { AgentMessage, AgentRunResult, AgentSessionRecord, AgentShape, AgentShapeReceipt, AgentShapeRequest, CollaborationContext, HarnessPlan, RecallResult, SessionForkReceipt, SessionForkRequest, SessionMessageReceipt, SessionMessageRequest, SessionView, SessionWriteOptions, SessionWriteReceipt } from "../domain/contracts.js";
 import type { AgentContract, AgentRunHandle, AgentSessionContract, ApprovalPort, CodeRecall, ModelResolver, SessionStore } from "../ports/index.js";
 import type { AgentStreamEvent } from "../protocol/events.js";
 import { BoundedEventChannel } from "./event-channel.js";
@@ -34,6 +34,7 @@ export class AgentSession implements AgentSessionContract {
   readonly #events = new Set<BoundedEventChannel<AgentStreamEvent>>();
   readonly #publicEvents = new Set<BoundedEventChannel<AgentStreamEvent>>();
   readonly #activeRuns = new Set<AgentRunHandle>();
+  readonly #preparationControllers = new Set<AbortController>();
   readonly #ownedTasks = new Set<Promise<unknown>>();
   #closed = false;
   #closePromise: Promise<void> | undefined;
@@ -235,7 +236,7 @@ export class AgentSession implements AgentSessionContract {
     const branch = await this.#view();
     const profile = await this.options.projectProfile();
     const environment = await this.options.environment(profile, shape);
-    const recall = await this.options.recall?.recall({ projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, query: prompt, limit: 20 }, new AbortController().signal);
+    const recall = await this.#prepareRecall(profile, prompt);
     const selectedProviderId = shape.providerId ?? providerId;
     const compactionProvider = this.options.models
       ? await this.options.models.resolveModel({ sessionId: this.id, ...(selectedProviderId ? { providerId: selectedProviderId } : {}), requiredCapabilities: shape.requiredProviderCapabilities })
@@ -321,6 +322,26 @@ export class AgentSession implements AgentSessionContract {
     void this.#own(this.#startQueuedFollowUps(approval).catch((error: unknown) => this.#recordAutomationFailure(error)));
   }
 
+  async #prepareRecall(profile: ProjectProfile, prompt: string): Promise<RecallResult | undefined> {
+    if (!this.options.recall) return undefined;
+    const controller = new AbortController();
+    this.#preparationControllers.add(controller);
+    const timer = setTimeout(() => controller.abort(new DOMException("Session recall timed out.", "TimeoutError")), 5_000);
+    try {
+      return await this.options.recall.recall({ projectRoot: this.options.projectRoot, projectRevision: profile.projectRevision, query: prompt, limit: 20 }, controller.signal);
+    } catch (error) {
+      if (this.#closed || isAbortError(controller.signal.reason)) throw controller.signal.reason ?? error;
+      if (isTimeoutError(controller.signal.reason) || isTimeoutError(error) || error instanceof AlphionError && (error.code === "timeout" || error.code === "dependency-unavailable")) {
+        const reason = isTimeoutError(controller.signal.reason) ? "recall-timeout:empty-fallback" : "recall-unavailable:empty-fallback";
+        return Object.freeze({ items: Object.freeze([]), degraded: true, diagnostics: Object.freeze([reason]) });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      this.#preparationControllers.delete(controller);
+    }
+  }
+
   async #recordAutomationFailure(error: unknown): Promise<void> {
     if (this.#closed) return;
     const session = await this.#get();
@@ -333,6 +354,7 @@ export class AgentSession implements AgentSessionContract {
     this.#closed = true;
     for (const channel of this.#events) channel.close();
     for (const channel of this.#publicEvents) channel.close();
+    for (const controller of this.#preparationControllers) controller.abort(new DOMException("Session is closing.", "AbortError"));
     for (const handle of this.#activeRuns) handle.cancel("Session is closing.");
     this.#closePromise = (async () => {
       while (this.#ownedTasks.size > 0) {
@@ -360,6 +382,9 @@ export class AgentSession implements AgentSessionContract {
     return provider.profile.id;
   }
 }
+
+function isAbortError(value: unknown): boolean { return value instanceof Error && value.name === "AbortError"; }
+function isTimeoutError(value: unknown): boolean { return value instanceof Error && value.name === "TimeoutError"; }
 
 function projectEvent(event: AgentStreamEvent): AgentMessage | undefined {
   if ("delivery" in event) return undefined;
