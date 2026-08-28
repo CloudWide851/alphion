@@ -92,7 +92,8 @@ test("RunView survives parent refresh after reporting a newly created Session", 
   releaseResult();
   await waitUntil(() => completed.endsWith(":refresh survived"));
   assert.equal(cancelCount, 0);
-  assert.match(view.lastFrame() ?? "", /已完成/u);
+  assert.match(view.lastFrame() ?? "", /refresh survived/u);
+  assert.doesNotMatch(view.lastFrame() ?? "", /已完成/u);
   view.unmount();
 });
 

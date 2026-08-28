@@ -97,7 +97,7 @@ test("compiled live smoke is guarded and Windows batch launcher shows help", asy
   }
   const launched = await runExecutable("cmd.exe", ["/d", "/c", "alphion.bat", "help"]);
   assert.equal(launched.code, 0, launched.stderr);
-  assert.match(launched.stdout, /Alphion v0\.10\.1/);
+  assert.match(launched.stdout, /Alphion v0\.10\.2/);
   const launcherMenu = await runCli(["_launcher", "menu"]);
   assert.equal(launcherMenu.code, 0, launcherMenu.stderr);
   assert.match(launcherMenu.stdout, /启动 Alphion/u);

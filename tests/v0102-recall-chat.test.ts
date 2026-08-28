@@ -87,13 +87,13 @@ test("ProjectCodeRecall enforces result, file and byte budgets deterministically
     const files = join(root, "files");
     await mkdir(files);
     await Promise.all(Array.from({ length: 257 }, (_, index) => writeFile(join(files, `${String(index).padStart(3, "0")}.txt`), "plain\n", "utf8")));
-    let fileCalls = 0;
-    const fileRecall = new ProjectCodeRecall(async () => { fileCalls += 1; throw Object.assign(new Error("missing"), { code: "ENOENT" }); }, () => 0);
+    let codeGraphCalls = 0;
+    const fileRecall = new ProjectCodeRecall(async () => { codeGraphCalls += 1; throw Object.assign(new Error("missing"), { code: "ENOENT" }); }, () => 0);
     const fileRequest = { projectRoot: root, projectRevision: "files", query: "needle", scope: ["files"] };
     const fileLimited = await fileRecall.recall(fileRequest, new AbortController().signal);
     await fileRecall.recall(fileRequest, new AbortController().signal);
     assert.ok(fileLimited.diagnostics.includes("lexical-file-budget-exhausted"));
-    assert.equal(fileCalls, 1);
+    assert.equal(codeGraphCalls, 0, "scoped lexical recall must not invoke whole-project CodeGraph");
 
     const bytes = join(root, "bytes");
     await mkdir(bytes);
@@ -107,8 +107,10 @@ test("ProjectCodeRecall enforces result, file and byte budgets deterministically
 test("ProjectCodeRecall propagates caller cancellation and never caches it", async () => {
   await withProject(async (root) => {
     let calls = 0;
+    let notifyStart: (() => void) | undefined;
     const recall = new ProjectCodeRecall(({ signal }) => new Promise<string>((_resolve, reject) => {
       calls += 1;
+      notifyStart?.();
       const abort = () => reject(signal.reason);
       if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
     }));
@@ -116,8 +118,10 @@ test("ProjectCodeRecall propagates caller cancellation and never caches it", asy
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const controller = new AbortController();
       const reason = new DOMException("caller stopped recall", "AbortError");
+      const entered = new Promise<void>((resolvePromise) => { notifyStart = resolvePromise; });
       const pending = recall.recall(request, controller.signal);
-      queueMicrotask(() => controller.abort(reason));
+      await entered;
+      controller.abort(reason);
       await assert.rejects(pending, (error) => error === reason);
     }
     assert.equal(calls, 2);
