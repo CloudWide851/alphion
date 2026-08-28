@@ -92,7 +92,7 @@ test("Provider catalog keeps v0.10 built-in models as private stored-profile com
   }
 });
 
-function builtIn(kind: BuiltInProviderKind, presetId: string, model = CURRENT_MODELS[kind][0]): Extract<ProviderProfileInput, { readonly kind: BuiltInProviderKind }> {
+function builtIn(kind: BuiltInProviderKind, presetId: string, model = CURRENT_MODELS[kind][0]!): Extract<ProviderProfileInput, { readonly kind: BuiltInProviderKind }> {
   return {
     schemaVersion: 3,
     id: `${kind}-${presetId}`,
