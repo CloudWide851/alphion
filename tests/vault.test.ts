@@ -136,7 +136,7 @@ function profile() {
   return {
     schemaVersion: 3 as const,
     id: "deepseek", name: "DeepSeek", kind: "deepseek" as const, presetId: "deepseek",
-    model: "deepseek-chat", protocol: "chat-completions" as const, auth: { mode: "none" as const },
+    model: "deepseek-v4-flash", protocol: "chat-completions" as const, auth: { mode: "none" as const },
     capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false, vision: false }, active: true,
   };
 }

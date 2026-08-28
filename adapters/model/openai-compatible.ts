@@ -204,7 +204,7 @@ function validateProviderProfile(profile: ProviderProfile): void {
       stage: "provider",
     });
   }
-  validateProviderPreset(profile);
+  validateProviderPreset(profile, true);
   let url: URL;
   try {
     url = new URL(resolveProviderEndpoint(profile));

@@ -79,7 +79,7 @@ function PresetPicker(props: Readonly<{ presets: readonly ProviderPreset[]; sele
 }
 
 export function presetDraft(preset: ProviderPreset | undefined): ProviderDraft {
-  const fallback: ProviderPreset = { id: "deepseek", label: "DeepSeek（中国大陆）", kind: "deepseek", region: "mainland", requiresBaseUrl: false, models: ["deepseek-chat"], protocol: "chat-completions" };
+  const fallback: ProviderPreset = { id: "deepseek", label: "DeepSeek（中国大陆）", kind: "deepseek", region: "mainland", requiresBaseUrl: false, models: ["deepseek-v4-flash"], protocol: "chat-completions" };
   const value = preset ?? fallback;
   return withModelDefaults({ presetId: value.id, name: value.label, kind: value.kind, protocol: value.protocol, model: value.models[0] ?? "", catalogModels: value.models, ...(value.contextWindows ? { catalogContextWindows: value.contextWindows } : {}), ...(value.visionModels ? { catalogVisionModels: value.visionModels } : {}), ...(value.requiresBaseUrl ? { baseUrl: "" } : {}) });
 }

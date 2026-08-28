@@ -17,12 +17,11 @@ import type {
   ProviderUsage,
 } from "../../src/domain/contracts.js";
 import type { AgentProvider, AttachmentReader, SecretResolver } from "../../src/ports/index.js";
-import { resolveProviderEndpoint } from "./provider-catalog.js";
-import { validateProviderPreset } from "./provider-catalog.js";
+import { DEEPSEEK_CATALOG_MODELS, resolveProviderEndpoint, validateProviderPreset } from "./provider-catalog.js";
 import { toChatUserContent } from "./provider-image-content.js";
 
 export const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com";
-export const DEEPSEEK_MODELS = Object.freeze(["deepseek-chat", "deepseek-reasoner"] as const);
+export const DEEPSEEK_MODELS = DEEPSEEK_CATALOG_MODELS;
 
 export class DeepSeekProvider implements AgentProvider {
   readonly profile: ProviderProfile;
@@ -152,7 +151,7 @@ function validateProfile(profile: ProviderProfile, endpoint: (profile: ProviderP
       stage: "provider",
     });
   }
-  validateProviderPreset(profile);
+  validateProviderPreset(profile, true);
   let url: URL;
   try {
     url = new URL(endpoint(profile));

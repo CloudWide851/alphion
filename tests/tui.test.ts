@@ -84,7 +84,7 @@ test("provider list keyboard navigation dispatches adapter intents", async () =>
     name: "DeepSeek",
     kind: "deepseek" as const,
     presetId: "deepseek",
-    model: "deepseek-chat",
+    model: "deepseek-v4-flash",
     protocol: "chat-completions" as const,
     auth: { mode: "none" as const },
     capabilities: { streaming: true, tools: true, promptCaching: false, reasoning: false, vision: false },
@@ -131,7 +131,7 @@ test("TUI renders Provider test outcomes with truthful success warning and error
 test("built-in Provider form saves without asking for a Base URL", async () => {
   let saved: unknown;
   const view = render(React.createElement(ProviderForm, {
-    draft: { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "moonshot-v1-8k", catalogModels: ["moonshot-v1-8k", "kimi-k2-0711-preview"] },
+    draft: { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "kimi-k3", catalogModels: ["kimi-k3", "kimi-k2.7-code"], catalogContextWindows: { "kimi-k3": 1_048_576, "kimi-k2.7-code": 262_144 }, catalogVisionModels: ["kimi-k3", "kimi-k2.7-code"] },
     presets: [],
     onSave: (value: unknown) => { saved = value; },
     onCancel: () => undefined,
@@ -139,14 +139,14 @@ test("built-in Provider form saves without asking for a Base URL", async () => {
   assert.doesNotMatch(view.lastFrame() ?? "", /Base URL/u);
   view.stdin.write("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.match(view.lastFrame() ?? "", /catalog|moonshot-v1-8k/u);
+  assert.match(view.lastFrame() ?? "", /catalog|kimi-k3/u);
   view.stdin.write("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
   view.stdin.write("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
   view.stdin.write("\r");
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(saved, { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "moonshot-v1-8k", catalogModels: ["moonshot-v1-8k", "kimi-k2-0711-preview"], contextWindowTokens: 32_768, vision: false });
+  assert.deepEqual(saved, { presetId: "kimi", name: "Kimi", kind: "kimi", protocol: "chat-completions", model: "kimi-k3", catalogModels: ["kimi-k3", "kimi-k2.7-code"], catalogContextWindows: { "kimi-k3": 1_048_576, "kimi-k2.7-code": 262_144 }, catalogVisionModels: ["kimi-k3", "kimi-k2.7-code"], contextWindowTokens: 1_048_576, vision: true });
   assert.doesNotMatch(view.lastFrame() ?? "", /Base URL/u);
   view.unmount();
 });
