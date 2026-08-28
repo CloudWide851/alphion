@@ -11,7 +11,6 @@ import { SqliteStore } from "../adapters/store/sqlite-store.js";
 import { AgentSession } from "../src/application/agent-session.js";
 import { Agent } from "../src/application/agent.js";
 import { canonicalJson, sha256 } from "../src/application/canonical.js";
-import { AlphionError } from "../src/application/errors.js";
 import { DefaultProviderTestService } from "../src/application/provider-test.js";
 import { ToolRegistry } from "../src/application/tool-registry.js";
 import type { AgentShape, HarnessPlan, ProjectProfile, ProviderProfileInput } from "../src/domain/contracts.js";
@@ -150,10 +149,10 @@ test("exact Provider test and full SQLite Session chat both succeed when Recall 
           shape: (request, revision) => Promise.resolve(testShape(record.id, profile.id, request.goal, revision)),
           plan: () => harness,
           models,
-          recall: { recall: (_request, signal) => new Promise((_resolve, reject) => {
+          recall: { recall: (_request, signal) => new Promise<never>((_resolve, reject) => {
             const abort = () => reject(signal.reason);
             if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
-          }) },
+          }), clear: () => undefined },
         });
         const startedAt = Date.now();
         const run = await session.send("你好", { expectedRevision: record.revision, idempotencyKey: "v0102:send-chat" }, allowApproval());
