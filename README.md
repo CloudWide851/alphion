@@ -6,11 +6,11 @@
 
 Alphion 是一个面向不同软件项目、在证据和安全边界内持续优化 harness 的轻量 Agent 项目。
 
-当前 **v0.10.0** 在 `Workspace → Project → shared Agent → Session → Goal/Run → ProviderConversationPlan → Tool` 脊柱上加入 Provider Profile v3、ref-only 图片消息、最新调用上下文占用和三端专用图片传输；保留 Project 独立凭据、Provider 实测与有界多项目 Run 保活。SQLite 使用 user_version 9。
+当前 **v0.10.1** 在 `Workspace → Project → shared Agent → Session → Goal/Run → ProviderConversationPlan → Tool` 脊柱上保留 Provider Profile v3、ref-only 图片消息、最新调用上下文占用和三端专用图片传输，并修复 Provider 实测成功被 TUI 当作错误展示的问题。DeepSeek、Kimi、Qwen、GLM 的普通模型目录已按 2026-08-28 官网资料更新。SQLite 仍使用 user_version 9。
 
 资源优先级固定为内置 → 用户共享 → 项目 `.alphion-resources/manifest.json` → Session overrides。扩展包仅支持声明式资源，不执行第三方 JavaScript。用户资源根可通过 `ALPHION_RESOURCE_HOME` 指定，否则使用平台标准配置目录。
 
-这是新的 0.x 能力里程碑。首次打开 v8 数据库会先 checkpoint 并创建、验证相邻 `.v8-backup`，再事务升级到 SQLite user_version 9。回滚必须停止所有 Alphion 进程、保留失败文件与附件目录用于诊断、恢复 `.v8-backup` 并切回 v0.9.0；迁移后的 Provider Profile v3、图片关联和 v0.10 状态不会回写到 v8。
+v0.10.1 是不改变公共 schema 的补丁版，可停止所有 Alphion 进程后直接切回 v0.10.0，不需要恢复数据库。首次从 v0.9 打开 v8 数据库时仍会 checkpoint 并创建、验证相邻 `.v8-backup`，再事务升级到 SQLite user_version 9；若要回退整个 v0.10 版本线，必须保留失败文件与附件目录用于诊断、恢复 `.v8-backup` 并切回 v0.9.0。
 
 ## 当前能力
 
@@ -26,7 +26,7 @@ Alphion 是一个面向不同软件项目、在证据和安全边界内持续优
 - Node/TypeScript 优先的确定性只读 Project Profile，识别语言、运行时、模块系统、包管理器、框架、质量命令、Git/CI、约束、风险和冲突；未知项目安全降级。
 - 每次运行自动注入最多 2,048 estimated tokens 的不可变 ContextPack；安全、目标、权限和强约束不会被可选画像事实挤出预算。
 - 运行期 Working Memory 仅由当前任务事件 reducer 重放，跟踪阶段、轮次、工具、Evidence、错误和用量，不写入长期记忆。
-- OpenAI-compatible Chat Completions 与 Responses 双协议；DeepSeek、Kimi、Qwen、GLM 提供内置大陆/国际 official endpoint，普通配置无需 Base URL，只有自定义兼容 Provider 接受 URL。
+- OpenAI-compatible Chat Completions 与 Responses 双协议；DeepSeek、Kimi、Qwen、GLM 提供内置大陆/国际 official endpoint，普通配置无需 Base URL，只有自定义兼容 Provider 接受 URL。普通 picker 使用 DeepSeek V4、Kimi K3/K2.7/K2.6/K2.5、Qwen 3.8/3.7 和 GLM 5.3/5.2；v0.10.0 旧 ID 仅通过 adapter 私有 allowlist 兼容已存 Profile。
 - 简体中文聊天式 Ink TUI、React/Vite loopback WebUI 和 Electron Desktop；三端使用固定底部输入框、可滚动无边框消息区、用户右/Agent 左角色布局与共享 `| / - \\` 回答标识，并完整渲染安全 Markdown/代码，reasoning 不可见。
 - `read`、`grep`、`edit`、`write` 和 `shell` 工具；写入和进程执行必须逐次审批。
 - SQLite 权威事件写入与 SHA-256 审计链；三端先订阅再取 snapshot，按 30/60 FPS frame 合并 delta/invalidation，慢消费者通过 cursor resync，不延迟 AgentLoop。
@@ -35,7 +35,7 @@ Alphion 是一个面向不同软件项目、在证据和安全边界内持续优
 - TUI 支持 Ctrl+V/Alt+V 剪贴板图片和路径拖入，以 `[图片 N：name]` 安全占位；Web/Desktop 支持粘贴、拖放、缩略图与单项移除。图片失败保留按 Project/Session 隔离的文字和附件草稿。
 - 进程内 LRU + SQLite L2 缓存、single-flight 合并、策略/权限/项目修订失效和可选 provider prompt caching；疑似秘密不进入缓存。
 - Project 注册层保证名称/realpath 唯一、每项目独立 SQLite v9；Workspace 切换时只保活已有 Run、审批或 follow-up，暂停后台 Scheduler，空闲后自动释放 writer。
-- Provider 页面支持精确指定 Profile 的“测试当前”和最多并发 2 的“一键测试全部”；测试发送真实的受限请求，不使用 routing fallback，不写 Session、Evidence 或缓存。
+- Provider 页面支持精确指定 Profile 的“测试当前”和最多并发 2 的“一键测试全部”；测试发送真实的受限请求，不使用 routing fallback，不写 Session、Evidence 或缓存。单项/批量结果按 `ProviderTestResult.status` 显示 success、warning 或 error，不从模型正文猜测状态。
 - WebUI 只绑定 `127.0.0.1`，采用 HttpOnly/Origin/CSRF/SSE，并以独立 20 MiB 受限 endpoint 传图片；Electron 开启 sandbox/contextIsolation、禁用 Node integration/任意导航，preload 只暴露窄 allowlisted IPC（含独立 attachment import/read）。
 - `alphion-icon.svg` 是唯一图标源；确定性生成 Web favicon/PNG 和 Windows 多尺寸 ICO，Web/Desktop 左上角、Electron 窗口、安装器、开始菜单与快捷方式使用同一品牌。
 

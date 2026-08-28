@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.1] - 2026-08-28
+
+- Fixed TUI Provider connectivity feedback so a resolved successful real request renders `✓ 实测成功` through the notice channel instead of a red application error. Mixed test-all results are warnings; all-failed results remain errors.
+- Refreshed mainland and international normal model pickers from official Provider documentation verified on 2026-08-28: DeepSeek V4, Kimi K3/K2.7/K2.6/K2.5, Qwen 3.8/3.7 and GLM 5.3/5.2 families.
+- Added exact context-window and vision defaults for the refreshed catalog while keeping official endpoints private to adapters.
+- Kept v0.10.0 model IDs in an adapter-private stored-profile compatibility allowlist. They remain runnable when already stored but are not published in normal pickers or accepted as new ordinary profiles.
+
+This patch does not change Provider Profile schema v3, UI transport schemas or SQLite user_version 9. It does not rewrite stored profiles and can be rolled back to v0.10.0 without restoring a database backup.
+
 ## [0.10.0] - 2026-08-28
 
 - Restored `/settings` across the shared TUI, WebUI and Desktop slash registry while keeping commands and transient management views outside Session history.
