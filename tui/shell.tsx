@@ -10,6 +10,7 @@ import { projectChatRows, selectChatViewport } from "../ui/chat-viewport.js";
 export type WorkbenchSection = "home" | "settings" | "projects" | "profile" | "providers" | "sessions" | "resources" | "harness" | "context" | "goals" | "goal" | "schedules" | "doctor" | "help";
 export type WorkbenchLayout = "wide" | "narrow" | "compact";
 export interface ChatMessage { readonly id: string; readonly role: "user" | "assistant"; readonly content: string; readonly attachments?: readonly ImageAttachmentRef[]; }
+export type TuiNotice = Readonly<{ tone: "success" | "warning"; message: string }>;
 
 export const BRAND_PURPLE = "#A377F6";
 const SECTIONS: readonly Readonly<{ id: WorkbenchSection; label: string }>[] = Object.freeze([
@@ -21,11 +22,11 @@ const SECTIONS: readonly Readonly<{ id: WorkbenchSection; label: string }>[] = O
 const LOGO = Object.freeze([" █████╗ ██╗     ██████╗ ██╗  ██╗██╗ ██████╗ ███╗   ██╗", "██╔══██╗██║     ██╔══██╗██║  ██║██║██╔═══██╗████╗  ██║", "███████║██║     ██████╔╝███████║██║██║   ██║██╔██╗ ██║", "██╔══██║██║     ██╔═══╝ ██╔══██║██║██║   ██║██║╚██╗██║", "██║  ██║███████╗██║     ██║  ██║██║╚██████╔╝██║ ╚████║", "╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝"]);
 
 export function selectWorkbenchLayout(columns: number, rows: number): WorkbenchLayout { if (rows < 18) return "compact"; return columns >= 100 ? "wide" : "narrow"; }
-export function AppShell(props: Readonly<{ section: WorkbenchSection; layout: WorkbenchLayout; colorEnabled: boolean; projectRoot: string; error?: string; help?: boolean; children: React.ReactNode }>): React.JSX.Element {
+export function AppShell(props: Readonly<{ section: WorkbenchSection; layout: WorkbenchLayout; colorEnabled: boolean; projectRoot: string; error?: string; notice?: TuiNotice; help?: boolean; children: React.ReactNode }>): React.JSX.Element {
   const current = SECTIONS.find((entry) => entry.id === props.section);
   return <Box flexDirection="column" paddingX={1}>
     {props.section === "home" ? null : <Box flexDirection="column" marginTop={props.layout === "compact" ? 0 : 1} marginBottom={props.layout === "compact" ? 0 : 1}><Text bold {...accent(props.colorEnabled)}>ALPHION · {current?.label ?? "对话"}</Text>{props.layout === "compact" ? null : <Text dimColor>{sanitizeTerminalText(props.projectRoot)}</Text>}</Box>}
-    {props.error ? <Text {...textColor("red")}>✗ {sanitizeTerminalText(props.error)}</Text> : null}
+    {props.error ? <Text {...textColor("red")}>✗ {sanitizeTerminalText(props.error)}</Text> : props.notice ? <Text {...textColor(props.notice.tone === "success" ? "green" : "yellow")}>{props.notice.tone === "success" ? "✓" : "!"} {sanitizeTerminalText(props.notice.message)}</Text> : null}
     {props.help ? <Text dimColor>↑/↓ 选择 · Enter 确认 · Esc 返回对话 · ? 帮助 · q 退出 · Ctrl+C 取消/退出</Text> : null}
     {props.children}
     {props.section === "home" ? null : <Text dimColor>Esc 返回对话 · ↑/↓ 选择 · Enter 确认 · ? 帮助 · q 退出</Text>}

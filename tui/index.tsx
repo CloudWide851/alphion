@@ -18,12 +18,12 @@ import { TuiApprovalPort } from "./approval-port.js";
 import { sanitizeTerminalText } from "./run-projection.js";
 import { TextEntry } from "./input.js";
 import { RunView, type RunViewCommand } from "./run-view.js";
-import { accent, AppShell, ChatHome, textColor, selectWorkbenchLayout, type ChatMessage, type WorkbenchSection } from "./shell.js";
+import { accent, AppShell, ChatHome, textColor, selectWorkbenchLayout, type ChatMessage, type TuiNotice, type WorkbenchSection } from "./shell.js";
 import { EntryShell } from "./entry-shell.js";
 import { PlatformTerminalLauncher, type TerminalLauncher } from "./terminal-launcher.js";
 import { forkTuiSession } from "./session-fork.js";
 import { AlternateScreenSurface, type TerminalSurface } from "./terminal-surface.js";
-import { ProviderForm, ProviderList, presetDraft, profileDraft, providerTestLabel, toProfileInput, type ProviderDraft } from "./provider-views.js";
+import { ProviderForm, ProviderList, presetDraft, profileDraft, providerTestBatchFeedback, providerTestFeedback, toProfileInput, type ProviderDraft, type ProviderTestFeedback } from "./provider-views.js";
 import { resolveTuiInput } from "./slash-dispatch.js";
 import { HelpCard, ProjectCard, SettingsCard } from "./workbench-cards.js";
 import { ContextCard, GoalCard, SchedulesCard } from "./automation-cards.js";
@@ -39,7 +39,7 @@ export interface RunTuiOptions {
 
 export { AppShell, ChatHome, selectWorkbenchLayout } from "./shell.js";
 export { ChatEntry, TextEntry } from "./input.js";
-export { ProviderForm, ProviderList } from "./provider-views.js";
+export { ProviderForm, ProviderList, providerTestBatchFeedback, providerTestFeedback } from "./provider-views.js";
 export type { WorkbenchLayout, WorkbenchSection } from "./shell.js";
 
 type Screen = "workbench" | "provider-form" | "credential";
@@ -88,6 +88,7 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
   const [presets] = useState(() => application.providerPresets());
   const [selected, setSelected] = useState(0);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState<TuiNotice>();
   const [help, setHelp] = useState(false);
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot>({});
   const [draft, setDraft] = useState<ProviderDraft>(() => presetDraft(presets[0]));
@@ -144,6 +145,7 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
     })();
   }, [application, refreshProfiles, refreshProjects, refreshSnapshot]);
   useEffect(() => { const timer = setInterval(() => { void workspace.backgroundRuns().then(setBackgroundRuns).catch(() => undefined); }, 1_000); timer.unref(); return () => clearInterval(timer); }, [workspace]);
+  useEffect(() => { setNotice(undefined); }, [application, section]);
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") { if (runPrompt) setRunCommand({ id: Date.now(), kind: "cancel" }); else exit(); return; }
@@ -155,6 +157,10 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
 
   const current = profiles[selected];
   const activeProfile = profiles.find((profile) => profile.active);
+  const showProviderTestFeedback = (feedback: ProviderTestFeedback): void => {
+    if (feedback.tone === "error") { setNotice(undefined); setError(feedback.message); return; }
+    setError(""); setNotice(feedback);
+  };
   const beginRun = (prompt: string, session?: AgentSessionContract, images = chatAttachments) => {
     if (session) setChatSession(session);
     setChatMessages((messages) => [...messages, { id: `user:${Date.now()}`, role: "user", content: prompt, ...(images.length ? { attachments: images } : {}) }]);
@@ -206,7 +212,7 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
       />
     </EntryShell>;
   }
-  return <AppShell section={section} layout={layout} colorEnabled={colorEnabled} projectRoot={projectRoot} error={error} help={help}>
+  return <AppShell section={section} layout={layout} colorEnabled={colorEnabled} projectRoot={projectRoot} error={error} {...(notice ? { notice } : {})} help={help}>
     {section === "home" ? <ChatHome {...(activeProfile ? { activeProfile } : {})} messages={chatMessages} attachments={chatAttachments} draft={chatDraft} onDraftChange={(value) => { drafts.current.set(tuiDraftKey(workspaceSnapshot.project?.id, chatSession?.id), value); setChatDraft(value); }} onPasteImage={() => { if (chatAttachments.length >= 8) { setError("每条消息最多 8 张图片。"); return; } void readClipboardImage().then((input) => application.attachments.importBytes(input)).then((image) => setChatAttachments((items) => items.length >= 8 ? items : [...items, image])).catch((cause: unknown) => setError(safeError(cause))); }} onRemoveLastAttachment={() => setChatAttachments((items) => items.slice(0, -1))} compactionCount={compaction.count} activeBubble={runPrompt ? <RunView application={application} approval={approval} prompt={runPrompt} attachments={runAttachments} {...(runSession ? { session: runSession } : {})} {...(runProviderId ? { providerId: runProviderId } : {})} {...(runCommand ? { command: runCommand } : {})} compact={layout === "compact"} onSession={acceptRunSession} onAccepted={() => { setChatDraft(""); setChatAttachments([]); }} onCommandAccepted={(commandId) => { if (runCommand?.id === commandId) { setChatDraft(""); setChatAttachments([]); } }} onError={setError} onDone={finishRun} /> : null} compact={layout === "compact"} heightRows={Math.max(10, (stdout.rows ?? 24) - 2)} viewportRows={Math.max(4, (stdout.rows ?? 24) - (layout === "compact" ? 8 : 11))} contentWidth={Math.max(20, Math.min(88, (stdout.columns ?? 80) - 8))} slashContext={{ hasSession: chatSession !== undefined, sessionIdle: !runPrompt, ...(runPrompt ? { activeRunId: "active-tui-run" } : {}) }} onSubmit={submitChat} /> : null}
     {section === "settings" ? <SettingsCard onSelect={setSection} /> : null}
     {section === "projects" ? <ProjectCard projectRoot={projectRoot} projects={registeredProjects} backgroundRuns={backgroundRuns} {...(workspaceSnapshot.project ? { currentProjectId: workspaceSnapshot.project.id } : {})} onActivate={activateProject} /> : null}
@@ -220,8 +226,8 @@ function AlphionTui({ workspace, initialWorkspace, initialSession, initialMessag
       onActivate={() => current && void application.configuration.activateProfile(current.id).then(async () => { await refreshProfiles(); await refreshSnapshot(); }).catch((cause: unknown) => setError(safeError(cause)))}
       onCredential={() => current && setScreen("credential")}
       onRemoveCredential={() => current && void application.configuration.removeCredential(current.id).then(async () => { await refreshProfiles(); await refreshSnapshot(); }).catch((cause: unknown) => setError(safeError(cause)))}
-      onTest={() => current && void application.providerTests.test(current.id).then((result) => setError(providerTestLabel(result))).catch((cause: unknown) => setError(safeError(cause)))}
-      onTestAll={() => void application.providerTests.testAll().then((results) => setError(`实测完成：${results.filter((item) => item.status === "success").length}/${results.length} 成功`)).catch((cause: unknown) => setError(safeError(cause)))}
+      onTest={() => current && void application.providerTests.test(current.id).then((result) => showProviderTestFeedback(providerTestFeedback(result))).catch((cause: unknown) => { setNotice(undefined); setError(safeError(cause)); })}
+      onTestAll={() => void application.providerTests.testAll().then((results) => showProviderTestFeedback(providerTestBatchFeedback(results))).catch((cause: unknown) => { setNotice(undefined); setError(safeError(cause)); })}
       onRun={() => current && setSection("home")}
       onExit={() => exit()}
     /> : null}

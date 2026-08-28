@@ -3,8 +3,8 @@ import test from "node:test";
 import React from "react";
 import { render } from "ink-testing-library";
 import { TuiApprovalPort } from "../tui/approval-port.js";
-import { AppShell, ChatEntry, ChatHome, HarnessPlanView, ProviderForm, ProviderList, SessionWorkbenchView, TextEntry, selectWorkbenchLayout } from "../tui/index.js";
-import type { AgentApplication, AgentSessionContract } from "../src/index.js";
+import { AppShell, ChatEntry, ChatHome, HarnessPlanView, ProviderForm, ProviderList, SessionWorkbenchView, TextEntry, providerTestBatchFeedback, providerTestFeedback, selectWorkbenchLayout } from "../tui/index.js";
+import type { AgentApplication, AgentSessionContract, ProviderTestResult } from "../src/index.js";
 import { EMPTY_RUN_PROJECTION, reduceRunProjection, sanitizeTerminalText } from "../tui/run-projection.js";
 
 const IMAGE_REF = Object.freeze({ schemaVersion: 1 as const, id: "attachment_tui_0001", domainId: "domain_tui_0001", digest: "b".repeat(64), mediaType: "image/png" as const, byteSize: 8, width: 1, height: 1, fileName: "pasted.png" });
@@ -109,6 +109,22 @@ test("provider list keyboard navigation dispatches adapter intents", async () =>
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(created, 1);
   assert.match(view.lastFrame() ?? "", /DeepSeek/);
+  view.unmount();
+});
+
+test("TUI renders Provider test outcomes with truthful success warning and error semantics", () => {
+  const success = providerTestFeedback(providerTestResult("success"));
+  const failure = providerTestFeedback(providerTestResult("failed"));
+  assert.equal(success.tone, "success");
+  assert.equal(failure.tone, "error");
+  assert.equal(providerTestBatchFeedback([providerTestResult("success"), providerTestResult("success")]).tone, "success");
+  assert.equal(providerTestBatchFeedback([providerTestResult("success"), providerTestResult("failed")]).tone, "warning");
+  assert.equal(providerTestBatchFeedback([providerTestResult("failed"), providerTestResult("failed")]).tone, "error");
+  assert.equal(providerTestBatchFeedback([]).tone, "warning");
+  if (success.tone !== "success") assert.fail("Expected success feedback.");
+  const view = render(React.createElement(AppShell, { section: "providers", layout: "compact", colorEnabled: false, projectRoot: "project", notice: success, children: React.createElement(React.Fragment) }));
+  assert.match(view.lastFrame() ?? "", /✓ 实测成功/u);
+  assert.doesNotMatch(view.lastFrame() ?? "", /✗ 实测成功/u);
   view.unmount();
 });
 
@@ -226,4 +242,8 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("condition timed out");
+}
+
+function providerTestResult(status: "success" | "failed"): ProviderTestResult {
+  return Object.freeze({ schemaVersion: 1, profileId: "deepseek", profileName: "DeepSeek", model: "deepseek-v4-flash", status, latencyMs: 42, usage: { inputTokens: 2, outputTokens: 3, cachedInputTokens: 0 }, ...(status === "success" ? { response: "你好" } : { errorCode: "dependency-unavailable", errorReason: "provider-test-failed" }) });
 }

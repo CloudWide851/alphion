@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
-import type { AgentApplication, ProviderPreset, ProviderProfile, ProviderProfileInput } from "../src/index.js";
+import type { ProviderPreset, ProviderProfile, ProviderProfileInput, ProviderTestResult } from "../src/index.js";
 import { TextEntry } from "./input.js";
 import { ProviderModelPicker } from "./provider-model-picker.js";
 import { accent } from "./shell.js";
@@ -20,6 +20,11 @@ export interface ProviderDraft {
   readonly contextWindowTokens?: number;
   readonly vision?: boolean;
 }
+
+export type ProviderTestFeedback =
+  | Readonly<{ tone: "success"; message: string }>
+  | Readonly<{ tone: "warning"; message: string }>
+  | Readonly<{ tone: "error"; message: string }>;
 
 export function ProviderList(props: Readonly<{
   profiles: readonly ProviderProfile[]; selected: number; onSelected: (index: number) => void;
@@ -90,8 +95,19 @@ export function toProfileInput(draft: ProviderDraft, firstProfile: boolean): Pro
   return draft.kind === "custom-openai-compatible" ? { ...common, kind: draft.kind, baseUrl: draft.baseUrl?.trim() ?? "" } : { ...common, kind: draft.kind, presetId: draft.presetId };
 }
 
-export function providerTestLabel(result: Awaited<ReturnType<AgentApplication["providerTests"]["test"]>>): string {
-  return result.status === "success" ? `实测成功 · ${result.model} · ${result.latencyMs}ms · ${result.response ?? "无文本"}` : `实测失败 · ${result.errorReason ?? result.errorCode ?? "未知错误"}`;
+export function providerTestFeedback(result: ProviderTestResult): ProviderTestFeedback {
+  return result.status === "success"
+    ? Object.freeze({ tone: "success", message: `实测成功 · ${result.model} · ${result.latencyMs}ms · ${result.response || "无文本"}` })
+    : Object.freeze({ tone: "error", message: `实测失败 · ${result.errorReason ?? result.errorCode ?? "未知错误"}` });
+}
+
+export function providerTestBatchFeedback(results: readonly ProviderTestResult[]): ProviderTestFeedback {
+  const succeeded = results.filter((item) => item.status === "success").length;
+  const message = results.length === 0 ? "没有可实测的 Provider。" : `实测完成：${succeeded}/${results.length} 成功`;
+  if (results.length === 0) return Object.freeze({ tone: "warning", message });
+  if (succeeded === results.length) return Object.freeze({ tone: "success", message });
+  if (succeeded === 0) return Object.freeze({ tone: "error", message });
+  return Object.freeze({ tone: "warning", message });
 }
 
 function toProfileId(value: string): string { return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/gu, "-").replace(/^-+|-+$/gu, "") || "provider"; }
