@@ -63,6 +63,15 @@ test("RunView reports a newly created Session to the chat shell", async () => {
   view.unmount();
 });
 
+test("RunView renders context preparation only once before a Run handle is ready", async () => {
+  const session = { ...fakeSession("idle", forkReceipt("session_unused_status")), send: () => new Promise<AgentRunHandle>(() => undefined) } as AgentSessionContract;
+  const application = { sessions: { create: () => Promise.resolve(session) } } as unknown as AgentApplication;
+  const view = render(React.createElement(RunView, { application, approval: new TuiApprovalPort(), prompt: "hello", session, onDone: () => undefined }));
+  await waitUntil(() => view.lastFrame()?.includes("准备上下文") === true);
+  assert.equal(view.lastFrame()?.match(/准备上下文/gu)?.length, 1);
+  view.unmount();
+});
+
 test("RunView survives parent refresh after reporting a newly created Session", async () => {
   let releaseResult!: () => void;
   let cancelCount = 0;

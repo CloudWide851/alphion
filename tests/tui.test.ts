@@ -184,6 +184,33 @@ test("TUI chat viewport keeps the composer fixed and scrolls history by line", a
   view.unmount();
 });
 
+test("TUI user messages shrink to their content and touch the right edge", async () => {
+  const previousNoColor = process.env.NO_COLOR;
+  process.env.NO_COLOR = "1";
+  try {
+    for (const [columns, compact] of [[120, false], [240, false], [100, true]] as const) {
+      const tree = React.createElement(ChatHome, { compact, heightRows: 14, viewportRows: 8, contentWidth: Math.min(88, columns - 8), messages: [{ id: `user-${columns}`, role: "user" as const, content: "你好" }, { id: `assistant-${columns}`, role: "assistant" as const, content: "收到" }], onSubmit: () => undefined });
+      const view = render(tree);
+      Object.defineProperty(view.stdout, "columns", { configurable: true, value: columns });
+      view.rerender(tree);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const lines = (view.lastFrame() ?? "").split("\n");
+      const userRole = lines.find((line) => line.trim() === "你") ?? "";
+      const userText = lines.find((line) => line.trim() === "你好") ?? "";
+      const agentRole = lines.find((line) => line.trim() === "Alphion") ?? "";
+      const agentText = lines.find((line) => line.trim() === "收到") ?? "";
+      const displayWidth = (value: string) => [...value].reduce((width, character) => width + ((character.codePointAt(0) ?? 0) > 0xff ? 2 : 1), 0);
+      assert.equal(displayWidth(userRole), columns);
+      assert.equal(displayWidth(userText), columns);
+      assert.ok(agentRole.startsWith("Alphion"));
+      assert.ok(agentText.startsWith("收到"));
+      view.unmount();
+    }
+  } finally {
+    if (previousNoColor === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = previousNoColor;
+  }
+});
+
 test("TUI chat input clears after every successful send", async () => {
   const submitted: string[] = [];
   const view = render(React.createElement(ChatEntry, { onSubmit: (value: string) => { submitted.push(value); } }));

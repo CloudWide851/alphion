@@ -84,10 +84,14 @@ export function RunView(props: Readonly<{
 
   const active = projection ? ["waiting", "streaming", "tool"].includes(projection.status) : true;
   const spinner = process.env.NO_COLOR === undefined ? ["|", "/", "-", "\\"][tick] : "|";
+  const usage = projection ? [
+    projection.usage.inputTokens || projection.usage.outputTokens ? `tokens ${projection.usage.inputTokens}↓ / ${projection.usage.outputTokens}↑` : "",
+    projection.contextUsage ? `上下文 ${projection.contextUsage.source === "estimated" ? "≈" : ""}${projection.contextUsage.occupiedTokens}/${projection.contextUsage.contextWindowTokens} · ${Math.min(100, Math.round(projection.contextUsage.occupiedTokens / projection.contextUsage.contextWindowTokens * 100))}%` : "",
+  ].filter(Boolean).join(" · ") : "";
   return <Box flexDirection="column" marginBottom={1}>
     <Text bold {...accent()}>{active ? `${spinner} ` : ""}Alphion</Text>
-    <Text>{projection?.text ? renderMarkdownText(parseMarkdown(projection.text), props.compact ? 68 : 88) : projection?.statusText ?? "准备上下文…"}</Text>
-    {projection ? <Text dimColor>{projection.statusText}{projection.usage.inputTokens || projection.usage.outputTokens ? ` · tokens ${projection.usage.inputTokens}↓ / ${projection.usage.outputTokens}↑` : ""}{projection.contextUsage ? ` · 上下文 ${projection.contextUsage.source === "estimated" ? "≈" : ""}${projection.contextUsage.occupiedTokens}/${projection.contextUsage.contextWindowTokens} · ${Math.min(100, Math.round(projection.contextUsage.occupiedTokens / projection.contextUsage.contextWindowTokens * 100))}%` : ""}</Text> : null}
+    {projection?.text ? <Text>{renderMarkdownText(parseMarkdown(projection.text), props.compact ? 68 : 88)}</Text> : projection?.status === "failed" ? null : <Text>{projection?.statusText ?? "准备上下文…"}</Text>}
+    {usage ? <Text dimColor>{usage}</Text> : null}
     {projection?.status === "failed" ? <Text {...textColor("red")}>✗ {projection.statusText}</Text> : null}
     {pendingApproval ? <Box flexDirection="column" borderStyle="round" paddingX={1} {...borderColor("yellow")}><Text bold>! {sanitizeTerminalText(pendingApproval.request.toolName)} 需要逐次审批</Text><Text>{sanitizeTerminalText(pendingApproval.request.summary)}</Text><Text>y 允许一次 · n 拒绝</Text></Box> : null}
   </Box>;
