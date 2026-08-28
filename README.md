@@ -67,6 +67,10 @@ alphion.bat web
 
 启动不要求密码或凭据解锁；首次为某 Project 导入 API key 时自动创建该 Project 的独立 key。Project key 丢失时只要求对应 Profile 重新输入，不会误判为数据库损坏，也不会自动删除旧密文。reasoning 仅在 Provider 当前 Run 的工具续轮中短暂存在，不进入任何用户界面、SQLite 或重放。
 
+### Provider 实测成功但聊天仍在准备
+
+Provider“测试当前”只验证精确 Profile、凭据和模型网络请求；普通聊天还会经过 Session、首次 Shape、Code Recall 和 Tool 准备，因此两者不是同一条健康检查。Project Code Recall 使用 3 秒 CodeGraph 上限和受限词法降级，Session 的 Recall 总上限为 5 秒；召回不可用时聊天应以 degraded 空上下文继续 Provider，而不是永久停留在“准备上下文”。若仍无法继续，运行只读 `alphion.bat doctor` 并保留数据库；不要因为召回或原生依赖错误删除 SQLite、Project key 或 API key。
+
 ## 配置兼容服务
 
 以下示例配置一个本机无认证自定义 Chat Completions 服务：
