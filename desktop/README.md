@@ -17,9 +17,11 @@ exposed through IPC. Provider credentials use the dedicated one-use bridge
 method, are encrypted by Main for the active Project, and are cleared by the
 form after every outcome.
 
-In v0.9.0 the Renderer inherits the WebUI fixed composer, scrollable conversation,
-Compaction, Goal and Schedule projections. No generic Node capability or IPC
-channel is added: all v0.8 commands travel through the existing exact command
-bridge. The Electron window, top-left header, executable, installer, Start Menu
-entry and shortcuts use the ICO/PNG assets deterministically generated from
-the canonical `alphion-icon.svg`.
+In v0.10.0 the Renderer inherits the WebUI fixed composer, borderless scrollable
+conversation, answer indicator, latest-call context usage and multimodal drafts,
+alongside Compaction, Goal and Schedule projections. Generic commands carry only
+validated attachment references; two narrow allowlisted attachment channels import
+bounded image bytes and read authorized thumbnails without exposing Node or generic
+filesystem access. The Electron window, top-left header, executable, installer,
+Start Menu entry and shortcuts use the ICO/PNG assets deterministically generated
+from the canonical `alphion-icon.svg`.

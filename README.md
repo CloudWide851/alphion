@@ -10,7 +10,7 @@ Alphion 是一个面向不同软件项目、在证据和安全边界内持续优
 
 资源优先级固定为内置 → 用户共享 → 项目 `.alphion-resources/manifest.json` → Session overrides。扩展包仅支持声明式资源，不执行第三方 JavaScript。用户资源根可通过 `ALPHION_RESOURCE_HOME` 指定，否则使用平台标准配置目录。
 
-这是新的 0.x 能力里程碑。首次打开 v7 数据库会先 checkpoint 并创建、验证相邻 `.v7-backup`，再事务升级到 SQLite user_version 8。回滚必须停止所有 Alphion 进程、保留失败文件用于诊断、恢复 `.v7-backup` 并切回 v0.8.0；迁移后的 Project credential envelope 和 v0.9 状态不会回写到 v7。
+这是新的 0.x 能力里程碑。首次打开 v8 数据库会先 checkpoint 并创建、验证相邻 `.v8-backup`，再事务升级到 SQLite user_version 9。回滚必须停止所有 Alphion 进程、保留失败文件与附件目录用于诊断、恢复 `.v8-backup` 并切回 v0.9.0；迁移后的 Provider Profile v3、图片关联和 v0.10 状态不会回写到 v8。
 
 ## 当前能力
 

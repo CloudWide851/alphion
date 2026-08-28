@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0] - 2026-08-28
+
+- Restored `/settings` across the shared TUI, WebUI and Desktop slash registry while keeping commands and transient management views outside Session history.
+- Simplified chat surfaces to borderless user-right/Alphion-left messages, a fixed final-row composer, independently scrollable content, a single bounded `| / - \\` active-answer indicator and accessible static motion fallbacks.
+- Upgraded Provider Profile to schema v3 with catalog vision/context metadata, validated 4K–4M context overrides, a 32K unknown-model fallback and latest-call context occupancy distinct from aggregate Run usage.
+- Added versioned text/image Session inputs and ordered Provider content parts. PNG, JPEG, WebP and GIF attachments are validated, bounded, SHA-256 addressed and represented by metadata-only references in SQLite, events, cache and surface protocols.
+- Added attachment-aware send, steer, follow-up, Fork, replay, cache and compaction behavior. Non-vision Providers reject image drafts before creating a message or Run lease, while recent compaction cycles retain original image references.
+- Added TUI clipboard/path image import, protected Web upload/read endpoints and narrow Electron attachment IPC with bounded transfer, authorized thumbnails, draft preservation and no generic filesystem or Node access.
+- Migrated SQLite from user_version 8 to 9 after a verified adjacent `.v8-backup`; existing text messages and Provider profiles remain readable and future schemas continue to fail closed.
+
+This pre-1.0 milestone changes Provider Profile, Session message, Provider message and SQLite contracts. To roll back, stop every Alphion process, preserve the current v9 database and `.alphion/attachments/` directory for diagnosis, restore the verified adjacent `.v8-backup`, then run v0.9.0. v0.9.0 rejects schema v9 and cannot retain post-migration Profile v3 or attachment relations; referenced attachment files should be preserved until the rollback decision is final.
+
 ## [0.9.0] - 2026-08-27
 
 - Stabilized continuous conversations: accepted sends create waiting assistant projections immediately, parent Snapshot/Session refreshes no longer cancel stable Run controllers, and every preparation/model/stream/Tool path reaches a terminal state.
